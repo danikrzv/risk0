@@ -6,7 +6,7 @@
   "exports": "./src/generated.ts",
   "scripts": {
     "generate": "node scripts/generate-types.mjs",
-    "test": "tsc --noEmit && vitest run"
+    "test": "node scripts/generate-types.mjs --check && tsc --noEmit && vitest run"
   },
   "devDependencies": {
     "@types/node": "26.6.4",

@@ -201,4 +201,17 @@ export interface AnalysisResponse {
 }
 `;
 
-await writeFile(path.join(packageRoot, "src", "generated.ts"), generated);
+const outputPath = path.join(packageRoot, "src", "generated.ts");
+
+if (process.argv.includes("--check")) {
+  const existing = await readFile(outputPath, "utf8");
+
+  if (existing !== generated) {
+    console.error(
+      "Generated contracts are stale. Run `pnpm --filter @risk0/contracts generate`.",
+    );
+    process.exitCode = 1;
+  }
+} else {
+  await writeFile(outputPath, generated);
+}

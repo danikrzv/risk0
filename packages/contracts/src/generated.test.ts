@@ -1,4 +1,6 @@
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { readFileSync, writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
@@ -93,6 +95,41 @@ function pythonEnumValues(enumName: string): string[] {
 }
 
 describe("generated contract parity", () => {
+  it("fails check mode when generated types drift from JSON Schema", () => {
+    const schemaUrl = new URL(
+      "../schemas/analysis-response.schema.json",
+      import.meta.url,
+    );
+    const generatedUrl = new URL("./generated.ts", import.meta.url);
+    const generatorUrl = new URL(
+      "../scripts/generate-types.mjs",
+      import.meta.url,
+    );
+    const originalSchema = readFileSync(schemaUrl, "utf8");
+    const originalGenerated = readFileSync(generatedUrl, "utf8");
+    const schema = JSON.parse(originalSchema);
+
+    schema.$defs.Recommendation.properties.decision.enum.push(
+      "DRIFT_SENTINEL",
+    );
+
+    try {
+      writeFileSync(schemaUrl, `${JSON.stringify(schema, null, 2)}\n`);
+
+      expect(() =>
+        execFileSync(
+          process.execPath,
+          [fileURLToPath(generatorUrl), "--check"],
+          { stdio: "pipe" },
+        ),
+      ).toThrow();
+      expect(readFileSync(generatedUrl, "utf8")).toBe(originalGenerated);
+    } finally {
+      writeFileSync(schemaUrl, originalSchema);
+      writeFileSync(generatedUrl, originalGenerated);
+    }
+  });
+
   it("uses exact contract shapes", () => {
     expect(typeParityChecks).toEqual([true, true, true, true]);
     expect(lenderPosition.mode).toBe("lender");

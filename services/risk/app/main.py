@@ -59,16 +59,19 @@ def build_radar_scheduler() -> RadarScheduler:
         )
     )
     cache = SQLiteCache(cache_path)
-    database = RadarDatabase(database_path)
-    database.migrate()
     fixture = data_mode() == FIXTURE
     morpho = (
         fixture_morpho_client()
         if fixture
         else MorphoClient(os.environ.get("MORPHO_API_URL", DEFAULT_BASE_URL), cache=cache)
     )
-    runs = SchedulerRunRepository(database)
     radar_context = get_radar_context()
+    # Share the API's database so scheduler writes invalidate its graph cache.
+    database = radar_context.database
+    if database is None:
+        database = RadarDatabase(database_path)
+        database.migrate()
+    runs = SchedulerRunRepository(database)
     service = RadarService(
         discovery=MorphoDiscovery(
             morpho, catalog=CatalogRepository(catalog_path).list_entries()

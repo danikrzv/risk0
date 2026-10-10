@@ -1,5 +1,6 @@
 import os
-from dataclasses import dataclass
+import threading
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
@@ -36,12 +37,49 @@ from app.radar.repositories import (
 SERVICE_ROOT = Path(__file__).resolve().parents[2]
 
 
+class GraphCache:
+    """Built graph responses for the current database revision.
+
+    The web refetches GET /v1/graph after every SSE event and on focus, often
+    several times in a row with nothing changed in between. Any committed row
+    change bumps the revision and drops every cached entry.
+    """
+
+    def __init__(self, max_entries: int = 32) -> None:
+        self._max_entries = max_entries
+        self._revision = -1
+        self._entries: dict[tuple[object, ...], RadarGraphResponse] = {}
+        self._lock = threading.Lock()
+
+    def get(self, revision: int, key: tuple[object, ...]) -> RadarGraphResponse | None:
+        with self._lock:
+            if revision != self._revision:
+                return None
+            return self._entries.get(key)
+
+    def put(
+        self, revision: int, key: tuple[object, ...], response: RadarGraphResponse
+    ) -> None:
+        with self._lock:
+            if revision < self._revision:
+                return
+            if revision != self._revision:
+                self._revision = revision
+                self._entries = {}
+            if len(self._entries) >= self._max_entries:
+                self._entries.pop(next(iter(self._entries)))
+            self._entries[key] = response
+
+
 @dataclass(frozen=True, slots=True)
 class RadarContext:
     topology: TopologyRepository
     states: StateRepository
     incidents: IncidentRepository
     exposures: ExposureRepository
+    # When set, GET /v1/graph is cached per database revision.
+    database: RadarDatabase | None = None
+    graph_cache: GraphCache = field(default_factory=GraphCache, compare=False)
 
 
 @lru_cache(maxsize=1)
@@ -61,6 +99,7 @@ def get_radar_context() -> RadarContext:
         states=StateRepository(database),
         incidents=IncidentRepository(database),
         exposures=ExposureRepository(database),
+        database=database,
     )
 
 
@@ -75,6 +114,30 @@ def graph(
     visible: bool | None = None,
     incident_id: str | None = None,
     context: RadarContext = Depends(get_radar_context),
+) -> RadarGraphResponse:
+    key = (chain_id, entity_type, health_status, visible, incident_id)
+    # Read the revision before building: a write that commits mid-build bumps
+    # it, so this (possibly older) result is never served for the new data.
+    revision = context.database.revision if context.database is not None else None
+    if revision is not None:
+        cached = context.graph_cache.get(revision, key)
+        if cached is not None:
+            return cached.model_copy(update={"generated_at": datetime.now(UTC)})
+    response = _build_graph(
+        context, chain_id, entity_type, health_status, visible, incident_id
+    )
+    if revision is not None:
+        context.graph_cache.put(revision, key, response)
+    return response
+
+
+def _build_graph(
+    context: RadarContext,
+    chain_id: int | None,
+    entity_type: RadarEntityType | None,
+    health_status: HealthStatus | None,
+    visible: bool | None,
+    incident_id: str | None,
 ) -> RadarGraphResponse:
     entities = context.topology.entities(
         chain_id=chain_id, entity_type=entity_type, visible=visible

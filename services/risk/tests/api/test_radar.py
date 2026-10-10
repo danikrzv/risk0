@@ -329,3 +329,57 @@ def test_incident_graph_reads_health_and_exposure_impacts_once(
     assert response.status_code == 200
     assert calls["health"] == 1
     assert calls["exposure_impacts"] <= 1
+
+
+@pytest.fixture
+def cached_context(tmp_path):
+    from app.api.radar import RadarContext
+
+    database = RadarDatabase(tmp_path / "cached.sqlite3")
+    database.migrate()
+    return RadarContext(
+        topology=TopologyRepository(database),
+        states=StateRepository(database),
+        incidents=IncidentRepository(database),
+        exposures=ExposureRepository(database),
+        database=database,
+    )
+
+
+def test_graph_is_served_from_cache_until_the_database_changes(cached_context, monkeypatch):
+    from app.api.radar import get_radar_context
+
+    seed_graph(cached_context)
+    app.dependency_overrides[get_radar_context] = lambda: cached_context
+    calls = {"entities": 0}
+    entities = cached_context.topology.entities
+
+    def counted(**kwargs):
+        calls["entities"] += 1
+        return entities(**kwargs)
+
+    monkeypatch.setattr(cached_context.topology, "entities", counted)
+    try:
+        client = TestClient(app)
+        first = client.get("/v1/graph").json()
+        second = client.get("/v1/graph").json()
+        filtered = client.get("/v1/graph", params={"entity_type": "vault"}).json()
+        assert calls["entities"] == 2
+        assert second["entities"] == first["entities"]
+        assert len(filtered["entities"]) == 1
+
+        cached_context.states.set_health(health(MARKET, NOW, HealthStatus.CRITICAL))
+        third = client.get("/v1/graph").json()
+        assert calls["entities"] == 3
+        market = next(item for item in third["entities"] if item["entity_id"] == MARKET)
+        assert market["metadata"]["health_status"] == "CRITICAL"
+
+        # Reads and no-op writes do not invalidate the cache.
+        cached_context.incidents.list_notifications()
+        cached_context.states.append_snapshot(
+            snapshot(VAULT, NOW, source="https://rpc.example.invalid/key")
+        )
+        client.get("/v1/graph")
+        assert calls["entities"] == 3
+    finally:
+        app.dependency_overrides.clear()

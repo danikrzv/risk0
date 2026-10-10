@@ -1,4 +1,5 @@
 import copy
+from decimal import Decimal
 import json
 from pathlib import Path
 
@@ -233,3 +234,40 @@ def test_analysis_response_schema_rejects_json_numbers_for_domain_metrics(
 
     with pytest.raises(ValidationError):
         validator.validate(response)
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (Decimal("0E-18"), "0.000000000000000000"),
+        (Decimal("1E-7"), "0.0000001"),
+        (Decimal("-0"), "0"),
+        (Decimal("-0.000"), "0.000"),
+        (Decimal("1.500").quantize(Decimal("0.000001")), "1.500000"),
+        (Decimal("2.5E+3"), "2500"),
+        (Decimal("-1E-9"), "-0.000000001"),
+    ],
+)
+def test_contract_decimals_serialize_in_fixed_point_and_satisfy_response_schema(
+    value, expected
+):
+    from app.contracts.models import AnalysisResponse
+
+    response = valid_response()
+    response["exit_estimate"]["gas"] = str(value)
+    response["recommendation"]["expected_loss"] = str(value)
+    # Metrics are a Decimal | str union: domain code supplies Decimal objects.
+    response["graph"]["nodes"][0]["metrics"]["tiny"] = value
+    response["scenario_results"][0]["probability"]["central"] = str(value)
+    model = AnalysisResponse.model_validate(response)
+
+    dumped = model.model_dump(mode="json")
+
+    assert dumped["exit_estimate"]["gas"] == expected
+    assert dumped["recommendation"]["expected_loss"] == expected
+    assert dumped["graph"]["nodes"][0]["metrics"]["tiny"] == expected
+    assert dumped["scenario_results"][0]["probability"]["central"] == expected
+    assert model.exit_estimate.gas == value
+    Draft202012Validator(load_schema("analysis-response.schema.json")).validate(
+        json.loads(model.model_dump_json())
+    )

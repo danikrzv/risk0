@@ -52,7 +52,7 @@ export default function Home() {
   const [selectedRadarEntityId, setSelectedRadarEntityId] = useState<string | null>(null)
   const [exposureId, setExposureId] = useState<string | null>(null)
   const [exposureImpacts, setExposureImpacts] = useState<IncidentImpact[]>([])
-  const [exposureStatus, setExposureStatus] = useState<string | null>(null)
+  const [exposureStatus, setExposureStatus] = useState<{ kind: "ok" | "error"; message: string } | null>(null)
   const [exposureBusy, setExposureBusy] = useState(false)
   const [now, setNow] = useState(() => Date.now())
   // Identifies the latest analysis request; a response for an older one is dropped.
@@ -120,9 +120,9 @@ export default function Home() {
       const exposure = await createExposure(request)
       setExposureId(exposure.exposure_id)
       setExposureImpacts([])
-      setExposureStatus(`Exposure recorded: ${exposure.amount} ${exposure.numeraire}`)
+      setExposureStatus({ kind: "ok", message: `Exposure recorded: ${exposure.amount} ${exposure.numeraire}` })
     } catch (error) {
-      setExposureStatus(errorMessage(error))
+      setExposureStatus({ kind: "error", message: errorMessage(error) })
     } finally {
       setExposureBusy(false)
     }
@@ -183,7 +183,13 @@ export default function Home() {
 
   return (
     <TerminalShell
-      status={catalog.status === "error" ? "degraded" : "live"}
+      status={
+        catalog.status === "error" || radarError
+          ? "degraded"
+          : catalog.status === "loading" || !radarGraph
+            ? "connecting"
+            : "live"
+      }
       ticker={
         <SystemTicker
           catalogStatus={catalog.status}
@@ -223,7 +229,8 @@ export default function Home() {
           />
         </div>
       ) : radarError ? null : <p>Loading radar topology…</p>}
-      {exposureStatus ? <p role="status" className="exposure-status">{exposureStatus}</p> : null}
+      {exposureStatus?.kind === "ok" ? <p role="status" className="exposure-status">{exposureStatus.message}</p> : null}
+      {exposureStatus?.kind === "error" ? <p role="alert" className="alert">{exposureStatus.message}</p> : null}
 
       <section className="position-analysis-module" aria-labelledby="position-analysis-heading">
         <header className="module-heading">

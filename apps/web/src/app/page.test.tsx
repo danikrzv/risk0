@@ -173,4 +173,37 @@ describe("Home", () => {
     expect(screen.getByText("Select at least one scenario")).toBeInTheDocument()
     expect(fetchMock.mock.calls.filter(([url]) => url === "/api/analysis")).toHaveLength(0)
   })
+
+  it("shows CONNECTING rather than LIVE until the catalog and radar have loaded", async () => {
+    stubApi()
+    render(<Home />)
+
+    expect(screen.getByText("CONNECTING")).toBeInTheDocument()
+    expect(screen.queryByText("LIVE")).not.toBeInTheDocument()
+    expect(await screen.findByText("LIVE")).toBeInTheDocument()
+  })
+
+  it("reports a radar outage as DEGRADED", async () => {
+    const base = stubApi()
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => (
+      url === "/api/graph" ? Response.json({ error: "Risk service unavailable" }, { status: 502 }) : base(url, init as never)
+    )))
+    render(<Home />)
+
+    expect(await screen.findByText("DEGRADED")).toBeInTheDocument()
+    expect(screen.queryByText("LIVE")).not.toBeInTheDocument()
+  })
+
+  it("announces a failed exposure as an alert, not as a success status", async () => {
+    const base = stubApi()
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => (
+      url === "/api/exposures" ? Response.json({ error: "The risk service rejected this exposure" }, { status: 422 }) : base(url, init as never)
+    )))
+    render(<Home />)
+
+    fireEvent.click(await screen.findByRole("button", { name: "Add exposure" }))
+    expect(await screen.findByRole("alert")).toHaveTextContent("The risk service rejected this exposure")
+    expect(screen.queryByText("Exposure recorded", { exact: false })).not.toBeInTheDocument()
+  })
 })
+

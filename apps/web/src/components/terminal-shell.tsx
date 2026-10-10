@@ -1,16 +1,24 @@
 import type { ReactNode } from "react"
 
+export type TerminalStatus = "connecting" | "live" | "degraded"
+
+const STATUS_LABELS: Record<TerminalStatus, string> = {
+  connecting: "CONNECTING",
+  live: "LIVE",
+  degraded: "DEGRADED",
+}
+
 export function TerminalShell({
   children,
   status,
   ticker,
 }: {
   children: ReactNode
-  status: "live" | "degraded"
+  status: TerminalStatus
   ticker?: ReactNode
 }) {
   return (
-    <main className="terminal-shell">
+    <div className="terminal-shell">
       <header className="terminal-header">
         <div className="terminal-brand">
           <h1>Risk0</h1>
@@ -25,16 +33,16 @@ export function TerminalShell({
         </nav>
         <div className={`terminal-runtime terminal-runtime--${status}`}>
           <span className="terminal-runtime__dot" aria-hidden="true" />
-          {status === "live" ? "LIVE" : "DEGRADED"}
+          {STATUS_LABELS[status]}
         </div>
       </header>
       {ticker}
-      <div className="terminal-workspace">{children}</div>
+      <main className="terminal-workspace">{children}</main>
       <footer className="terminal-statusbar">
         <span>ENGINE v0.1.0 · LOCAL</span>
         <span>READ ONLY · 30-DAY HORIZON · NOT INVESTMENT ADVICE</span>
         <span>RPC SECRETS SERVER-SIDE</span>
       </footer>
-    </main>
+    </div>
   )
 }

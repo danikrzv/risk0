@@ -1,0 +1,49 @@
+{
+  "scenarios": [
+    {
+      "scenario_id": "stablecoin-depeg",
+      "name": "Stablecoin depeg",
+      "event_family": "asset_price",
+      "affected_node_types": ["asset"],
+      "severity": "0.10",
+      "probability_method": "empirical_rolling_window",
+      "threshold": "EURCV or USDC falls 10% from its reference value"
+    },
+    {
+      "scenario_id": "collateral-shock",
+      "name": "Collateral shock",
+      "event_family": "asset_price",
+      "affected_node_types": ["asset", "market"],
+      "severity": "0.15",
+      "probability_method": "empirical_rolling_window",
+      "threshold": "wstETH, WETH, or WBTC falls 15% over 24 hours"
+    },
+    {
+      "scenario_id": "oracle-failure",
+      "name": "Oracle failure",
+      "event_family": "oracle",
+      "affected_node_types": ["oracle", "market"],
+      "severity": "0.05",
+      "probability_method": "empirical_rolling_window",
+      "threshold": "Price is stale for 30 minutes or deviates by at least 5%"
+    },
+    {
+      "scenario_id": "liquidity-collapse",
+      "name": "Exit-liquidity collapse",
+      "event_family": "liquidity",
+      "affected_node_types": ["pool", "vault", "market"],
+      "severity": "0.80",
+      "probability_method": "empirical_rolling_window",
+      "threshold": "Executable Uniswap depth falls 80%"
+    },
+    {
+      "scenario_id": "protocol-impairment",
+      "name": "Protocol impairment",
+      "event_family": "protocol",
+      "affected_node_types": ["protocol", "vault", "market"],
+      "severity": "0.10",
+      "probability_method": "model_estimated_protocol",
+      "threshold": "A smart-contract or control failure causes at least a 10% loss"
+    }
+  ]
+}

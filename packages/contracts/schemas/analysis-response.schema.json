@@ -1,0 +1,155 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://risk0.local/schemas/analysis-response.schema.json",
+  "title": "AnalysisResponse",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["graph", "scenario_results", "exit_estimate", "recommendation", "analyzed_at"],
+  "properties": {
+    "graph": { "$ref": "#/$defs/RiskGraph" },
+    "scenario_results": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/ScenarioResult" }
+    },
+    "exit_estimate": { "$ref": "#/$defs/ExitEstimate" },
+    "recommendation": { "$ref": "#/$defs/Recommendation" },
+    "analyzed_at": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "DecimalString": {
+      "type": "string",
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$"
+    },
+    "NullableDecimalString": {
+      "oneOf": [
+        { "$ref": "#/$defs/DecimalString" },
+        { "type": "null" }
+      ]
+    },
+    "MetricValue": {
+      "type": ["string", "number", "boolean", "null"]
+    },
+    "RiskNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node_id", "node_type", "label", "metrics", "provenance", "freshness", "observed_at"],
+      "properties": {
+        "node_id": { "type": "string", "minLength": 1 },
+        "node_type": {
+          "enum": ["position", "vault", "market", "protocol", "asset", "oracle", "pool", "chain"]
+        },
+        "label": { "type": "string", "minLength": 1 },
+        "metrics": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/MetricValue" }
+        },
+        "provenance": { "type": "string", "minLength": 1 },
+        "freshness": { "enum": ["fresh", "stale_usable", "expired"] },
+        "observed_at": { "type": "string", "format": "date-time" }
+      }
+    },
+    "RiskEdge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "target", "relationship", "exposure_weight"],
+      "properties": {
+        "source": { "type": "string", "minLength": 1 },
+        "target": { "type": "string", "minLength": 1 },
+        "relationship": {
+          "enum": [
+            "allocated_to",
+            "lends",
+            "borrows",
+            "uses_collateral",
+            "uses_oracle",
+            "backed_by",
+            "exits_through",
+            "deployed_on"
+          ]
+        },
+        "exposure_weight": { "$ref": "#/$defs/NullableDecimalString" }
+      }
+    },
+    "RiskGraph": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nodes", "edges", "generated_at", "completeness_warnings"],
+      "properties": {
+        "nodes": { "type": "array", "items": { "$ref": "#/$defs/RiskNode" } },
+        "edges": { "type": "array", "items": { "$ref": "#/$defs/RiskEdge" } },
+        "generated_at": { "type": "string", "format": "date-time" },
+        "completeness_warnings": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "ProbabilityEstimate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "low", "central", "high", "confidence", "horizon_days", "explanation"],
+      "properties": {
+        "method": { "enum": ["empirical_rolling_window", "model_estimated_protocol", "unavailable"] },
+        "low": { "$ref": "#/$defs/NullableDecimalString" },
+        "central": { "$ref": "#/$defs/NullableDecimalString" },
+        "high": { "$ref": "#/$defs/NullableDecimalString" },
+        "confidence": { "enum": ["high", "medium", "low", "unavailable"] },
+        "horizon_days": { "type": "integer", "minimum": 1 },
+        "explanation": { "type": "string" }
+      }
+    },
+    "ScenarioResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scenario_id", "affected_path", "stressed_values", "hard_triggers", "impact", "impact_components", "probability", "confidence", "explanation"],
+      "properties": {
+        "scenario_id": { "type": "string", "minLength": 1 },
+        "affected_path": { "type": "array", "items": { "type": "string" } },
+        "stressed_values": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/MetricValue" }
+        },
+        "hard_triggers": { "type": "array", "items": { "type": "string" } },
+        "impact": { "$ref": "#/$defs/DecimalString" },
+        "impact_components": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/DecimalString" }
+        },
+        "probability": { "$ref": "#/$defs/ProbabilityEstimate" },
+        "confidence": { "enum": ["high", "medium", "low", "unavailable"] },
+        "explanation": { "type": "string" }
+      }
+    },
+    "ExitEstimate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["withdrawable", "route", "slippage", "fees", "gas", "price_impact", "total_cost", "quote_age_seconds", "warnings"],
+      "properties": {
+        "withdrawable": { "type": "boolean" },
+        "route": { "type": "array", "items": { "type": "string" } },
+        "slippage": { "$ref": "#/$defs/DecimalString" },
+        "fees": { "$ref": "#/$defs/DecimalString" },
+        "gas": { "$ref": "#/$defs/DecimalString" },
+        "price_impact": { "$ref": "#/$defs/DecimalString" },
+        "total_cost": { "$ref": "#/$defs/DecimalString" },
+        "quote_age_seconds": { "type": "integer", "minimum": 0 },
+        "quote_block": { "type": ["integer", "null"], "minimum": 0 },
+        "quoted_at": { "type": ["string", "null"], "format": "date-time" },
+        "warnings": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "Recommendation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["decision", "expected_loss", "exit_cost", "triggers", "dominant_dependency", "confidence", "explanation"],
+      "properties": {
+        "decision": { "enum": ["STAY", "EXIT", "UNAVAILABLE"] },
+        "expected_loss": { "$ref": "#/$defs/DecimalString" },
+        "expected_loss_low": { "$ref": "#/$defs/NullableDecimalString" },
+        "expected_loss_high": { "$ref": "#/$defs/NullableDecimalString" },
+        "exit_cost": { "$ref": "#/$defs/DecimalString" },
+        "triggers": { "type": "array", "items": { "type": "string" } },
+        "dominant_dependency": { "type": ["string", "null"] },
+        "confidence": { "enum": ["high", "medium", "low", "unavailable"] },
+        "explanation": { "type": "string" }
+      }
+    }
+  }
+}

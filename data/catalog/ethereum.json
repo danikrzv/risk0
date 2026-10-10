@@ -1,0 +1,69 @@
+{
+  "entries": [
+    {
+      "entity_id": "belem-rwa-eurcv",
+      "chain_id": 1,
+      "entity_type": "morpho_vault_v2",
+      "address_or_market_id": "0xD6d4b804014EF27836dBe9f8f6Bf6c71251548Ec",
+      "name": "Belem RWA EURCV",
+      "description": "Belem-named Morpho Vault V2 for EURCV lending.",
+      "provenance": "verified_belem",
+      "provenance_label": "Verified Belem-named, listed Morpho vault",
+      "supported": true,
+      "supported_modes": ["lender"],
+      "lltv": null
+    },
+    {
+      "entity_id": "mev-capital-weth",
+      "chain_id": 1,
+      "entity_type": "morpho_vault_v1",
+      "address_or_market_id": "0x9a8bC3B04b7f3D87cfC09ba407dCED575f2d61D8",
+      "name": "MEV Capital wETH",
+      "description": "Public MEV Capital Morpho vault distributed by Belem.",
+      "provenance": "belem_distributed",
+      "provenance_label": "Public MEV Capital vault; MEV publicly states that its fund is distributed by Belem",
+      "supported": true,
+      "supported_modes": ["lender"],
+      "lltv": null
+    },
+    {
+      "entity_id": "wsteth-weth-965",
+      "chain_id": 1,
+      "entity_type": "morpho_market",
+      "address_or_market_id": "0xb8fc70e82bc5bb53e773626fcc6a23f7eefa036918d7ef216ecfb1950a94a85e",
+      "name": "wstETH collateral / WETH debt",
+      "description": "Morpho market with wstETH collateral, WETH debt, and 96.5% LLTV.",
+      "provenance": "representative_proxy",
+      "provenance_label": "Representative liquid ETH recursive-borrowing market",
+      "supported": true,
+      "supported_modes": ["lender", "borrower"],
+      "lltv": "0.965"
+    },
+    {
+      "entity_id": "weth-usdc-860",
+      "chain_id": 1,
+      "entity_type": "morpho_market",
+      "address_or_market_id": "0x94b823e6bd8ea533b4e33fbc307faea0b307301bc48763acc4d4aa4def7636cd",
+      "name": "WETH collateral / USDC debt",
+      "description": "Morpho market with WETH collateral, USDC debt, and 86% LLTV.",
+      "provenance": "representative_proxy",
+      "provenance_label": "Representative stablecoin borrowing market",
+      "supported": true,
+      "supported_modes": ["lender", "borrower"],
+      "lltv": "0.86"
+    },
+    {
+      "entity_id": "wbtc-usdc-860",
+      "chain_id": 1,
+      "entity_type": "morpho_market",
+      "address_or_market_id": "0x3a85e619751152991742810df6ec69ce473daef99e28a64ab2340d7b7ccfee49",
+      "name": "WBTC collateral / USDC debt",
+      "description": "Morpho market with WBTC collateral, USDC debt, and 86% LLTV.",
+      "provenance": "representative_proxy",
+      "provenance_label": "Representative BTC-backed stablecoin borrowing market",
+      "supported": true,
+      "supported_modes": ["lender", "borrower"],
+      "lltv": "0.86"
+    }
+  ]
+}

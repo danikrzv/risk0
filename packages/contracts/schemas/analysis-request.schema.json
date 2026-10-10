@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://risk0.local/schemas/analysis-request.schema.json",
+  "title": "AnalysisRequest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["position", "scenarios"],
+  "properties": {
+    "position": { "$ref": "#/$defs/PositionInput" },
+    "scenarios": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/ScenarioSelection" }
+    }
+  },
+  "$defs": {
+    "DecimalString": {
+      "type": "string",
+      "pattern": "^(?:0|[1-9]\\d*)(?:\\.\\d+)?$"
+    },
+    "PositionInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "entity_id", "amount", "numeraire"],
+      "properties": {
+        "mode": { "enum": ["lender", "borrower"] },
+        "entity_id": { "type": "string", "minLength": 1 },
+        "amount": { "$ref": "#/$defs/DecimalString" },
+        "collateral_amount": { "$ref": "#/$defs/DecimalString" },
+        "debt_amount": { "$ref": "#/$defs/DecimalString" },
+        "ltv": { "$ref": "#/$defs/DecimalString" },
+        "numeraire": { "type": "string", "minLength": 1 }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "mode": { "const": "lender" } }, "required": ["mode"] },
+          "then": {
+            "not": {
+              "anyOf": [
+                { "required": ["collateral_amount"] },
+                { "required": ["debt_amount"] },
+                { "required": ["ltv"] }
+              ]
+            }
+          }
+        },
+        {
+          "if": { "properties": { "mode": { "const": "borrower" } }, "required": ["mode"] },
+          "then": { "required": ["collateral_amount", "debt_amount", "ltv"] }
+        }
+      ]
+    },
+    "ScenarioSelection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scenario_id", "severity"],
+      "properties": {
+        "scenario_id": {
+          "enum": [
+            "stablecoin-depeg",
+            "collateral-shock",
+            "oracle-failure",
+            "liquidity-collapse",
+            "protocol-impairment"
+          ]
+        },
+        "severity": { "$ref": "#/$defs/DecimalString" }
+      }
+    }
+  }
+}

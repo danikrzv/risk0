@@ -65,4 +65,34 @@ describe("NotificationToast", () => {
     fireEvent.click(screen.getByRole("button", { name: "Dismiss Oracle deviation notification" }))
     expect(onDismiss).toHaveBeenCalledOnce()
   })
+
+  it("uses a polite status for non-critical notifications and never moves focus", () => {
+    const before = document.activeElement
+    render(<NotificationToast notification={{ ...notification, severity: "WARNING" }} onDismiss={() => {}} />)
+
+    expect(screen.getByRole("status")).toHaveTextContent("Oracle deviation")
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+    expect(document.activeElement).toBe(before)
+  })
+
+  it("pauses auto-dismissal while the toast has keyboard focus or hover", () => {
+    vi.useFakeTimers()
+    const onDismiss = vi.fn()
+    render(<NotificationToast notification={notification} onDismiss={onDismiss} dismissAfterMs={4_000} />)
+    const toast = screen.getByRole("alert")
+
+    fireEvent.focus(screen.getByRole("button", { name: "Dismiss Oracle deviation notification" }))
+    act(() => vi.advanceTimersByTime(10_000))
+    expect(onDismiss).not.toHaveBeenCalled()
+
+    fireEvent.blur(screen.getByRole("button", { name: "Dismiss Oracle deviation notification" }))
+    fireEvent.mouseEnter(toast)
+    act(() => vi.advanceTimersByTime(10_000))
+    expect(onDismiss).not.toHaveBeenCalled()
+
+    fireEvent.mouseLeave(toast)
+    act(() => vi.advanceTimersByTime(4_000))
+    expect(onDismiss).toHaveBeenCalledOnce()
+  })
 })
+

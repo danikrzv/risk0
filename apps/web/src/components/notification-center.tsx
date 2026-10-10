@@ -1,7 +1,7 @@
 "use client"
 
 import type { Notification } from "@risk0/contracts"
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
 import { useRadarEvents } from "../hooks/use-radar-events"
 import { getNotifications, markNotificationRead } from "../lib/api"
@@ -21,19 +21,29 @@ export function NotificationCenter({
   const [open, setOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  // Only the latest history response is applied; toast requests from
+  // superseded fetches are kept and resolved against it.
+  const requestToken = useRef(0)
+  const pendingToastIds = useRef(new Set<string>())
+  const markingIds = useRef(new Set<string>())
+
   const refresh = useCallback(async (toastId?: string, showUnread = false) => {
+    if (toastId) pendingToastIds.current.add(toastId)
+    const token = ++requestToken.current
     try {
       const response = await getNotifications(undefined, { limit: HISTORY_LIMIT })
+      if (token !== requestToken.current) return
       setNotifications(response.notifications)
+      const ids = new Set(response.notifications.map((item) => item.notification_id))
+      const newToasts = [...pendingToastIds.current].filter((id) => ids.has(id))
+      pendingToastIds.current.clear()
       if (showUnread) {
-        const unreadIds = response.notifications.filter((item) => item.read_at === null).map((item) => item.notification_id)
-        setToastIds((current) => [...new Set([...current, ...unreadIds])])
+        newToasts.push(...response.notifications.filter((item) => item.read_at === null).map((item) => item.notification_id))
       }
-      if (toastId && response.notifications.some((item) => item.notification_id === toastId)) {
-        setToastIds((current) => current.includes(toastId) ? current : [...current, toastId])
-      }
+      if (newToasts.length > 0) setToastIds((current) => [...new Set([...current, ...newToasts])])
       setError(null)
     } catch {
+      if (token !== requestToken.current) return
       setError("Notifications are temporarily unavailable.")
     }
   }, [])
@@ -63,6 +73,9 @@ export function NotificationCenter({
   )
 
   const markRead = async (notification: Notification) => {
+    // Ignore repeat clicks while the first request is in flight.
+    if (notification.read_at !== null || markingIds.current.has(notification.notification_id)) return
+    markingIds.current.add(notification.notification_id)
     try {
       const updated = await markNotificationRead(notification.notification_id)
       setNotifications((current) => current.map((item) => (
@@ -71,6 +84,8 @@ export function NotificationCenter({
       setError(null)
     } catch {
       setError("The notification could not be marked as read.")
+    } finally {
+      markingIds.current.delete(notification.notification_id)
     }
   }
 

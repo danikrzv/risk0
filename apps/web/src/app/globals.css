@@ -1,0 +1,25 @@
+:root {
+  color: #111827;
+  background: #f9fafb;
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+body {
+  margin: 0;
+}
+
+main {
+  max-width: 48rem;
+  margin: 0 auto;
+  padding: 6rem 1.5rem;
+}
+
+h1 {
+  margin: 0;
+  font-size: 3rem;
+}
+
+p {
+  margin-top: 1rem;
+  line-height: 1.6;
+}

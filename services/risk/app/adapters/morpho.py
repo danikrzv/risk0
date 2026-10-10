@@ -1,6 +1,7 @@
+import hashlib
 import json
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, DecimalException, localcontext
 from typing import Any, TypeVar
@@ -10,12 +11,13 @@ import httpx
 from pydantic import BaseModel, ValidationError
 
 from app.config import CachePolicy
-from app.contracts.models import FreshnessStatus
+from app.contracts.models import DecimalValue, FreshnessStatus, HexIdentifier
 from app.domain.snapshots import (
     AllocationSnapshot,
     AssetInfo,
     DataEnvelope,
     MarketSnapshot,
+    SnapshotModel,
     VaultSnapshot,
     VaultVersion,
 )
@@ -27,6 +29,13 @@ DEFAULT_BASE_URL = "https://api.morpho.org"
 CHAIN_ID = 1
 CACHE_NAMESPACE = "morpho"
 SNAPSHOT_POLICY = CachePolicy(ttl=timedelta(seconds=60), retention=timedelta(hours=24))
+DISCOVERY_POLICY = CachePolicy(ttl=timedelta(minutes=30), retention=timedelta(hours=24))
+DEFAULT_DISCOVERY_PAGE_SIZE = 100
+# Nested adapter positions make Vault V2 pages expensive under Morpho's complexity cap.
+MAX_VAULT_V2_PAGE_SIZE = 20
+DEFAULT_MAX_POSITIONS_PER_MARKET = 2000
+MAX_DISCOVERY_PAGES = 500
+ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
 WAD_DECIMALS = 18
 RAY_DECIMALS = 27
 
@@ -49,7 +58,137 @@ VAULT_V2_QUERY = (
     f"address listed asset {{ {_ASSET_FIELDS} }} totalAssetsUsd liquidityUsd }} }}"
 )
 
+_DISCOVERY_ASSET_FIELDS = "address symbol decimals price { usd }"
+_PAGE_INFO = "pageInfo { count countTotal limit skip }"
+DISCOVERY_CHAINS_QUERY = "query MorphoChains { chains { id network } }"
+_DISCOVERY_MARKET_FIELDS = (
+    "marketId listed lltv irmAddress oracle { address type } "
+    f"loanAsset {{ {_DISCOVERY_ASSET_FIELDS} }} "
+    f"collateralAsset {{ {_DISCOVERY_ASSET_FIELDS} }} badDebt {{ underlying usd }} "
+    "state { blockNumber timestamp supplyAssets borrowAssets liquidityAssets "
+    "collateralAssets supplyAssetsUsd borrowAssetsUsd liquidityAssetsUsd "
+    "collateralAssetsUsd utilization price }"
+)
+_DISCOVERY_VAULT_V1_FIELDS = (
+    f"address name symbol listed asset {{ {_DISCOVERY_ASSET_FIELDS} }} "
+    "liquidity { underlying usd } state { blockNumber timestamp curator totalAssets "
+    "totalAssetsUsd allocation { supplyAssets supplyAssetsUsd supplyCap "
+    "market { marketId } } }"
+)
+_DISCOVERY_VAULT_V2_FIELDS = (
+    f"address name symbol listed asset {{ {_DISCOVERY_ASSET_FIELDS} }} "
+    "curator { address } totalAssets totalAssetsUsd liquidity liquidityUsd idleAssets "
+    "adapters(first: 10) { items { address type assets "
+    "... on MorphoMarketV1Adapter { positions(first: 50) { items { "
+    "market { marketId } state { supplyAssets supplyAssetsUsd } } } } "
+    "... on MetaMorphoAdapter { metaMorpho { address } } } }"
+)
+_POSITION_FIELDS = (
+    "healthFactor user { address } "
+    "market { marketId loanAsset { decimals } collateralAsset { decimals } } "
+    "state { supplyAssets borrowAssets collateral }"
+)
+
 ModelT = TypeVar("ModelT", bound=BaseModel)
+
+
+class DiscoveredAsset(SnapshotModel):
+    address: HexIdentifier
+    symbol: str
+    decimals: int
+    price_usd: DecimalValue | None
+
+
+class DiscoveredMarket(SnapshotModel):
+    chain_id: int
+    market_id: HexIdentifier
+    listed: bool | None
+    lltv: DecimalValue
+    loan_asset: DiscoveredAsset
+    collateral_asset: DiscoveredAsset | None
+    oracle_address: HexIdentifier | None
+    oracle_type: str | None
+    irm_address: HexIdentifier | None
+    supply_assets: DecimalValue
+    borrow_assets: DecimalValue
+    liquidity_assets: DecimalValue
+    collateral_assets: DecimalValue | None
+    supply_usd: DecimalValue | None
+    borrow_usd: DecimalValue | None
+    liquidity_usd: DecimalValue | None
+    collateral_usd: DecimalValue | None
+    utilization: DecimalValue | None
+    bad_debt_assets: DecimalValue | None
+    bad_debt_usd: DecimalValue | None
+    # Collateral priced in loan-asset units, as the market oracle reports it.
+    oracle_price: DecimalValue | None
+    state_block_number: int | None
+    state_timestamp: int | None
+
+
+class DiscoveredAllocation(SnapshotModel):
+    market_id: HexIdentifier | None
+    vault_address: HexIdentifier | None = None
+    adapter_address: HexIdentifier | None = None
+    supply_assets: DecimalValue
+    supply_usd: DecimalValue | None = None
+    supply_cap: DecimalValue | None = None
+
+
+class DiscoveredVault(SnapshotModel):
+    chain_id: int
+    address: HexIdentifier
+    version: VaultVersion
+    name: str
+    symbol: str
+    listed: bool | None
+    asset: DiscoveredAsset
+    curator: HexIdentifier | None
+    total_assets: DecimalValue
+    total_assets_usd: DecimalValue | None
+    liquidity_assets: DecimalValue | None
+    liquidity_usd: DecimalValue | None
+    idle_assets: DecimalValue | None
+    allocations: tuple[DiscoveredAllocation, ...]
+    # Assets that Morpho does not attribute to a market or vault.
+    unmodelled_assets: DecimalValue
+    state_timestamp: int | None
+
+
+class RejectedItem(SnapshotModel):
+    identifier: str
+    reason: str
+
+
+class MarketDiscovery(SnapshotModel):
+    items: tuple[DiscoveredMarket, ...]
+    rejected: tuple[RejectedItem, ...] = ()
+
+
+class VaultDiscovery(SnapshotModel):
+    items: tuple[DiscoveredVault, ...]
+    rejected: tuple[RejectedItem, ...] = ()
+
+
+class MorphoChain(SnapshotModel):
+    chain_id: int
+    network: str
+
+
+class MarketPosition(SnapshotModel):
+    user: HexIdentifier
+    supply_assets: DecimalValue
+    borrow_assets: DecimalValue
+    collateral_assets: DecimalValue
+    health_factor: DecimalValue | None
+
+
+class MarketPositions(SnapshotModel):
+    chain_id: int
+    market_id: HexIdentifier
+    positions: tuple[MarketPosition, ...]
+    # False when the position list was truncated or an item could not be parsed.
+    complete: bool
 
 
 class MorphoError(Exception):
@@ -88,9 +227,13 @@ class MorphoClient:
         max_attempts: int = 3,
         backoff_seconds: float = 0.25,
         sleep: Callable[[float], None] = time.sleep,
+        discovery_page_size: int = DEFAULT_DISCOVERY_PAGE_SIZE,
+        max_positions_per_market: int = DEFAULT_MAX_POSITIONS_PER_MARKET,
     ) -> None:
         if max_attempts < 1:
             raise ValueError("max_attempts must be at least 1")
+        if discovery_page_size < 1 or max_positions_per_market < 1:
+            raise ValueError("page size and position cap must be positive")
         self._base_url = _public_base_url(base_url)
         self._http = http_client or httpx.Client(
             headers={"user-agent": "risk0-risk/0.1.0"}
@@ -101,6 +244,8 @@ class MorphoClient:
         self._max_attempts = max_attempts
         self._backoff_seconds = backoff_seconds
         self._sleep = sleep
+        self._page_size = discovery_page_size
+        self._max_positions = max_positions_per_market
 
     def get_market(
         self, market_id: str, *, chain_id: int = CHAIN_ID
@@ -129,11 +274,52 @@ class MorphoClient:
             lambda: self._fetch_allocations(address, version, chain_id),
         )
 
+    def list_chains(self) -> DataEnvelope[tuple[MorphoChain, ...]]:
+        return self._load(
+            "chains",
+            DataEnvelope[tuple[MorphoChain, ...]],
+            self._fetch_chains,
+            policy=DISCOVERY_POLICY,
+        )
+
+    def discover_markets(
+        self, chain_id: int, *, market_ids: Sequence[str] | None = None
+    ) -> DataEnvelope[MarketDiscovery]:
+        """All markets of a chain, or a monitored subset, read page by page."""
+        return self._load(
+            f"discovery_markets:{chain_id}:{_subset_key(market_ids)}",
+            DataEnvelope[MarketDiscovery],
+            lambda: self._fetch_market_discovery(chain_id, market_ids),
+            policy=DISCOVERY_POLICY if market_ids is None else SNAPSHOT_POLICY,
+        )
+
+    def discover_vaults(
+        self, chain_id: int, *, addresses: Sequence[str] | None = None
+    ) -> DataEnvelope[VaultDiscovery]:
+        """All Vault V1 and V2 vaults of a chain, or a monitored subset."""
+        return self._load(
+            f"discovery_vaults:{chain_id}:{_subset_key(addresses)}",
+            DataEnvelope[VaultDiscovery],
+            lambda: self._fetch_vault_discovery(chain_id, addresses),
+            policy=DISCOVERY_POLICY if addresses is None else SNAPSHOT_POLICY,
+        )
+
+    def get_market_positions(
+        self, market_id: str, *, chain_id: int = CHAIN_ID
+    ) -> DataEnvelope[MarketPositions]:
+        return self._load(
+            f"positions:{chain_id}:{market_id.lower()}",
+            DataEnvelope[MarketPositions],
+            lambda: self._fetch_positions(market_id, chain_id),
+        )
+
     def _load(
         self,
         key: str,
         envelope_type: type[ModelT],
         fetch: Callable[[], ModelT],
+        *,
+        policy: CachePolicy = SNAPSHOT_POLICY,
     ) -> ModelT:
         cached = (
             self._cache.get(CACHE_NAMESPACE, key, self._clock())
@@ -170,7 +356,7 @@ class MorphoClient:
                 key,
                 envelope.model_dump_json().encode(),
                 envelope.fetched_at,
-                SNAPSHOT_POLICY,
+                policy,
             )
         return envelope
 
@@ -361,6 +547,169 @@ class MorphoClient:
             block_number=int(payload["last_indexed_block"]),
         )
 
+    def _fetch_chains(self) -> DataEnvelope[tuple[MorphoChain, ...]]:
+        fetched_at = self._clock()
+        body = self._request("POST", "/graphql", {"query": DISCOVERY_CHAINS_QUERY})
+        if body.get("errors"):
+            raise _ProviderError("Morpho GraphQL returned errors for chains")
+        chains = (body.get("data") or {}).get("chains")
+        if not isinstance(chains, list):
+            raise _ProviderError("Morpho GraphQL returned no chains")
+        return DataEnvelope[tuple[MorphoChain, ...]](
+            value=tuple(
+                MorphoChain(chain_id=int(chain["id"]), network=str(chain["network"]))
+                for chain in chains
+            ),
+            source=self._url("/graphql"),
+            fetched_at=fetched_at,
+            freshness=FreshnessStatus.FRESH,
+        )
+
+    def _fetch_market_discovery(
+        self, chain_id: int, market_ids: Sequence[str] | None
+    ) -> DataEnvelope[MarketDiscovery]:
+        fetched_at = self._clock()
+        variables: dict[str, object] = {"chainIds": [chain_id]}
+        where = "chainId_in: $chainIds"
+        declared = "$chainIds: [Int!]"
+        if market_ids is not None:
+            variables["marketIds"] = list(market_ids)
+            where += ", uniqueKey_in: $marketIds"
+            declared += ", $marketIds: [String!]"
+        query = (
+            f"query DiscoverMarkets({declared}, $first: Int!, $skip: Int!) {{ "
+            f"markets(first: $first, skip: $skip, where: {{ {where} }}, "
+            "orderBy: UniqueKey, orderDirection: Asc) { "
+            f"items {{ {_DISCOVERY_MARKET_FIELDS} }} {_PAGE_INFO} }} }}"
+        )
+        raw_items, _ = self._paginate("markets", query, variables, self._page_size)
+        items, rejected = _parse_items(
+            raw_items,
+            lambda raw: _discovered_market(raw, chain_id),
+            lambda raw: str(raw.get("marketId")),
+        )
+        return DataEnvelope[MarketDiscovery](
+            value=MarketDiscovery(items=items, rejected=rejected),
+            source=self._url("/graphql"),
+            fetched_at=fetched_at,
+            freshness=FreshnessStatus.FRESH,
+            block_number=max(
+                (m.state_block_number for m in items if m.state_block_number is not None),
+                default=None,
+            ),
+        )
+
+    def _fetch_vault_discovery(
+        self, chain_id: int, addresses: Sequence[str] | None
+    ) -> DataEnvelope[VaultDiscovery]:
+        fetched_at = self._clock()
+        variables: dict[str, object] = {"chainIds": [chain_id]}
+        where = "chainId_in: $chainIds"
+        declared = "$chainIds: [Int!]"
+        if addresses is not None:
+            variables["addresses"] = list(addresses)
+            where += ", address_in: $addresses"
+            declared += ", $addresses: [String!]"
+        v1_query = (
+            f"query DiscoverVaults({declared}, $first: Int!, $skip: Int!) {{ "
+            f"vaults(first: $first, skip: $skip, where: {{ {where} }}, "
+            "orderBy: Address, orderDirection: Asc) { "
+            f"items {{ {_DISCOVERY_VAULT_V1_FIELDS} }} {_PAGE_INFO} }} }}"
+        )
+        v2_query = (
+            f"query DiscoverVaultV2s({declared}, $first: Int!, $skip: Int!) {{ "
+            f"vaultV2s(first: $first, skip: $skip, where: {{ {where} }}, "
+            "orderBy: Address, orderDirection: Asc) { "
+            f"items {{ {_DISCOVERY_VAULT_V2_FIELDS} }} {_PAGE_INFO} }} }}"
+        )
+        v1_raw, _ = self._paginate("vaults", v1_query, variables, self._page_size)
+        v2_raw, _ = self._paginate(
+            "vaultV2s", v2_query, variables, min(self._page_size, MAX_VAULT_V2_PAGE_SIZE)
+        )
+        v1_items, v1_rejected = _parse_items(
+            v1_raw,
+            lambda raw: _discovered_vault_v1(raw, chain_id),
+            lambda raw: str(raw.get("address")),
+        )
+        v2_items, v2_rejected = _parse_items(
+            v2_raw,
+            lambda raw: _discovered_vault_v2(raw, chain_id),
+            lambda raw: str(raw.get("address")),
+        )
+        return DataEnvelope[VaultDiscovery](
+            value=VaultDiscovery(
+                items=v1_items + v2_items, rejected=v1_rejected + v2_rejected
+            ),
+            source=self._url("/graphql"),
+            fetched_at=fetched_at,
+            freshness=FreshnessStatus.FRESH,
+        )
+
+    def _fetch_positions(
+        self, market_id: str, chain_id: int
+    ) -> DataEnvelope[MarketPositions]:
+        fetched_at = self._clock()
+        query = (
+            "query MarketPositions($chainIds: [Int!], $marketIds: [String!], "
+            "$first: Int!, $skip: Int!) { marketPositions(first: $first, skip: $skip, "
+            "where: { chainId_in: $chainIds, marketUniqueKey_in: $marketIds }, "
+            "orderBy: BorrowShares, orderDirection: Desc) { "
+            f"items {{ {_POSITION_FIELDS} }} {_PAGE_INFO} }} }}"
+        )
+        raw_items, exhausted = self._paginate(
+            "marketPositions",
+            query,
+            {"chainIds": [chain_id], "marketIds": [market_id]},
+            self._page_size,
+            limit=self._max_positions,
+        )
+        positions, rejected = _parse_items(
+            raw_items,
+            lambda raw: _market_position(raw, market_id),
+            lambda raw: str((raw.get("user") or {}).get("address")),
+        )
+        return DataEnvelope[MarketPositions](
+            value=MarketPositions(
+                chain_id=chain_id,
+                market_id=market_id,
+                positions=positions,
+                complete=exhausted and not rejected,
+            ),
+            source=self._url("/graphql"),
+            fetched_at=fetched_at,
+            freshness=FreshnessStatus.FRESH,
+        )
+
+    def _paginate(
+        self,
+        root: str,
+        query: str,
+        variables: dict[str, object],
+        page_size: int,
+        *,
+        limit: int | None = None,
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """Read every page; returns the raw items and whether the listing was exhausted."""
+        items: list[dict[str, Any]] = []
+        for _ in range(MAX_DISCOVERY_PAGES):
+            page_data = self._graphql(
+                query, {**variables, "first": page_size, "skip": len(items)}, root
+            )
+            page = page_data.get("items")
+            if not isinstance(page, list) or not all(isinstance(i, dict) for i in page):
+                raise _ProviderError(f"Morpho GraphQL returned no {root} items")
+            items.extend(page)
+            total = (page_data.get("pageInfo") or {}).get("countTotal")
+            exhausted = (
+                len(page) < page_size
+                or (isinstance(total, int) and len(items) >= total)
+            )
+            if limit is not None and len(items) >= limit:
+                return items[:limit], exhausted and len(items) <= limit
+            if exhausted:
+                return items, True
+        raise _ProviderError(f"Morpho {root} pagination exceeded {MAX_DISCOVERY_PAGES} pages")
+
     def _get(self, path: str) -> dict[str, Any]:
         body = self._request("GET", path)
         data = body.get("data") if isinstance(body, dict) else None
@@ -530,6 +879,230 @@ def _v1_allocation_rows(
     if queue_indices != set(range(len(allocations))):
         raise _DataConflictError("V1 withdraw queue is incomplete")
     return rows
+
+
+_ITEM_ERRORS = (
+    _ProviderError,
+    AttributeError,
+    DecimalException,
+    KeyError,
+    OverflowError,
+    TypeError,
+    ValueError,
+    ValidationError,
+)
+
+
+def _parse_items(
+    raw_items: Sequence[dict[str, Any]],
+    parse: Callable[[dict[str, Any]], ModelT],
+    identify: Callable[[dict[str, Any]], str],
+) -> tuple[tuple[ModelT, ...], tuple[RejectedItem, ...]]:
+    """Parse items independently so one malformed entity never aborts the batch."""
+    parsed: list[ModelT] = []
+    rejected: list[RejectedItem] = []
+    seen: set[str] = set()
+    for raw in raw_items:
+        identifier = identify(raw)
+        if identifier.lower() in seen:
+            continue
+        seen.add(identifier.lower())
+        try:
+            parsed.append(parse(raw))
+        except _ITEM_ERRORS as error:
+            rejected.append(RejectedItem(identifier=identifier, reason=type(error).__name__))
+    return tuple(parsed), tuple(rejected)
+
+
+def _discovered_asset(raw: dict[str, Any]) -> DiscoveredAsset:
+    return DiscoveredAsset(
+        address=raw["address"],
+        symbol=str(raw["symbol"]),
+        decimals=int(raw["decimals"]),
+        price_usd=_optional_decimal((raw.get("price") or {}).get("usd")),
+    )
+
+
+def _discovered_market(raw: dict[str, Any], chain_id: int) -> DiscoveredMarket:
+    loan = _discovered_asset(raw["loanAsset"])
+    collateral = (
+        _discovered_asset(raw["collateralAsset"]) if raw.get("collateralAsset") else None
+    )
+    state = raw.get("state")
+    if not isinstance(state, dict):
+        raise _ProviderError("market state is missing")
+    supply = _units(state["supplyAssets"], loan.decimals)
+    borrow = _units(state["borrowAssets"], loan.decimals)
+    if borrow > supply:
+        raise _DataConflictError("market borrow assets exceed supply assets")
+    oracle = raw.get("oracle") or {}
+    bad_debt = raw.get("badDebt") or {}
+    price = state.get("price")
+    return DiscoveredMarket(
+        chain_id=chain_id,
+        market_id=raw["marketId"],
+        listed=raw.get("listed"),
+        lltv=_units(raw["lltv"], WAD_DECIMALS),
+        loan_asset=loan,
+        collateral_asset=collateral,
+        oracle_address=_nonzero_address(oracle.get("address")),
+        oracle_type=oracle.get("type"),
+        irm_address=_nonzero_address(raw.get("irmAddress")),
+        supply_assets=supply,
+        borrow_assets=borrow,
+        liquidity_assets=(
+            _units(state["liquidityAssets"], loan.decimals)
+            if state.get("liquidityAssets") is not None
+            else supply - borrow
+        ),
+        collateral_assets=(
+            _optional_units(state.get("collateralAssets"), collateral.decimals)
+            if collateral is not None
+            else None
+        ),
+        supply_usd=_optional_decimal(state.get("supplyAssetsUsd")),
+        borrow_usd=_optional_decimal(state.get("borrowAssetsUsd")),
+        liquidity_usd=_optional_decimal(state.get("liquidityAssetsUsd")),
+        collateral_usd=_optional_decimal(state.get("collateralAssetsUsd")),
+        # Derived from exact integer units instead of the provider's float ratio.
+        utilization=borrow / supply if supply else None,
+        bad_debt_assets=_optional_units(bad_debt.get("underlying"), loan.decimals),
+        bad_debt_usd=_optional_decimal(bad_debt.get("usd")),
+        # Morpho oracle prices are scaled by 1e(36 + loan decimals - collateral decimals).
+        oracle_price=(
+            Decimal(_nonnegative_integer(price)).scaleb(
+                collateral.decimals - loan.decimals - 36
+            )
+            if collateral is not None and price is not None
+            else None
+        ),
+        state_block_number=_optional_integer(state.get("blockNumber")),
+        state_timestamp=_optional_integer(state.get("timestamp")),
+    )
+
+
+def _discovered_vault_v1(raw: dict[str, Any], chain_id: int) -> DiscoveredVault:
+    asset = _discovered_asset(raw["asset"])
+    state = raw.get("state")
+    if not isinstance(state, dict):
+        raise _ProviderError("vault state is missing")
+    total = _units(state["totalAssets"], asset.decimals)
+    allocations = tuple(
+        DiscoveredAllocation(
+            market_id=item["market"]["marketId"],
+            supply_assets=_units(item["supplyAssets"], asset.decimals),
+            supply_usd=_optional_decimal(item.get("supplyAssetsUsd")),
+            supply_cap=_optional_units(item.get("supplyCap"), asset.decimals),
+        )
+        for item in state.get("allocation") or ()
+    )
+    liquidity = raw.get("liquidity") or {}
+    allocated = sum((allocation.supply_assets for allocation in allocations), Decimal(0))
+    return DiscoveredVault(
+        chain_id=chain_id,
+        address=raw["address"],
+        version="v1",
+        name=str(raw["name"]),
+        symbol=str(raw["symbol"]),
+        listed=raw.get("listed"),
+        asset=asset,
+        curator=_nonzero_address(state.get("curator")),
+        total_assets=total,
+        total_assets_usd=_optional_decimal(state.get("totalAssetsUsd")),
+        liquidity_assets=_optional_units(liquidity.get("underlying"), asset.decimals),
+        liquidity_usd=_optional_decimal(liquidity.get("usd")),
+        idle_assets=None,
+        allocations=allocations,
+        unmodelled_assets=max(total - allocated, Decimal(0)),
+        state_timestamp=_optional_integer(state.get("timestamp")),
+    )
+
+
+def _discovered_vault_v2(raw: dict[str, Any], chain_id: int) -> DiscoveredVault:
+    asset = _discovered_asset(raw["asset"])
+    decimals = asset.decimals
+    total = _units(raw["totalAssets"], decimals)
+    idle = _optional_units(raw.get("idleAssets"), decimals)
+    allocations: list[DiscoveredAllocation] = []
+    for adapter in (raw.get("adapters") or {}).get("items") or ():
+        adapter_address = adapter["address"]
+        if "positions" in adapter:
+            for position in (adapter["positions"] or {}).get("items") or ():
+                allocations.append(
+                    DiscoveredAllocation(
+                        market_id=position["market"]["marketId"],
+                        adapter_address=adapter_address,
+                        supply_assets=_units(position["state"]["supplyAssets"], decimals),
+                        supply_usd=_optional_decimal(position["state"].get("supplyAssetsUsd")),
+                    )
+                )
+        elif adapter.get("metaMorpho"):
+            allocations.append(
+                DiscoveredAllocation(
+                    market_id=None,
+                    vault_address=adapter["metaMorpho"]["address"],
+                    adapter_address=adapter_address,
+                    supply_assets=_units(adapter["assets"], decimals),
+                )
+            )
+    modelled = sum((allocation.supply_assets for allocation in allocations), Decimal(0))
+    # Truncated or unknown adapters stay visible as unmodelled exposure.
+    unmodelled = total - (idle or Decimal(0)) - modelled
+    return DiscoveredVault(
+        chain_id=chain_id,
+        address=raw["address"],
+        version="v2",
+        name=str(raw["name"]),
+        symbol=str(raw["symbol"]),
+        listed=raw.get("listed"),
+        asset=asset,
+        curator=_nonzero_address((raw.get("curator") or {}).get("address")),
+        total_assets=total,
+        total_assets_usd=_optional_decimal(raw.get("totalAssetsUsd")),
+        liquidity_assets=_optional_units(raw.get("liquidity"), decimals),
+        liquidity_usd=_optional_decimal(raw.get("liquidityUsd")),
+        idle_assets=idle,
+        allocations=tuple(allocations),
+        unmodelled_assets=max(unmodelled, Decimal(0)),
+        state_timestamp=None,
+    )
+
+
+def _market_position(raw: dict[str, Any], market_id: str) -> MarketPosition:
+    market = raw["market"]
+    if str(market["marketId"]).lower() != market_id.lower():
+        raise _DataConflictError("position belongs to another market")
+    loan_decimals = int(market["loanAsset"]["decimals"])
+    collateral = market.get("collateralAsset")
+    state = raw["state"]
+    return MarketPosition(
+        user=raw["user"]["address"],
+        supply_assets=_units(state["supplyAssets"], loan_decimals),
+        borrow_assets=_units(state["borrowAssets"], loan_decimals),
+        collateral_assets=(
+            _units(state["collateral"], int(collateral["decimals"]))
+            if collateral
+            else Decimal(0)
+        ),
+        health_factor=_optional_decimal(raw.get("healthFactor")),
+    )
+
+
+def _nonzero_address(value: object | None) -> str | None:
+    if value is None or str(value).lower() == ZERO_ADDRESS:
+        return None
+    return str(value)
+
+
+def _optional_integer(value: object | None) -> int | None:
+    return None if value is None else _nonnegative_integer(value)
+
+
+def _subset_key(identifiers: Sequence[str] | None) -> str:
+    if identifiers is None:
+        return "all"
+    canonical = ",".join(sorted({identifier.lower() for identifier in identifiers}))
+    return hashlib.sha256(canonical.encode()).hexdigest()[:16]
 
 
 def _vault_path(address: str, version: VaultVersion, chain_id: int) -> str:

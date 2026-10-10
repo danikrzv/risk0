@@ -1,0 +1,333 @@
+{
+  "_meta": {
+    "recorded_at": "2026-10-10T09:10:52+00:00",
+    "source": "https://api.morpho.org",
+    "sanitization": "Public, unauthenticated Morpho API responses. GraphQL extensions and V2 cap_data blobs removed. No credentials, RPC URLs, or user positions."
+  },
+  "rest": {
+    "/v0/vaults-v1/1:0x9a8bC3B04b7f3D87cfC09ba407dCED575f2d61D8/allocations": {
+      "data": {
+        "chain_id": 1,
+        "vault_address": "0x9a8bC3B04b7f3D87cfC09ba407dCED575f2d61D8",
+        "last_indexed_block": "26161049",
+        "allocations": [
+          {
+            "market_id": "0x138eec0e4a1937eb92ebc70043ed539661dd7ed5a89fb92a720b341650288a40",
+            "supply_assets": "500945515961190",
+            "supply_shares": "473331676352246863954",
+            "supply_cap": "1500000000000000000000",
+            "supply_queue_index": null,
+            "withdraw_queue_index": 4,
+            "pending": {
+              "supply_cap": null,
+              "removal": null
+            }
+          },
+          {
+            "market_id": "0x2cbfb38723a8d9a2ad1607015591a78cfe3a5949561b39bde42c242b22874ec0",
+            "supply_assets": "0",
+            "supply_shares": "0",
+            "supply_cap": "11000000000000000000000",
+            "supply_queue_index": null,
+            "withdraw_queue_index": 5,
+            "pending": {
+              "supply_cap": null,
+              "removal": null
+            }
+          },
+          {
+            "market_id": "0x58e212060645d18eab6d9b2af3d56fbc906a92ff5667385f616f662c70372284",
+            "supply_assets": "0",
+            "supply_shares": "0",
+            "supply_cap": "24519928653854221733733552434404946937899825954937634815",
+            "supply_queue_index": 0,
+            "withdraw_queue_index": 1,
+            "pending": {
+              "supply_cap": null,
+              "removal": null
+            }
+          },
+          {
+            "market_id": "0x698fe98247a40c5771537b5786b2f3f9d78eb487b4ce4d75533cd0e94d88a115",
+            "supply_assets": "0",
+            "supply_shares": "0",
+            "supply_cap": "12000000000000000000000",
+            "supply_queue_index": null,
+            "withdraw_queue_index": 2,
+            "pending": {
+              "supply_cap": null,
+              "removal": null
+            }
+          },
+          {
+            "market_id": "0xb8fc70e82bc5bb53e773626fcc6a23f7eefa036918d7ef216ecfb1950a94a85e",
+            "supply_assets": "1853796077972177618759",
+            "supply_shares": "1762325816593150783422224971",
+            "supply_cap": "20000000000000000000000",
+            "supply_queue_index": null,
+            "withdraw_queue_index": 3,
+            "pending": {
+              "supply_cap": null,
+              "removal": null
+            }
+          },
+          {
+            "market_id": "0xd0e50cdac92fe2172043f5e0c36532c6369d24947e40968f34a5e8819ca9ec5d",
+            "supply_assets": "3327467958792115683",
+            "supply_shares": "3178038074074314931752706",
+            "supply_cap": "20000000000000000000000",
+            "supply_queue_index": null,
+            "withdraw_queue_index": 0,
+            "pending": {
+              "supply_cap": null,
+              "removal": null
+            }
+          }
+        ]
+      }
+    },
+    "/v0/vaults-v2/1:0xD6d4b804014EF27836dBe9f8f6Bf6c71251548Ec/allocations": {
+      "data": {
+        "chain_id": 1,
+        "vault_address": "0xD6d4b804014EF27836dBe9f8f6Bf6c71251548Ec",
+        "last_indexed_block": "26161049",
+        "allocations": [
+          {
+            "adapter_address": "0xA671880d813D4cacacA63984bc0Ab676c400A874",
+            "adapter_kind": "morpho_market_v1_v2",
+            "target": {
+              "type": "blue_market"
+            },
+            "pending": {
+              "removal": null
+            },
+            "caps": [
+              {
+                "cap_id": "0x006d9a6c3b485174b18fc342b7efc241c73608fb65948f1c5eb7fe2384b61a11",
+                "allocated_assets": "4710196039134523050689375",
+                "absolute_cap": "60000000000000000000000000",
+                "relative_cap_wad": "1000000000000000000",
+                "pending": {
+                  "absolute_cap": null,
+                  "relative_cap_wad": null
+                },
+                "real_assets": "4710489786050453858863531",
+                "cap_type": "adapter"
+              },
+              {
+                "cap_id": "0x1e3dd651ea306de21297a2315af9710d02e9bcd50a7fc2a5e5cb1049954142a7",
+                "allocated_assets": "0",
+                "absolute_cap": "10000000000000000000000000",
+                "relative_cap_wad": "1000000000000000000",
+                "pending": {
+                  "absolute_cap": null,
+                  "relative_cap_wad": null
+                },
+                "expected_supply_assets": "0",
+                "cap_type": "market_v1",
+                "market_id": "0x36da61bf253b8a7e07888cb96dbcde65001508159928801aeca932a5b5548119"
+              },
+              {
+                "cap_id": "0x1f7927a248920f5c156dbd2df2ccf88508a1d0d32b197eb29274f133e29c9e9a",
+                "allocated_assets": "97960099067656330051679",
+                "absolute_cap": "10000000000000000000000000",
+                "relative_cap_wad": "1000000000000000000",
+                "pending": {
+                  "absolute_cap": null,
+                  "relative_cap_wad": null
+                },
+                "expected_supply_assets": "97963851054512925777903",
+                "cap_type": "market_v1",
+                "market_id": "0x0b352b7550acdb1f39fea4b8f9ef8ac2d7953613b92599610b8fbec8a98a51d1"
+              },
+              {
+                "cap_id": "0x3798efb92782bac0ba99c8e5cfb365485033da73d7147fb5e921693e06c7562f",
+                "allocated_assets": "116434210965386688171283",
+                "absolute_cap": "10000000000000000000000000",
+                "relative_cap_wad": "1000000000000000000",
+                "pending": {
+                  "absolute_cap": null,
+                  "relative_cap_wad": null
+                },
+                "expected_supply_assets": "116438655432021512082392",
+                "cap_type": "market_v1",
+                "market_id": "0x82053fe2fc3a3d6cb856458948e9c3589e76f20f3a2079606739b517587267ce"
+              },
+              {
+                "cap_id": "0x81573bd029c8ec632c676d03061272ae3487b113904db2f84f2b0917dab0df7f",
+                "allocated_assets": "2000237926929516549",
+                "absolute_cap": "10000000000000000000000000",
+                "relative_cap_wad": "1000000000000000000",
+                "pending": {
+                  "absolute_cap": null,
+                  "relative_cap_wad": null
+                },
+                "expected_supply_assets": "2000449006715478736",
+                "cap_type": "market_v1",
+                "market_id": "0xcde1b09204b4a790e47ef833d4235762121a0e44c4dbb91cd9a2093e88ac6e82"
+              },
+              {
+                "cap_id": "0x89035b2f6e1ba50fc827bfc8a1c5bb46f1cc6fbb61ec14997752ec2db5759eb4",
+                "allocated_assets": "4040271572604377627960706",
+                "absolute_cap": "10000000000000000000000000",
+                "relative_cap_wad": "1000000000000000000",
+                "pending": {
+                  "absolute_cap": null,
+                  "relative_cap_wad": null
+                },
+                "expected_supply_assets": "4040539765404757307752844",
+                "cap_type": "market_v1",
+                "market_id": "0x987b2c1979c6cfd6b7833d9b30c09b96ec6de1666579582d8f17730e20dd19b0"
+              },
+              {
+                "cap_id": "0x967ec6900a918b24c8765dc01ac71377916f886ab2cf2cf21c80bc8052d19b8d",
+                "allocated_assets": "1000000000000000079",
+                "absolute_cap": "10000000000000000000000000",
+                "relative_cap_wad": "1000000000000000000",
+                "pending": {
+                  "absolute_cap": null,
+                  "relative_cap_wad": null
+                },
+                "expected_supply_assets": "1000059584323934758",
+                "cap_type": "market_v1",
+                "market_id": "0x237dd7d99a2a8b7583d7f746f1a1b95ea62f727ed7601902e6fe1c1bcf1cf8ba"
+              },
+              {
+                "cap_id": "0xa16a67e51a17a83be534326c8e5931e7e0a6529e71b6e19d6fdde6f2f5de9e06",
+                "allocated_assets": "0",
+                "absolute_cap": "10000000000000000000000000",
+                "relative_cap_wad": "1000000000000000000",
+                "pending": {
+                  "absolute_cap": null,
+                  "relative_cap_wad": null
+                },
+                "expected_supply_assets": "0",
+                "cap_type": "market_v1",
+                "market_id": "0xaa7231d6bee28b578efe38b52e801d5d3067023853342fc06ded437d2a80ef98"
+              },
+              {
+                "cap_id": "0xf10b2eda2e3d702164b8e0d1bbe8afa0e3e9f74744f017f11be01338171cd000",
+                "allocated_assets": "455527156259175474989079",
+                "absolute_cap": "10000000000000000000000000",
+                "relative_cap_wad": "1000000000000000000",
+                "pending": {
+                  "absolute_cap": null,
+                  "relative_cap_wad": null
+                },
+                "expected_supply_assets": "455544513650571073836898",
+                "cap_type": "market_v1",
+                "market_id": "0xb7a75cabc2e8eadd0bc661340a9e359d9828bed6d5cbbcd64188bca8c01e399e"
+              }
+            ]
+          }
+        ],
+        "unscoped_caps": [
+          {
+            "cap_id": "0x13ff47043c4f28ff9eb52ff2a760b64b77707c842acabb83558f6415c9cb4797",
+            "cap_data": "0x0000000000000000000000000000000000000000000000000000000000000040000000000000000000000000cbb7c0000ab88b473b1f5afd9ef808440eed33bf000000000000000000000000000000000000000000000000000000000000000f636f6c6c61746572616c546f6b656e0000000000000000000000000000000000",
+            "allocated_assets": "116434210965386688171283",
+            "absolute_cap": "10000000000000000000000000",
+            "relative_cap_wad": "1000000000000000000",
+            "pending": {
+              "absolute_cap": null,
+              "relative_cap_wad": null
+            },
+            "cap_type": "collateral",
+            "collateral_address": "0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf"
+          },
+          {
+            "cap_id": "0x644698140be2401f673292c17fbe32608ebdc9372b8fca4bfc33acdf2fd10aea",
+            "cap_data": "0x0000000000000000000000000000000000000000000000000000000000000040000000000000000000000000a0769f7a8fc65e47de93797b4e21c073c117fc80000000000000000000000000000000000000000000000000000000000000000f636f6c6c61746572616c546f6b656e0000000000000000000000000000000000",
+            "allocated_assets": "0",
+            "absolute_cap": "10000000000000000000000000",
+            "relative_cap_wad": "1000000000000000000",
+            "pending": {
+              "absolute_cap": null,
+              "relative_cap_wad": null
+            },
+            "cap_type": "collateral",
+            "collateral_address": "0xa0769f7A8fC65e47dE93797b4e21C073c117Fc80"
+          },
+          {
+            "cap_id": "0x658f024c5612c3bfd149e5647e912985f4ca0d4b5913d353875fdf817005b02e",
+            "cap_data": "0x0000000000000000000000000000000000000000000000000000000000000040000000000000000000000000c6dec62c975f20e60635ddd1341f3ea35bc284c5000000000000000000000000000000000000000000000000000000000000000f636f6c6c61746572616c546f6b656e0000000000000000000000000000000000",
+            "allocated_assets": "1000000000000000079",
+            "absolute_cap": "10000000000000000000000000",
+            "relative_cap_wad": "1000000000000000000",
+            "pending": {
+              "absolute_cap": null,
+              "relative_cap_wad": null
+            },
+            "cap_type": "collateral",
+            "collateral_address": "0xc6deC62C975F20E60635ddD1341f3Ea35Bc284C5"
+          },
+          {
+            "cap_id": "0x7e50b2d1a555e26ad34679567e2d319a7fdafeabb38b0957566156a1c9369ae4",
+            "cap_data": "0x00000000000000000000000000000000000000000000000000000000000000400000000000000000000000002260fac5e5542a773aa44fbcfedf7c193bc2c599000000000000000000000000000000000000000000000000000000000000000f636f6c6c61746572616c546f6b656e0000000000000000000000000000000000",
+            "allocated_assets": "455527156259175474989079",
+            "absolute_cap": "10000000000000000000000000",
+            "relative_cap_wad": "1000000000000000000",
+            "pending": {
+              "absolute_cap": null,
+              "relative_cap_wad": null
+            },
+            "cap_type": "collateral",
+            "collateral_address": "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599"
+          },
+          {
+            "cap_id": "0x7fec14a26d24d99916f8800202b21d034d3b543349fc0e6632a4bd78a2891a20",
+            "cap_data": "0x00000000000000000000000000000000000000000000000000000000000000400000000000000000000000007f39c581f595b53c5cb19bd0b3f8da6c935e2ca0000000000000000000000000000000000000000000000000000000000000000f636f6c6c61746572616c546f6b656e0000000000000000000000000000000000",
+            "allocated_assets": "97960099067656330051679",
+            "absolute_cap": "10000000000000000000000000",
+            "relative_cap_wad": "1000000000000000000",
+            "pending": {
+              "absolute_cap": null,
+              "relative_cap_wad": null
+            },
+            "cap_type": "collateral",
+            "collateral_address": "0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0"
+          },
+          {
+            "cap_id": "0x8f45e7559a59ef29993698c4de6fe3a8a3f4f47291dbc64f52c1536557854bf1",
+            "cap_data": "0x00000000000000000000000000000000000000000000000000000000000000400000000000000000000000000990b149e915cb08e2143a5c6f669c907eddc8b0000000000000000000000000000000000000000000000000000000000000000f636f6c6c61746572616c546f6b656e0000000000000000000000000000000000",
+            "allocated_assets": "0",
+            "absolute_cap": "10000000000000000000000000",
+            "relative_cap_wad": "1000000000000000000",
+            "pending": {
+              "absolute_cap": null,
+              "relative_cap_wad": null
+            },
+            "cap_type": "collateral",
+            "collateral_address": "0x0990b149e915cb08E2143a5c6f669c907edDC8B0"
+          },
+          {
+            "cap_id": "0x9842778560fbb7ab970aac108a4d56e5bd2e4ac476c318c253d82bbcafe72122",
+            "cap_data": "0x0000000000000000000000000000000000000000000000000000000000000040000000000000000000000000beef0c075da5d01112ae5cf34d257074fb5ddb2f000000000000000000000000000000000000000000000000000000000000000f636f6c6c61746572616c546f6b656e0000000000000000000000000000000000",
+            "allocated_assets": "2000237926929516549",
+            "absolute_cap": "10000000000000000000000000",
+            "relative_cap_wad": "1000000000000000000",
+            "pending": {
+              "absolute_cap": null,
+              "relative_cap_wad": null
+            },
+            "cap_type": "collateral",
+            "collateral_address": "0xbeef0C075Da5D01112AE5cF34d257074fB5DDB2f"
+          },
+          {
+            "cap_id": "0xced6bcd42f6189b95e30421cbfd5286e62303e0ed5128d96177402ec10520003",
+            "cap_data": "0x00000000000000000000000000000000000000000000000000000000000000400000000000000000000000002f8bae126b8d416c009b82ccd60e4f9cabbd7702000000000000000000000000000000000000000000000000000000000000000f636f6c6c61746572616c546f6b656e0000000000000000000000000000000000",
+            "allocated_assets": "4040271572604377627960706",
+            "absolute_cap": "10000000000000000000000000",
+            "relative_cap_wad": "1000000000000000000",
+            "pending": {
+              "absolute_cap": null,
+              "relative_cap_wad": null
+            },
+            "cap_type": "collateral",
+            "collateral_address": "0x2F8bae126b8d416C009b82Ccd60e4f9cAbbd7702"
+          }
+        ]
+      }
+    }
+  }
+}

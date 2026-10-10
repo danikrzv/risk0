@@ -1,0 +1,134 @@
+{
+  "_meta": {
+    "recorded_at": "2026-10-10T09:10:52+00:00",
+    "source": "https://api.morpho.org",
+    "sanitization": "Public, unauthenticated Morpho API responses. GraphQL extensions and V2 cap_data blobs removed. No credentials, RPC URLs, or user positions."
+  },
+  "rest": {
+    "/v0/vaults-v1/1:0x9a8bC3B04b7f3D87cfC09ba407dCED575f2d61D8": {
+      "data": {
+        "chain_id": 1,
+        "address": "0x9a8bC3B04b7f3D87cfC09ba407dCED575f2d61D8",
+        "last_indexed_block": "26161049",
+        "version": "1.0",
+        "name": "MEV Capital wETH",
+        "symbol": "MCwETH",
+        "asset": {
+          "address": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+          "decimals": 18,
+          "name": "Wrapped Ether",
+          "symbol": "WETH"
+        },
+        "factory_address": "0xA9c3D3a366466Fa809d1Ae982Fb2c46E5fC41101",
+        "creation_block_number": "20406925",
+        "fee_wad": "100000000000000000",
+        "fee_recipient": "0x38afC3aA2c76b4cA1F8e1DabA68e998e1F4782DB",
+        "skim_recipient": null,
+        "owner": "0x38afC3aA2c76b4cA1F8e1DabA68e998e1F4782DB",
+        "curator": null,
+        "guardian": "0x777498D046d593F747Fd5884A73B3b9964479711",
+        "timelock_seconds": 259200
+      }
+    },
+    "/v0/vaults-v1/1:0x9a8bC3B04b7f3D87cfC09ba407dCED575f2d61D8/state": {
+      "data": {
+        "chain_id": 1,
+        "address": "0x9a8bC3B04b7f3D87cfC09ba407dCED575f2d61D8",
+        "last_indexed_block": "26161049",
+        "total_assets": "1857124314225046976544",
+        "total_supply": "1716770725426909970912",
+        "withdrawable_assets": "1857124314225046976544",
+        "share_price_ray": "1081754416428108203029071944"
+      }
+    },
+    "/v0/vaults-v2/1:0xD6d4b804014EF27836dBe9f8f6Bf6c71251548Ec": {
+      "data": {
+        "chain_id": 1,
+        "address": "0xD6d4b804014EF27836dBe9f8f6Bf6c71251548Ec",
+        "last_indexed_block": "26161049",
+        "version": "2.0",
+        "name": "Belem RWA EURCV",
+        "symbol": "rwaEURCV",
+        "asset": {
+          "address": "0x5F7827FDeb7c20b443265Fc2F40845B715385Ff2",
+          "decimals": 18,
+          "name": "EUR CoinVertible",
+          "symbol": "EURCV"
+        },
+        "decimals_offset": 0,
+        "factory_address": "0xA1D94F746dEfa1928926b84fB2596c06926C0405",
+        "creation_block_number": "25873730",
+        "owner": "0xbBacDCFB9691DFA1066aB29edfcc4A73f6DEf918",
+        "curator": "0xbBacDCFB9691DFA1066aB29edfcc4A73f6DEf918",
+        "timelock_seconds": 604800,
+        "management_fee_wad": null,
+        "management_fee_recipient": null,
+        "performance_fee_wad": "100000000000000000",
+        "performance_fee_recipient": "0x4E6514b9118C64a4B3Df41e03660E55D1E00b646",
+        "max_rate_per_second_wad": "47564687975",
+        "adapter_registry": "0x3696c5eAe4a7Ffd04Ea163564571E9CD8Ed9364e",
+        "liquidity_adapter": "0xA671880d813D4cacacA63984bc0Ab676c400A874",
+        "liquidity_data": "0x987b2c1979c6cfd6b7833d9b30c09b96ec6de1666579582d8f17730e20dd19b0",
+        "gates": {
+          "send_shares": null,
+          "receive_shares": null,
+          "send_assets": null,
+          "receive_assets": null
+        }
+      }
+    },
+    "/v1/vaults-v2/1:0xD6d4b804014EF27836dBe9f8f6Bf6c71251548Ec/state": {
+      "data": {
+        "chain_id": 1,
+        "address": "0xD6d4b804014EF27836dBe9f8f6Bf6c71251548Ec",
+        "last_indexed_block": "26161049",
+        "last_accrual_timestamp": 1791623455,
+        "total_assets": "4710489785220272556475282",
+        "total_supply": "4706286000088412850920956",
+        "withdrawable_assets": "361743300394771869707524",
+        "allocated_assets": "4710489781768333655901879",
+        "idle_assets": "3451938900573403",
+        "share_price_ray": "1000893227723895388581300577"
+      }
+    }
+  },
+  "graphql": {
+    "vault_v1:0x9a8bC3B04b7f3D87cfC09ba407dCED575f2d61D8": {
+      "data": {
+        "vaultByAddress": {
+          "address": "0x9a8bC3B04b7f3D87cfC09ba407dCED575f2d61D8",
+          "listed": true,
+          "asset": {
+            "address": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+            "symbol": "WETH",
+            "decimals": 18,
+            "price": {
+              "usd": 2492.8486759318967
+            }
+          },
+          "state": {
+            "totalAssetsUsd": 4628941.175712276
+          }
+        }
+      }
+    },
+    "vault_v2:0xD6d4b804014EF27836dBe9f8f6Bf6c71251548Ec": {
+      "data": {
+        "vaultV2ByAddress": {
+          "address": "0xD6d4b804014EF27836dBe9f8f6Bf6c71251548Ec",
+          "listed": true,
+          "asset": {
+            "address": "0x5F7827FDeb7c20b443265Fc2F40845B715385Ff2",
+            "symbol": "EURCV",
+            "decimals": 18,
+            "price": {
+              "usd": 1.1188871754765473
+            }
+          },
+          "totalAssetsUsd": 5270506.457568962,
+          "liquidityUsd": 404749.93962627044
+        }
+      }
+    }
+  }
+}

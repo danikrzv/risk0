@@ -274,5 +274,71 @@ describe("Home", () => {
     expect(button("Institutional USDC Peer CRITICAL")).toHaveAttribute("aria-pressed", "true")
     expect(button("Belem Sentinel USDC CRITICAL")).toHaveAttribute("aria-pressed", "false")
   })
-})
 
+  it("shows loading skeletons until the catalog and radar arrive", async () => {
+    stubApi()
+    render(<Home />)
+
+    expect(screen.getByText("Loading curated catalog…")).toBeInTheDocument()
+    expect(screen.getByText("Loading radar topology…")).toBeInTheDocument()
+    expect(await screen.findByRole("heading", { name: "Morpho radar graph" })).toBeInTheDocument()
+    await screen.findByRole("radio", { name: /Belem RWA EURCV/ })
+    expect(screen.queryByText("Loading curated catalog…")).not.toBeInTheDocument()
+    expect(screen.queryByText("Loading radar topology…")).not.toBeInTheDocument()
+  })
+
+  it("explains an empty radar instead of drawing an empty graph", async () => {
+    const base = stubApi()
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => (
+      url === "/api/graph" ? Response.json({ ...radarGraph, entities: [] }) : base(url)
+    )))
+    render(<Home />)
+
+    expect(await screen.findByText("Radar has no data yet — discovery runs hourly")).toBeInTheDocument()
+    expect(screen.queryByRole("region", { name: "Exposure" })).not.toBeInTheDocument()
+  })
+
+  it("retries the catalog and radar with backoff while the risk service is busy", async () => {
+    const base = stubApi()
+    let busyCatalog = 1
+    let busyGraph = 2
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url === "/api/catalog" && busyCatalog-- > 0) {
+        return Response.json({ error: "Risk service is busy — retrying" }, { status: 503 })
+      }
+      if (url === "/api/graph" && busyGraph-- > 0) {
+        return Response.json({ error: "Risk service is starting or unreachable" }, { status: 503 })
+      }
+      return base(url)
+    })
+    vi.stubGlobal("fetch", fetchMock)
+    render(<Home />)
+
+    // Retried failures are announced politely and never as a dead-end alert.
+    expect(await screen.findByText("Risk service is busy — retrying")).toHaveAttribute("role", "status")
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+    expect(screen.getByText("Loading curated catalog…")).toBeInTheDocument()
+    expect(screen.getByText("Loading radar topology…")).toBeInTheDocument()
+
+    expect(await screen.findByRole("radio", { name: /Belem RWA EURCV/ }, { timeout: 4_000 })).toBeInTheDocument()
+    // The radar is still retrying once the catalog error is gone.
+    expect(
+      await screen.findByText("Risk service is starting or unreachable — retrying automatically", {}, { timeout: 4_000 }),
+    ).toHaveAttribute("role", "status")
+    expect(await screen.findByRole("button", { name: /Belem Sentinel USDC HEALTHY/ }, { timeout: 6_000 })).toBeInTheDocument()
+    expect(fetchMock.mock.calls.filter(([url]) => url === "/api/catalog")).toHaveLength(2)
+    expect(fetchMock.mock.calls.filter(([url]) => url === "/api/graph")).toHaveLength(3)
+    expect(screen.queryByText(/retrying/)).not.toBeInTheDocument()
+    expect(await screen.findByText("LIVE")).toBeInTheDocument()
+  }, 15_000)
+
+  it("does not retry a non-retryable failure", async () => {
+    const fetchMock = vi.fn(async (_url: string) => Response.json({ error: "Risk service unavailable" }, { status: 502 }))
+    vi.stubGlobal("fetch", fetchMock)
+    render(<Home />)
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Risk service unavailable")
+    await new Promise((resolve) => setTimeout(resolve, 1_500))
+    expect(fetchMock.mock.calls.filter(([url]) => url === "/api/catalog")).toHaveLength(1)
+  })
+})

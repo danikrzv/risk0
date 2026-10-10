@@ -4,10 +4,15 @@ import type { Notification } from "@risk0/contracts"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
 import { useRadarEvents } from "../hooks/use-radar-events"
-import { getNotifications, markNotificationRead } from "../lib/api"
-import { NotificationToast } from "./notification-toast"
+import { getNotifications, markAllNotificationsRead, markNotificationRead } from "../lib/api"
+import { NotificationBurstToast, NotificationToast } from "./notification-toast"
+import { ShowMore, useListLimit } from "./show-more"
 
 const HISTORY_LIMIT = 100
+/** History entries rendered at once; the rest are revealed on request. */
+const HISTORY_PAGE_SIZE = 20
+/** More toasts than this on screen at once are grouped into one summary toast. */
+export const MAX_INDIVIDUAL_TOASTS = 3
 
 export function NotificationCenter({
   onIncidentClick,
@@ -17,9 +22,12 @@ export function NotificationCenter({
   toastDurationMs?: number
 }) {
   const [notifications, setNotifications] = useState<Notification[]>([])
+  const [hasOlder, setHasOlder] = useState(false)
   const [toastIds, setToastIds] = useState<string[]>([])
   const [open, setOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [markingAll, setMarkingAll] = useState(false)
+  const [historyLimit, showMoreHistory] = useListLimit(HISTORY_PAGE_SIZE)
 
   // Only the latest history response is applied; toast requests from
   // superseded fetches are kept and resolved against it.
@@ -34,6 +42,7 @@ export function NotificationCenter({
       const response = await getNotifications(undefined, { limit: HISTORY_LIMIT })
       if (token !== requestToken.current) return
       setNotifications(response.notifications)
+      setHasOlder(response.next_cursor !== null)
       const ids = new Set(response.notifications.map((item) => item.notification_id))
       const newToasts = [...pendingToastIds.current].filter((id) => ids.has(id))
       pendingToastIds.current.clear()
@@ -65,12 +74,16 @@ export function NotificationCenter({
     () => notifications.filter((notification) => notification.read_at === null).length,
     [notifications],
   )
-  const toasts = useMemo(
-    () => toastIds
-      .map((id) => notifications.find((notification) => notification.notification_id === id))
-      .filter((notification): notification is Notification => notification !== undefined),
-    [notifications, toastIds],
-  )
+  // Only the newest page is loaded; when all of it is unread, older ones may be too.
+  const unreadLabel = hasOlder && unreadCount === notifications.length && unreadCount > 0
+    ? `${unreadCount}+`
+    : String(unreadCount)
+  const toasts = useMemo(() => {
+    const byId = new Map(notifications.map((notification) => [notification.notification_id, notification]))
+    return toastIds
+      .map((id) => byId.get(id))
+      .filter((notification): notification is Notification => notification !== undefined)
+  }, [notifications, toastIds])
 
   const markRead = async (notification: Notification) => {
     // Ignore repeat clicks while the first request is in flight.
@@ -89,26 +102,60 @@ export function NotificationCenter({
     }
   }
 
+  const markAllRead = async () => {
+    if (markingAll) return
+    setMarkingAll(true)
+    try {
+      await markAllNotificationsRead()
+      const readAt = new Date().toISOString()
+      setNotifications((current) => current.map((item) => (item.read_at === null ? { ...item, read_at: readAt } : item)))
+      setToastIds([])
+      setError(null)
+      // Pick up server read timestamps (and anything that arrived meanwhile).
+      void refresh()
+    } catch {
+      setError("Notifications could not be marked as read.")
+    } finally {
+      setMarkingAll(false)
+    }
+  }
+
+  const dismissAllToasts = useCallback(() => setToastIds([]), [])
+  const openHistory = useCallback(() => {
+    setOpen(true)
+    setToastIds([])
+  }, [])
+
+  const shownHistory = notifications.slice(0, historyLimit)
   return (
     <section aria-label="Notification center">
       <button
         type="button"
         aria-expanded={open}
         aria-controls="notification-history"
-        aria-label={`Notifications, ${unreadCount} unread`}
+        aria-label={`Notifications, ${unreadLabel} unread`}
         onClick={() => setOpen((current) => !current)}
       >
-        Notifications{unreadCount > 0 ? ` (${unreadCount})` : ""}
+        Notifications{unreadCount > 0 ? ` (${unreadLabel})` : ""}
       </button>
 
       {error ? <p role="status">{error}</p> : null}
 
       {open ? (
         <div id="notification-history" aria-label="Notification history">
-          <h2>Notification history</h2>
+          <div className="notification-history__header">
+            <h2>Notification history</h2>
+            <button
+              type="button"
+              onClick={() => void markAllRead()}
+              disabled={markingAll || unreadCount === 0}
+            >
+              {markingAll ? "Marking…" : "Mark all read"}
+            </button>
+          </div>
           {notifications.length === 0 ? <p>No notifications.</p> : (
-            <ul>
-              {notifications.map((notification) => (
+            <ul id="notification-history-list">
+              {shownHistory.map((notification) => (
                 <li key={notification.notification_id}>
                   <strong>{notification.title}</strong>
                   <p>{notification.message}</p>
@@ -137,11 +184,26 @@ export function NotificationCenter({
               ))}
             </ul>
           )}
+          <ShowMore
+            shown={shownHistory.length}
+            total={notifications.length}
+            pageSize={HISTORY_PAGE_SIZE}
+            noun="notifications"
+            controls="notification-history-list"
+            onShowMore={showMoreHistory}
+          />
         </div>
       ) : null}
 
       <div aria-label="Live notifications">
-        {toasts.map((notification) => (
+        {toasts.length > MAX_INDIVIDUAL_TOASTS ? (
+          <NotificationBurstToast
+            notifications={toasts}
+            dismissAfterMs={toastDurationMs}
+            onDismiss={dismissAllToasts}
+            onOpenHistory={openHistory}
+          />
+        ) : toasts.map((notification) => (
           <NotificationToast
             key={notification.notification_id}
             notification={notification}

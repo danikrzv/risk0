@@ -10,7 +10,10 @@ import {
   getNotifications,
   getRadarEventsUrl,
   getRadarGraph,
+  isRetryableError,
+  markAllNotificationsRead,
   markNotificationRead,
+  retryDelayMs,
   runAnalysis,
 } from "./api"
 
@@ -162,5 +165,25 @@ describe("browser API client", () => {
       "/api/graph?incident_graph_id=incident%3Aoracle%2F1",
       expect.objectContaining({ method: "GET" }),
     )
+  })
+
+  it("marks every notification read through the same-origin proxy", async () => {
+    const fetchMock = vi.fn(async () => Response.json({ schema_version: "1.0.0", updated: 3 }))
+    vi.stubGlobal("fetch", fetchMock)
+
+    await expect(markAllNotificationsRead()).resolves.toEqual({ schema_version: "1.0.0", updated: 3 })
+    expect(fetchMock).toHaveBeenCalledWith("/api/notifications/read-all", expect.objectContaining({ method: "POST" }))
+  })
+
+  it("retries only busy or unreachable failures, with capped exponential backoff", () => {
+    expect(isRetryableError(new ApiError("Risk service is busy — retrying", 503))).toBe(true)
+    expect(isRetryableError(new ApiError("Could not reach the Risk0 server", 0))).toBe(true)
+    expect(isRetryableError(new ApiError("Risk service unavailable", 502))).toBe(false)
+    expect(isRetryableError(new Error("boom"))).toBe(false)
+
+    const middle = () => 0.5
+    expect([0, 1, 2, 3, 10].map((attempt) => retryDelayMs(attempt, middle))).toEqual([1_000, 2_000, 4_000, 8_000, 30_000])
+    expect(retryDelayMs(0, () => 0)).toBe(800)
+    expect(retryDelayMs(0, () => 1)).toBe(1_200)
   })
 })

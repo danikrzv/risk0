@@ -1,5 +1,7 @@
 import type { Notification, NotificationResponse } from "@risk0/contracts"
 
+import { upstreamErrorFailure, upstreamStatusFailure } from "../../../lib/upstream-errors"
+
 const UPSTREAM_TIMEOUT_MS = 15_000
 const MAX_BODY_CHARACTERS = 4_096
 
@@ -52,14 +54,14 @@ export async function GET(request: Request): Promise<Response> {
       cache: "no-store",
       signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
     })
-    if (!upstream.ok) return Response.json({ error: "Risk service unavailable" }, { status: 502 })
+    if (!upstream.ok) return upstreamStatusFailure(upstream.status)
     const body: unknown = await upstream.json().catch(() => null)
     if (!isNotificationResponse(body)) {
       return Response.json({ error: "Risk service returned an invalid response" }, { status: 502 })
     }
     return Response.json(body)
-  } catch {
-    return Response.json({ error: "Risk service unavailable" }, { status: 502 })
+  } catch (error) {
+    return upstreamErrorFailure(error)
   }
 }
 
@@ -94,13 +96,13 @@ export async function POST(request: Request): Promise<Response> {
     if (upstream.status === 404) {
       return Response.json({ error: "Notification not found" }, { status: 404 })
     }
-    if (!upstream.ok) return Response.json({ error: "Risk service unavailable" }, { status: 502 })
+    if (!upstream.ok) return upstreamStatusFailure(upstream.status)
     const result: unknown = await upstream.json().catch(() => null)
     if (!isNotification(result)) {
       return Response.json({ error: "Risk service returned an invalid response" }, { status: 502 })
     }
     return Response.json(result)
-  } catch {
-    return Response.json({ error: "Risk service unavailable" }, { status: 502 })
+  } catch (error) {
+    return upstreamErrorFailure(error)
   }
 }

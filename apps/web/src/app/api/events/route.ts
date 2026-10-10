@@ -1,3 +1,5 @@
+import { upstreamErrorFailure, upstreamStatusFailure } from "../../../lib/upstream-errors"
+
 const EVENT_STREAM_TIMEOUT_MS = 5 * 60_000
 const MAX_EVENT_ID_CHARACTERS = 32
 const EVENT_ID = /^\d+$/
@@ -25,7 +27,7 @@ export async function GET(request: Request): Promise<Response> {
       cache: "no-store",
       signal: AbortSignal.any([request.signal, AbortSignal.timeout(EVENT_STREAM_TIMEOUT_MS)]),
     })
-    if (!upstream.ok) return Response.json({ error: "Risk service unavailable" }, { status: 502 })
+    if (!upstream.ok) return upstreamStatusFailure(upstream.status)
     if (!upstream.body || !upstream.headers.get("content-type")?.toLowerCase().startsWith("text/event-stream")) {
       return Response.json({ error: "Risk service returned an invalid response" }, { status: 502 })
     }
@@ -39,7 +41,7 @@ export async function GET(request: Request): Promise<Response> {
         "x-accel-buffering": "no",
       },
     })
-  } catch {
-    return Response.json({ error: "Risk service unavailable" }, { status: 502 })
+  } catch (error) {
+    return upstreamErrorFailure(error)
   }
 }

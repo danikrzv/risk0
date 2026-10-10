@@ -3,12 +3,14 @@
 import "@xyflow/react/dist/style.css"
 
 import type { RiskGraph as RiskGraphData } from "@risk0/contracts"
-import { Background, Controls, type Edge, MarkerType, type Node, Position, ReactFlow } from "@xyflow/react"
+import { Background, Controls, type Edge, MarkerType, type Node, type NodeMouseHandler, Position, ReactFlow } from "@xyflow/react"
+import { memo, useCallback, useMemo } from "react"
 
 import { formatPercent, formatTimestamp, humanize } from "../lib/format"
 import { FreshnessBadge } from "./data-quality"
 
 const COLUMN_WIDTH = 240
+const FIT_VIEW_OPTIONS = { padding: 0.15 }
 const ROW_HEIGHT = 100
 
 /**
@@ -74,7 +76,22 @@ function metricText(value: string | boolean | null): string {
   return String(value)
 }
 
-export function RiskGraph({
+/** Apply the selection to an already laid-out node list without moving anything. */
+function withSelection(nodes: Node[], selectedNodeId: string | null): Node[] {
+  return nodes.map((node) => {
+    const selected = node.id === selectedNodeId
+    if (!selected && !node.selected) return node
+    return {
+      ...node,
+      selected,
+      className: selected ? `${node.className} graph-node--selected` : node.className?.replace(" graph-node--selected", ""),
+    }
+  })
+}
+
+// Memoized, with the layout keyed on the graph only: selecting a node never
+// recomputes positions, and the page's other state changes never reach here.
+export const RiskGraph = memo(function RiskGraph({
   graph,
   selectedNodeId,
   onSelectNode,
@@ -83,11 +100,14 @@ export function RiskGraph({
   graph: RiskGraphData
   selectedNodeId: string | null
   onSelectNode: (nodeId: string) => void
-  now: number
+  /** Fixed clock for the freshness badge; when omitted it ticks on its own. */
+  now?: number
 }) {
-  const { nodes, edges } = layoutGraph(graph, selectedNodeId)
-  const labels = new Map(graph.nodes.map((node) => [node.node_id, node.label]))
+  const layout = useMemo(() => layoutGraph(graph), [graph])
+  const nodes = useMemo(() => withSelection(layout.nodes, selectedNodeId), [layout, selectedNodeId])
+  const labels = useMemo(() => new Map(graph.nodes.map((node) => [node.node_id, node.label])), [graph])
   const selected = graph.nodes.find((node) => node.node_id === selectedNodeId) ?? null
+  const handleNodeClick: NodeMouseHandler = useCallback((_, node) => onSelectNode(node.id), [onSelectNode])
 
   return (
     <section className="panel graph" aria-labelledby="graph-heading">
@@ -103,12 +123,12 @@ export function RiskGraph({
         <div className="graph__canvas">
           <ReactFlow
             nodes={nodes}
-            edges={edges}
-            onNodeClick={(_, node) => onSelectNode(node.id)}
+            edges={layout.edges}
+            onNodeClick={handleNodeClick}
             nodesDraggable={false}
             nodesConnectable={false}
             fitView
-            fitViewOptions={{ padding: 0.15 }}
+            fitViewOptions={FIT_VIEW_OPTIONS}
           >
             <Background />
             <Controls showInteractive={false} />
@@ -179,4 +199,4 @@ export function RiskGraph({
       </div>
     </section>
   )
-}
+})

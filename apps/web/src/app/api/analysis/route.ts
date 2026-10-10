@@ -1,6 +1,8 @@
 // Server-side proxy to the risk service analysis endpoint. Upstream bodies,
 // URLs, and errors are never forwarded to the browser.
 
+import { upstreamErrorFailure, upstreamStatusFailure } from "../../../lib/upstream-errors"
+
 const UPSTREAM_TIMEOUT_MS = 30_000
 const MAX_BODY_CHARACTERS = 64_000
 
@@ -50,13 +52,13 @@ export async function POST(request: Request): Promise<Response> {
         { status: 422 },
       )
     }
-    if (!upstream.ok) return Response.json({ error: "Risk service unavailable" }, { status: 502 })
+    if (!upstream.ok) return upstreamStatusFailure(upstream.status)
     const result: unknown = await upstream.json()
     if (!isAnalysisShaped(result)) {
       return Response.json({ error: "Risk service returned an invalid response" }, { status: 502 })
     }
     return Response.json(result)
-  } catch {
-    return Response.json({ error: "Risk service unavailable" }, { status: 502 })
+  } catch (error) {
+    return upstreamErrorFailure(error)
   }
 }

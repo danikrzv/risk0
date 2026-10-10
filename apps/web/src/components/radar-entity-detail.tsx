@@ -1,8 +1,13 @@
 "use client"
 
 import type { HealthStatus, RadarEntity, RadarGraphResponse } from "@risk0/contracts"
+import { useMemo } from "react"
 
 import { humanize } from "../lib/format"
+import { ShowMore, useListLimit } from "./show-more"
+
+// A shared asset can have thousands of dependents; the list grows on request.
+const CONNECTION_PAGE_SIZE = 25
 
 function metricText(value: string | boolean | null): string {
   if (value === null) return "—"
@@ -14,6 +19,7 @@ export function RadarEntityDetail({
   entity,
   status,
   graph,
+  entityById,
   onSelectEntity,
   onAnalyze,
   onClose,
@@ -21,13 +27,14 @@ export function RadarEntityDetail({
   entity: RadarEntity
   status: HealthStatus
   graph: RadarGraphResponse
+  /** Lookup over `graph.entities`, shared with the graph so it is not rebuilt per selection. */
+  entityById: ReadonlyMap<string, RadarEntity>
   onSelectEntity: (entityId: string) => void
   /** Present only when the entity matches an analyzable catalog entry. */
   onAnalyze?: () => void
   onClose: () => void
 }) {
-  const labels = new Map(graph.entities.map((item) => [item.entity_id, item.label]))
-  const connections = graph.relationships.flatMap((edge) => {
+  const connections = useMemo(() => graph.relationships.flatMap((edge) => {
     if (edge.source_entity_id === entity.entity_id) {
       return [{ direction: "→", neighbor: edge.target_entity_id, type: edge.relationship_type }]
     }
@@ -35,10 +42,12 @@ export function RadarEntityDetail({
       return [{ direction: "←", neighbor: edge.source_entity_id, type: edge.relationship_type }]
     }
     return []
-  })
-  const similarities = graph.similarities.filter(
+  }), [entity.entity_id, graph.relationships])
+  const similarities = useMemo(() => graph.similarities.filter(
     (similarity) => similarity.candidate_entity_id === entity.entity_id || similarity.catalog_entity_id === entity.entity_id,
-  )
+  ), [entity.entity_id, graph.similarities])
+  const [connectionLimit, showMoreConnections] = useListLimit(CONNECTION_PAGE_SIZE)
+  const label = (id: string) => entityById.get(id)?.label ?? id
   const metadata = Object.entries(entity.metadata).filter(([name]) => name !== "health_status")
 
   return (
@@ -83,16 +92,24 @@ export function RadarEntityDetail({
       {connections.length > 0 ? (
         <div className="radar-detail__section">
           <h4>Connections</h4>
-          <ul aria-label="Entity connections">
-            {connections.map((connection, index) => (
+          <ul id="radar-entity-connections" aria-label="Entity connections">
+            {connections.slice(0, connectionLimit).map((connection, index) => (
               <li key={`${connection.neighbor}:${connection.type}:${index}`}>
                 <span>{connection.direction} {humanize(connection.type)}</span>{" "}
                 <button type="button" className="link-button" onClick={() => onSelectEntity(connection.neighbor)}>
-                  {labels.get(connection.neighbor) ?? connection.neighbor}
+                  {label(connection.neighbor)}
                 </button>
               </li>
             ))}
           </ul>
+          <ShowMore
+            shown={Math.min(connectionLimit, connections.length)}
+            total={connections.length}
+            pageSize={CONNECTION_PAGE_SIZE}
+            noun="connections"
+            controls="radar-entity-connections"
+            onShowMore={showMoreConnections}
+          />
         </div>
       ) : null}
       {similarities.length > 0 ? (
@@ -106,7 +123,7 @@ export function RadarEntityDetail({
               return (
                 <li key={`${similarity.catalog_entity_id}:${similarity.candidate_entity_id}`}>
                   <button type="button" className="link-button" onClick={() => onSelectEntity(other)}>
-                    {labels.get(other) ?? other}
+                    {label(other)}
                   </button>{" "}
                   <span>{(Number(similarity.score) * 100).toFixed(0)}%</span>
                 </li>

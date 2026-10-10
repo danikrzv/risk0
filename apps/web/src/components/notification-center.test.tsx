@@ -3,6 +3,8 @@ import "@testing-library/jest-dom/vitest"
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
+import type { Notification } from "@risk0/contracts"
+
 import type { RadarEvent } from "../hooks/use-radar-events"
 import * as api from "../lib/api"
 import { NotificationCenter } from "./notification-center"
@@ -136,7 +138,7 @@ describe("NotificationCenter", () => {
   })
 
   it("marks a notification read only once even when clicked repeatedly", async () => {
-    let resolveRead: ((value: typeof unreadNotification) => void) | undefined
+    let resolveRead: ((value: Notification) => void) | undefined
     vi.mocked(api.markNotificationRead).mockImplementation(() => new Promise((resolve) => { resolveRead = resolve as never }))
     render(<NotificationCenter />)
 

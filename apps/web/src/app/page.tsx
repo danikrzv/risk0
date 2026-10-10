@@ -1,7 +1,7 @@
 "use client"
 
 import type { AnalysisResponse, ExposureCreateRequest, HydratedCatalogEntry, IncidentGraphResponse, IncidentImpact, PositionInput, RadarGraphResponse } from "@risk0/contracts"
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
 import { CatalogSelector } from "../components/catalog-selector"
 import { DataQualityPanel } from "../components/data-quality"
@@ -177,9 +177,10 @@ export default function Home() {
   const catalogEntries = catalog.status === "ready" ? catalog.entries.length : 0
   const supportedEntries =
     catalog.status === "ready" ? catalog.entries.filter((item) => item.analysis_available).length : 0
-  const displayedImpacts = (selectedIncident?.impacts ?? []).map((impact) => (
+  // Stable identity so the memoized radar graph skips the 1 s clock re-renders.
+  const displayedImpacts = useMemo(() => (selectedIncident?.impacts ?? []).map((impact) => (
     exposureImpacts.find((item) => item.target_entity_id === impact.target_entity_id) ?? impact
-  ))
+  )), [exposureImpacts, selectedIncident])
 
   function selectEntry(entityId: string) {
     requestToken.current += 1

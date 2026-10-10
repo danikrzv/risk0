@@ -4,7 +4,7 @@ import "@xyflow/react/dist/style.css"
 
 import type { HealthState, HealthStatus, Incident, IncidentImpact, RadarEntity, RadarGraphResponse } from "@risk0/contracts"
 import { Background, Controls, type Edge, MarkerType, type Node, Position, ReactFlow } from "@xyflow/react"
-import { useState } from "react"
+import { memo, useMemo, useState } from "react"
 
 const HEALTH_STATUSES: HealthStatus[] = ["HEALTHY", "WARNING", "CRITICAL", "UNKNOWN"]
 
@@ -32,15 +32,35 @@ export function visibleRadarEntities(
   })
 }
 
+const NO_HEALTH_STATES: HealthState[] = []
+const NO_IMPACTS: IncidentImpact[] = []
+
+function pairKey(left: string, right: string): string {
+  return left < right ? `${left}\u0000${right}` : `${right}\u0000${left}`
+}
+
+/** Undirected hops that lie on a propagation path (consecutive path entries). */
+function pathEdgeKeys(impacts: IncidentImpact[]): Set<string> {
+  const keys = new Set<string>()
+  for (const impact of impacts) {
+    for (let index = 1; index < impact.path.length; index += 1) {
+      keys.add(pairKey(impact.path[index - 1], impact.path[index]))
+    }
+  }
+  return keys
+}
+
 const TYPE_DEPTH: Record<RadarEntity["entity_type"], number> = {
   vault: 0, market: 1, asset: 2, oracle: 2, irm: 2, protocol: 3, chain: 4, position: 0,
 }
 
-export function RadarGraph({
+// Memoized: the page re-renders every second (data-age clock), and rebuilding
+// React Flow nodes on each render made it re-measure the whole graph.
+export const RadarGraph = memo(function RadarGraph({
   graph,
-  healthStates = [],
+  healthStates = NO_HEALTH_STATES,
   selectedIncident,
-  impacts = [],
+  impacts = NO_IMPACTS,
   onSelectEntity,
   selectedEntityId = null,
 }: {
@@ -54,50 +74,75 @@ export function RadarGraph({
   const [chainFilter, setChainFilter] = useState("all")
   const [typeFilter, setTypeFilter] = useState("all")
   const [healthFilter, setHealthFilter] = useState("all")
-  const health = healthByEntity(graph.entities, healthStates)
-  const incidentPath = new Set(impacts.flatMap((impact) => impact.path))
-  if (selectedIncident) incidentPath.add(selectedIncident.source_entity_id)
-  const policyVisibleEntities = visibleRadarEntities(graph.entities, healthStates, impacts)
-  const visibleEntities = policyVisibleEntities.filter((entity) => {
+  const health = useMemo(() => healthByEntity(graph.entities, healthStates), [graph.entities, healthStates])
+  const incidentPath = useMemo(() => {
+    const path = new Set(impacts.flatMap((impact) => impact.path))
+    if (selectedIncident) path.add(selectedIncident.source_entity_id)
+    return path
+  }, [impacts, selectedIncident])
+  const incidentEdges = useMemo(() => pathEdgeKeys(impacts), [impacts])
+  const policyVisibleEntities = useMemo(
+    () => visibleRadarEntities(graph.entities, healthStates, impacts),
+    [graph.entities, healthStates, impacts],
+  )
+  const visibleEntities = useMemo(() => policyVisibleEntities.filter((entity) => {
     if (incidentPath.has(entity.entity_id)) return true
     const status = health.get(entity.entity_id) ?? "UNKNOWN"
     return (chainFilter === "all" || String(entity.chain_id) === chainFilter)
       && (typeFilter === "all" || entity.entity_type === typeFilter)
       && (healthFilter === "all" || status === healthFilter)
-  })
-  const visibleIds = new Set(visibleEntities.map((entity) => entity.entity_id))
-  const chainIds = [...new Set(policyVisibleEntities.map((entity) => entity.chain_id))].sort((left, right) => left - right)
-  const entityTypes = [...new Set(policyVisibleEntities.map((entity) => entity.entity_type))].sort()
-  const entityById = new Map(graph.entities.map((entity) => [entity.entity_id, entity]))
-  const visibleSimilarities = graph.similarities.filter((similarity) => visibleIds.has(similarity.candidate_entity_id))
-  const rows = new Map<number, number>()
-  const flowNodes: Node[] = visibleEntities.map((entity) => {
-    const depth = TYPE_DEPTH[entity.entity_type]
-    const row = rows.get(depth) ?? 0
-    rows.set(depth, row + 1)
-    const status = selectedIncident?.source_entity_id === entity.entity_id
+  }), [chainFilter, health, healthFilter, incidentPath, policyVisibleEntities, typeFilter])
+  const visibleIds = useMemo(() => new Set(visibleEntities.map((entity) => entity.entity_id)), [visibleEntities])
+  const chainIds = useMemo(
+    () => [...new Set(policyVisibleEntities.map((entity) => entity.chain_id))].sort((left, right) => left - right),
+    [policyVisibleEntities],
+  )
+  const entityTypes = useMemo(
+    () => [...new Set(policyVisibleEntities.map((entity) => entity.entity_type))].sort(),
+    [policyVisibleEntities],
+  )
+  const entityById = useMemo(() => new Map(graph.entities.map((entity) => [entity.entity_id, entity])), [graph.entities])
+  const visibleSimilarities = useMemo(
+    () => graph.similarities.filter((similarity) => visibleIds.has(similarity.candidate_entity_id)),
+    [graph.similarities, visibleIds],
+  )
+  const visibleRelationships = useMemo(
+    () => graph.relationships.filter((edge) => visibleIds.has(edge.source_entity_id) && visibleIds.has(edge.target_entity_id)),
+    [graph.relationships, visibleIds],
+  )
+  const statusOf = (entity: RadarEntity): HealthStatus => (
+    selectedIncident?.source_entity_id === entity.entity_id
       ? selectedIncident.severity
       : (health.get(entity.entity_id) ?? "UNKNOWN")
-    return {
-      id: entity.entity_id,
-      position: { x: depth * 230, y: row * 100 },
-      sourcePosition: Position.Right,
-      targetPosition: Position.Left,
-      data: { label: `${entity.label} · ${status}` },
-      selected: selectedEntityId === entity.entity_id,
-      className: `radar-flow-node radar-flow-node--${status.toLowerCase()}${incidentPath.has(entity.entity_id) ? " radar-flow-node--incident" : ""}`,
-    }
-  })
-  const flowEdges: Edge[] = graph.relationships
-    .filter((edge) => visibleIds.has(edge.source_entity_id) && visibleIds.has(edge.target_entity_id))
-    .map((edge, index) => ({
-      id: `${edge.source_entity_id}:${edge.relationship_type}:${edge.target_entity_id}:${index}`,
-      source: edge.source_entity_id,
-      target: edge.target_entity_id,
-      label: edge.relationship_type.replaceAll("_", " "),
-      className: incidentPath.has(edge.source_entity_id) && incidentPath.has(edge.target_entity_id) ? "radar-flow-edge--incident" : "",
-      markerEnd: { type: MarkerType.ArrowClosed },
-    }))
+  )
+  const flowNodes: Node[] = useMemo(() => {
+    const rows = new Map<number, number>()
+    return visibleEntities.map((entity) => {
+      const depth = TYPE_DEPTH[entity.entity_type]
+      const row = rows.get(depth) ?? 0
+      rows.set(depth, row + 1)
+      const status = selectedIncident?.source_entity_id === entity.entity_id
+        ? selectedIncident.severity
+        : (health.get(entity.entity_id) ?? "UNKNOWN")
+      return {
+        id: entity.entity_id,
+        position: { x: depth * 230, y: row * 100 },
+        sourcePosition: Position.Right,
+        targetPosition: Position.Left,
+        data: { label: `${entity.label} · ${status}` },
+        selected: selectedEntityId === entity.entity_id,
+        className: `radar-flow-node radar-flow-node--${status.toLowerCase()}${incidentPath.has(entity.entity_id) ? " radar-flow-node--incident" : ""}`,
+      }
+    })
+  }, [health, incidentPath, selectedEntityId, selectedIncident, visibleEntities])
+  const flowEdges: Edge[] = useMemo(() => visibleRelationships.map((edge, index) => ({
+    id: `${edge.source_entity_id}:${edge.relationship_type}:${edge.target_entity_id}:${index}`,
+    source: edge.source_entity_id,
+    target: edge.target_entity_id,
+    label: edge.relationship_type.replaceAll("_", " "),
+    className: incidentEdges.has(pairKey(edge.source_entity_id, edge.target_entity_id)) ? "radar-flow-edge--incident" : "",
+    markerEnd: { type: MarkerType.ArrowClosed },
+  })), [incidentEdges, visibleRelationships])
 
   return (
     <section className="panel radar-graph" aria-labelledby="radar-heading">
@@ -130,9 +175,7 @@ export function RadarGraph({
       <div className="radar-graph__accessible">
         <ul className="radar-nodes" aria-label="Radar nodes">
           {visibleEntities.map((entity) => {
-            const status = selectedIncident?.source_entity_id === entity.entity_id
-              ? selectedIncident.severity
-              : (health.get(entity.entity_id) ?? "UNKNOWN")
+            const status = statusOf(entity)
             const onPath = incidentPath.has(entity.entity_id)
             return (
               <li key={entity.entity_id}>
@@ -155,11 +198,11 @@ export function RadarGraph({
           })}
         </ul>
         <ul className="radar-relationships" aria-label="Radar relationships">
-          {graph.relationships.filter((edge) => visibleIds.has(edge.source_entity_id) && visibleIds.has(edge.target_entity_id)).map((edge) => {
-            const source = graph.entities.find((entity) => entity.entity_id === edge.source_entity_id)?.label ?? edge.source_entity_id
-            const target = graph.entities.find((entity) => entity.entity_id === edge.target_entity_id)?.label ?? edge.target_entity_id
-            const onPath = incidentPath.has(edge.source_entity_id) && incidentPath.has(edge.target_entity_id)
-            return <li key={`${edge.source_entity_id}:${edge.relationship_type}:${edge.target_entity_id}`} data-incident-path={onPath ? "true" : "false"}>{source} — {edge.relationship_type.replaceAll("_", " ")} → {target}</li>
+          {visibleRelationships.map((edge, index) => {
+            const source = entityById.get(edge.source_entity_id)?.label ?? edge.source_entity_id
+            const target = entityById.get(edge.target_entity_id)?.label ?? edge.target_entity_id
+            const onPath = incidentEdges.has(pairKey(edge.source_entity_id, edge.target_entity_id))
+            return <li key={`${edge.source_entity_id}:${edge.relationship_type}:${edge.target_entity_id}:${index}`} data-incident-path={onPath ? "true" : "false"}>{source} — {edge.relationship_type.replaceAll("_", " ")} → {target}</li>
           })}
         </ul>
         {visibleSimilarities.length > 0 ? <ul className="radar-similarities" aria-label="Similarity explanations">
@@ -180,4 +223,4 @@ export function RadarGraph({
       ) : null}
     </section>
   )
-}
+})

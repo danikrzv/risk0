@@ -300,6 +300,23 @@ describe("GET /api/graph", () => {
     expect(init.signal).toBeInstanceOf(AbortSignal)
   })
 
+  it("forwards a focus entity and maps an unknown one to a sanitized 404", async () => {
+    const fetchMock = vi.fn(async () => Response.json(radarGraphResponse))
+    vi.stubGlobal("fetch", fetchMock)
+
+    const response = await getGraph(new Request("http://localhost/api/graph?focus=vault%3A1%3A0xabc"))
+    expect(response.status).toBe(200)
+    const [url] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toBe(`${UPSTREAM}/v1/graph?focus=vault%3A1%3A0xabc`)
+
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ detail: `unknown entity at ${UPSTREAM}` }, { status: 404 })))
+    const missing = await getGraph(new Request("http://localhost/api/graph?focus=vault%3A1%3Amissing"))
+    const text = await missing.text()
+    expect(missing.status).toBe(404)
+    expect(JSON.parse(text)).toEqual({ error: "Graph entity not found" })
+    expect(text).not.toContain("risk.internal")
+  })
+
   it("rejects graph responses that do not match the radar contract", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({ entities: [] })))
 

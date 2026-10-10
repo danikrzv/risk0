@@ -22,6 +22,7 @@ import {
 import { SystemTicker } from "../components/system-ticker"
 import { TerminalShell } from "../components/terminal-shell"
 import { useRadarEvents } from "../hooks/use-radar-events"
+import { mergeRadarGraphs, type RadarTopology } from "../lib/radar-graph-merge"
 import { CatalogSkeleton, RadarSkeleton } from "../components/skeletons"
 import {
   createExposure,
@@ -86,6 +87,10 @@ export default function Home() {
   const [radarError, setRadarError] = useState<LoadError | null>(null)
   const [selectedIncident, setSelectedIncident] = useState<IncidentGraphResponse | null>(null)
   const [selectedRadarEntityId, setSelectedRadarEntityId] = useState<string | null>(null)
+  // Neighborhoods fetched with `focus`, keyed by the expanded entity.
+  const [focusGraphs, setFocusGraphs] = useState<ReadonlyMap<string, RadarGraphResponse>>(() => new Map())
+  const [loadingNeighboursId, setLoadingNeighboursId] = useState<string | null>(null)
+  const [focusError, setFocusError] = useState<string | null>(null)
   // Read at fetch time (not captured in closures) so a just-recorded exposure is used.
   const exposureId = useRef<string | null>(null)
   const [exposureImpacts, setExposureImpacts] = useState<IncidentImpact[]>([])
@@ -229,6 +234,34 @@ export default function Home() {
   const catalogEntries = catalog.status === "ready" ? catalog.entries.length : 0
   const supportedEntries =
     catalog.status === "ready" ? catalog.entries.filter((item) => item.analysis_available).length : 0
+  // The pruned radar carries only a few paths per incident: the selected
+  // incident's graph and any fetched neighborhoods are merged on top, and the
+  // merged object keeps its identity until one of them changes.
+  const displayedGraph = useMemo(() => {
+    if (!radarGraph) return null
+    const overlays: RadarTopology[] = [...focusGraphs.values()]
+    if (selectedIncident) overlays.unshift(selectedIncident)
+    return mergeRadarGraphs(radarGraph, overlays)
+  }, [focusGraphs, radarGraph, selectedIncident])
+  const pinnedEntityIds = useMemo(
+    () => new Set([...focusGraphs.values()].flatMap((graph) => graph.entities.map((entity) => entity.entity_id))),
+    [focusGraphs],
+  )
+  const expandedEntityIds = useMemo(() => new Set(focusGraphs.keys()), [focusGraphs])
+
+  const showNeighbours = useCallback(async (entityId: string) => {
+    setLoadingNeighboursId(entityId)
+    setFocusError(null)
+    try {
+      const neighborhood = await getRadarGraph({ focus: entityId })
+      setFocusGraphs((current) => new Map(current).set(entityId, neighborhood))
+    } catch (error) {
+      setFocusError(`Neighbours could not be loaded: ${errorMessage(error)}`)
+    } finally {
+      setLoadingNeighboursId((current) => (current === entityId ? null : current))
+    }
+  }, [])
+
   // Stable identity so the memoized radar graph skips unrelated page re-renders.
   const displayedImpacts = useMemo(() => (selectedIncident?.impacts ?? []).map((impact) => (
     exposureImpacts.find((item) => item.target_entity_id === impact.target_entity_id) ?? impact
@@ -247,18 +280,18 @@ export default function Home() {
   /** Radar entity id → analyzable catalog entry id, matched on chain and address. */
   const catalogByRadarEntity = useMemo(() => {
     const matches = new Map<string, string>()
-    if (catalog.status !== "ready" || !radarGraph) return matches
+    if (catalog.status !== "ready" || !displayedGraph) return matches
     const byAddress = new Map<string, string>()
     for (const item of catalog.entries) {
       const key = `${item.chain_id}:${item.address_or_market_id.toLowerCase()}`
       if (canAnalyze(item) && !byAddress.has(key)) byAddress.set(key, item.entity_id)
     }
-    for (const entity of radarGraph.entities) {
+    for (const entity of displayedGraph.entities) {
       const match = byAddress.get(`${entity.chain_id}:${entity.address_or_key.toLowerCase()}`)
       if (match) matches.set(entity.entity_id, match)
     }
     return matches
-  }, [catalog, radarGraph])
+  }, [catalog, displayedGraph])
   const analyzableEntityIds = useMemo(() => new Set(catalogByRadarEntity.keys()), [catalogByRadarEntity])
 
   const analyzeRadarEntity = useCallback((radarEntityId: string) => {
@@ -327,23 +360,28 @@ export default function Home() {
 
       <div className="terminal-actions"><NotificationCenter onIncidentClick={focusIncident} /></div>
       {radarError && catalog.status !== "error" ? <LoadErrorMessage error={radarError} /> : null}
-      {radarGraph && radarGraph.entities.length === 0 ? (
-        <RadarGraph graph={radarGraph} />
-      ) : radarGraph ? (
+      {focusError ? <p role="alert" className="alert">{focusError}</p> : null}
+      {displayedGraph && radarGraph && displayedGraph.entities.length === 0 ? (
+        <RadarGraph graph={displayedGraph} />
+      ) : displayedGraph && radarGraph ? (
         <div className="radar-layout">
           <ExposureRail entities={radarGraph.entities} onSubmit={addExposure} busy={exposureBusy} />
           <RadarGraph
-            graph={radarGraph}
+            graph={displayedGraph}
             selectedIncident={selectedIncident?.incident ?? null}
             impacts={displayedImpacts}
             selectedEntityId={selectedRadarEntityId}
             onSelectEntity={setSelectedRadarEntityId}
             analyzableEntityIds={analyzableEntityIds}
             onAnalyzeEntity={analyzeRadarEntity}
+            pinnedEntityIds={pinnedEntityIds}
+            expandedEntityIds={expandedEntityIds}
+            loadingNeighboursId={loadingNeighboursId}
+            onShowNeighbours={showNeighbours}
           />
           <IncidentRail
             incidents={radarGraph.active_incidents}
-            entities={radarGraph.entities}
+            entities={displayedGraph.entities}
             selectedIncidentId={selectedIncident?.incident.incident_id ?? null}
             onSelectIncident={focusIncident}
           />

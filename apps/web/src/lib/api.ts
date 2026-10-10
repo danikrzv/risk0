@@ -70,6 +70,8 @@ export interface RadarGraphFilters {
   status?: HealthStatus
   visible?: boolean
   incidentId?: string
+  /** One entity plus up to 100 neighbors (`404` for unknown ids). */
+  focus?: string
 }
 
 export function getRadarGraph(filters: RadarGraphFilters = {}): Promise<RadarGraphResponse> {
@@ -79,6 +81,7 @@ export function getRadarGraph(filters: RadarGraphFilters = {}): Promise<RadarGra
   if (filters.status !== undefined) query.set("status", filters.status)
   if (filters.visible !== undefined) query.set("visible", String(filters.visible))
   if (filters.incidentId !== undefined) query.set("incident_id", filters.incidentId)
+  if (filters.focus !== undefined) query.set("focus", filters.focus)
   const suffix = query.size > 0 ? `?${query.toString()}` : ""
   return request<RadarGraphResponse>(`/api/graph${suffix}`, { method: "GET" })
 }

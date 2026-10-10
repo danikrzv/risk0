@@ -3,7 +3,7 @@ import type { IncidentGraphResponse, RadarGraphResponse } from "@risk0/contracts
 import { upstreamErrorFailure, upstreamStatusFailure } from "../../../lib/upstream-errors"
 
 const UPSTREAM_TIMEOUT_MS = 15_000
-const FILTER_NAMES = ["chain_id", "entity_type", "status", "visible", "incident_id"] as const
+const FILTER_NAMES = ["chain_id", "entity_type", "status", "visible", "incident_id", "focus"] as const
 
 export const dynamic = "force-dynamic"
 
@@ -147,6 +147,9 @@ export async function GET(request: Request): Promise<Response> {
       cache: "no-store",
       signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
     })
+    if (upstream.status === 404) {
+      return Response.json({ error: incidentGraphId ? "Incident not found" : "Graph entity not found" }, { status: 404 })
+    }
     if (!upstream.ok) return upstreamStatusFailure(upstream.status)
     const body: unknown = await upstream.json().catch(() => null)
     if (incidentGraphId ? !isIncidentGraphResponse(body) : !isRadarGraphResponse(body)) {

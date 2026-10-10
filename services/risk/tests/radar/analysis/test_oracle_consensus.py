@@ -47,12 +47,13 @@ def test_stale_feeds_are_excluded_from_consensus():
         (
             feed("oracle:1:a", "1.00", "chainlink"),
             feed("oracle:1:b", "1.01", "pyth"),
-            feed("oracle:1:stale", "0.20", "redstone", age_minutes=100),
+            feed("oracle:1:c", "1.02", "redstone"),
+            feed("oracle:1:stale", "0.20", "uniswap", age_minutes=100),
         ),
         NOW,
     )
 
-    assert result.reference_price == Decimal("1.005")
+    assert result.reference_price == Decimal("1.01")
     assert result.excluded == ("oracle:1:stale",)
 
 
@@ -67,13 +68,14 @@ def test_fewer_than_two_independent_fresh_sources_is_unknown():
 
     assert result.status is HealthStatus.UNKNOWN
     assert result.reference_price is None
-    assert "two independent fresh oracle sources are required" in result.reasons
+    assert "two independent fresh oracle peers are required" in result.reasons
 
 
 def test_derived_references_are_labelled_but_can_join_consensus():
     result = OracleConsensus().evaluate(
         (
             feed("oracle:1:a", "1.00", "chainlink"),
+            feed("oracle:1:b", "1.00", "pyth"),
             feed("oracle:1:derived", "1.00", "dex-twap", derived=True),
         ),
         NOW,
@@ -81,3 +83,56 @@ def test_derived_references_are_labelled_but_can_join_consensus():
 
     assert result.status is HealthStatus.HEALTHY
     assert result.derived_feeds == ("oracle:1:derived",)
+
+
+def test_a_feed_is_not_its_own_peer_so_two_sources_cannot_form_consensus():
+    result = OracleConsensus().evaluate(
+        (
+            feed("oracle:1:a", "1.00", "chainlink"),
+            feed("oracle:1:b", "0.92", "pyth"),
+        ),
+        NOW,
+    )
+
+    assert result.status is HealthStatus.UNKNOWN
+    assert result.reference_price is None
+    assert result.deviations == {}
+    assert set(result.feed_statuses.values()) == {HealthStatus.UNKNOWN}
+
+
+def test_non_positive_price_is_a_hard_failure_even_without_peers():
+    result = OracleConsensus().evaluate(
+        (
+            feed("oracle:1:a", "1.00", "chainlink"),
+            feed("oracle:1:zero", "0", "pyth"),
+        ),
+        NOW,
+    )
+
+    assert result.status is HealthStatus.CRITICAL
+    assert result.feed_statuses["oracle:1:zero"] is HealthStatus.CRITICAL
+    assert result.feed_statuses["oracle:1:a"] is HealthStatus.UNKNOWN
+    assert "oracle reported a non-positive price" in result.reasons
+
+
+def test_hard_failure_is_excluded_from_the_median_and_critical_wins():
+    result = OracleConsensus().evaluate(
+        (
+            feed("oracle:1:a", "1.00", "chainlink"),
+            feed("oracle:1:b", "1.00", "pyth"),
+            feed("oracle:1:c", "1.00", "redstone"),
+            feed("oracle:1:neg", "-1", "uniswap"),
+        ),
+        NOW,
+    )
+
+    assert result.reference_price == Decimal("1.00")
+    assert result.status is HealthStatus.CRITICAL
+    assert "oracle:1:neg" not in result.included
+
+
+def test_non_finite_price_is_rejected():
+    import pytest
+
+    with pytest.raises(ValueError):
+        feed("oracle:1:nan", "NaN", "chainlink")

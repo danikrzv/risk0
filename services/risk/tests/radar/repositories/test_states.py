@@ -169,6 +169,37 @@ def test_latest_health_never_regresses_to_a_delayed_evaluation(states):
     assert len(states.history(CATALOG_VAULT).health_states) == 2
 
 
+def test_duplicate_timestamp_does_not_diverge_latest_from_history(states):
+    original = health(evaluated_at=NOW, status=HealthStatus.WARNING)
+    conflicting_duplicate = health(evaluated_at=NOW, status=HealthStatus.CRITICAL)
+
+    states.record_health((original, conflicting_duplicate))
+
+    assert states.latest_health(CATALOG_VAULT) == original
+    assert states.history(CATALOG_VAULT).health_states == (original,)
+
+
+def test_latest_health_reads_survive_history_pruning(states, database):
+    latest = health(evaluated_at=NOW, status=HealthStatus.CRITICAL)
+    states.set_health(latest)
+
+    with database.transaction() as connection:
+        connection.execute("DELETE FROM health_states")
+
+    assert states.latest_health(CATALOG_VAULT) == latest
+    assert states.latest_health_all() == {CATALOG_VAULT: latest}
+    assert states.latest_health_for((CATALOG_VAULT,)) == {CATALOG_VAULT: latest}
+
+
+def test_health_at_returns_the_exact_historical_evaluation(states):
+    first = health(evaluated_at=NOW, status=HealthStatus.WARNING)
+    latest = health(evaluated_at=NOW + timedelta(minutes=5), status=HealthStatus.CRITICAL)
+    states.record_health((first, latest))
+
+    assert states.health_at(CATALOG_VAULT, NOW) == first
+    assert states.health_at(CATALOG_VAULT, NOW + timedelta(minutes=1)) is None
+
+
 def test_unknown_health_is_stored_explicitly(states):
     unknown = health(status=HealthStatus.UNKNOWN)
 

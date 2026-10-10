@@ -193,16 +193,42 @@ class StateRepository:
                 """,
                 rows,
             )
-            return connection.total_changes - before
+            inserted = connection.total_changes - before
+            connection.executemany(
+                """
+                INSERT INTO latest_health_states (
+                    entity_id, evaluated_at, status, score, reasons, missing_fields,
+                    rule_version
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(entity_id) DO UPDATE SET
+                    evaluated_at = excluded.evaluated_at,
+                    status = excluded.status,
+                    score = excluded.score,
+                    reasons = excluded.reasons,
+                    missing_fields = excluded.missing_fields,
+                    rule_version = excluded.rule_version
+                WHERE excluded.evaluated_at > latest_health_states.evaluated_at
+                """,
+                rows,
+            )
+            return inserted
 
     def latest_health(self, entity_id: str) -> HealthState | None:
         with self._db.read() as connection:
             row = connection.execute(
                 """
-                SELECT * FROM health_states WHERE entity_id = ?
-                ORDER BY evaluated_at DESC LIMIT 1
+                SELECT * FROM latest_health_states WHERE entity_id = ?
                 """,
                 (entity_id,),
+            ).fetchone()
+        return None if row is None else _health(row)
+
+    def health_at(self, entity_id: str, evaluated_at: datetime) -> HealthState | None:
+        """Return an exact historical evaluation, when retention still has it."""
+        with self._db.read() as connection:
+            row = connection.execute(
+                "SELECT * FROM health_states WHERE entity_id = ? AND evaluated_at = ?",
+                (entity_id, encode_timestamp(evaluated_at)),
             ).fetchone()
         return None if row is None else _health(row)
 
@@ -210,12 +236,7 @@ class StateRepository:
         with self._db.read() as connection:
             rows = connection.execute(
                 """
-                SELECT h.* FROM health_states h
-                JOIN (
-                    SELECT entity_id, MAX(evaluated_at) AS evaluated_at
-                    FROM health_states GROUP BY entity_id
-                ) latest USING (entity_id, evaluated_at)
-                ORDER BY h.entity_id
+                SELECT * FROM latest_health_states ORDER BY entity_id
                 """
             ).fetchall()
         return {row["entity_id"]: _health(row) for row in rows}
@@ -228,11 +249,7 @@ class StateRepository:
             rows = connection.execute(
                 """
                 SELECT h.* FROM json_each(?) AS ids
-                JOIN health_states h ON h.entity_id = ids.value
-                AND h.evaluated_at = (
-                    SELECT MAX(evaluated_at) FROM health_states
-                    WHERE entity_id = ids.value
-                )
+                JOIN latest_health_states h ON h.entity_id = ids.value
                 """,
                 (json.dumps(list(entity_ids)),),
             ).fetchall()

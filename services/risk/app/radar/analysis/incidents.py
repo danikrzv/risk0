@@ -35,6 +35,7 @@ class IncidentDetector:
         now: datetime,
         *,
         monitored_entity_ids: Collection[str] | None = None,
+        known_data_gap_incident_ids: Collection[str] = (),
     ) -> IncidentChanges:
         """Open, update, or resolve one incident per source entity.
 
@@ -42,8 +43,8 @@ class IncidentDetector:
         incident. UNKNOWN health means missing, incomplete, or expired data: it
         never opens an incident and leaves an open one untouched, because losing
         visibility is evidence of neither deterioration nor improvement. Open
-        incidents that were raised from such data gaps alone (by earlier rule
-        versions) are resolved.
+        incidents proven to have been raised from such data gaps alone (by
+        earlier rule versions) are resolved.
 
         Several health states for one entity in a batch collapse to the latest
         (ties: the most severe). When ``monitored_entity_ids`` is given, open
@@ -129,8 +130,13 @@ class IncidentDetector:
             current_by_source[entity_id] = item
             updated.append(item)
 
+        known_data_gaps = set(known_data_gap_incident_ids)
         for entity_id, item in sorted(current_by_source.items()):
-            if item.status is IncidentStatus.OPEN and is_data_gap_incident(item):
+            if (
+                item.status is IncidentStatus.OPEN
+                and item.incident_id in known_data_gaps
+                and is_data_gap_incident(item)
+            ):
                 gap = item.model_copy(
                     update={
                         "status": IncidentStatus.RESOLVED,

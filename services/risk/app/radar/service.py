@@ -333,6 +333,18 @@ class RadarService:
         active = self._incidents.active()
         changed = False
         if health_states or active:
+            known_data_gap_ids = {
+                incident.incident_id
+                for incident in active
+                if is_data_gap_incident(incident)
+                and (
+                    origin := self._states.health_at(
+                        incident.source_entity_id, incident.first_observed_at
+                    )
+                )
+                is not None
+                and origin.status is HealthStatus.UNKNOWN
+            }
             changes = self._incident_detector.reconcile(
                 active,
                 health_states,
@@ -340,6 +352,7 @@ class RadarService:
                 # Incidents whose source left the topology or the monitored
                 # chains are resolved, not orphaned.
                 monitored_entity_ids=set(monitored),
+                known_data_gap_incident_ids=known_data_gap_ids,
             )
             prior = {incident.incident_id: incident for incident in active}
             for incident in (*changes.opened, *changes.updated):

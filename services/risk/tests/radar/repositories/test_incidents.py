@@ -153,6 +153,21 @@ def test_impacts_require_a_known_incident(incidents):
         incidents.replace_impacts("missing", (impact("missing"),))
 
 
+def test_active_incidents_and_relevant_impacts_are_loaded_in_one_bounded_query(incidents):
+    incidents.upsert_active(incident("incident-1"))
+    incidents.replace_impacts(
+        "incident-1", (impact(), impact(target_entity_id=NEIGHBOR_VAULT))
+    )
+    incidents.upsert_active(incident("incident-2", source_entity_id=CATALOG_VAULT))
+
+    relevant = incidents.active_with_impacts_for_entity(CATALOG_VAULT)
+
+    assert [(item.incident_id, impacts) for item, impacts in relevant] == [
+        ("incident-1", (impact(),)),
+        ("incident-2", ()),
+    ]
+
+
 def notification(notification_id: str, minutes: int = 0) -> Notification:
     return Notification(
         notification_id=notification_id,

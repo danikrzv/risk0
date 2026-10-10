@@ -327,6 +327,62 @@ class IncidentRepository:
             ).fetchall()
         return tuple(impact_from_row(row) for row in rows)
 
+    def active_with_impacts_for_entity(
+        self, entity_id: str
+    ) -> tuple[tuple[Incident, tuple[IncidentImpact, ...]], ...]:
+        """Open incidents that can affect an entity, with only matching impacts.
+
+        This replaces one query per active incident when a manual exposure is
+        created. Incidents sourced by the entity are included even when they do
+        not yet have a stored impact row.
+        """
+        with self._db.read() as connection:
+            rows = connection.execute(
+                """
+                SELECT i.*, p.target_entity_id, p.path, p.distance, p.confidence,
+                    p.estimated_affected_amount, p.reasons AS impact_reasons,
+                    p.revealed, p.alternate_path_count
+                FROM incidents AS i
+                LEFT JOIN incident_impacts AS p
+                    ON p.incident_id = i.incident_id
+                   AND p.target_entity_id = ?
+                WHERE i.status = 'OPEN'
+                  AND (i.source_entity_id = ? OR p.target_entity_id IS NOT NULL)
+                ORDER BY i.first_observed_at DESC, i.incident_id, p.distance,
+                    p.target_entity_id
+                """,
+                (entity_id, entity_id),
+            ).fetchall()
+        grouped: list[tuple[Incident, tuple[IncidentImpact, ...]]] = []
+        current_incident: Incident | None = None
+        current_impacts: list[IncidentImpact] = []
+        for row in rows:
+            item = _incident(row)
+            if current_incident is None or item.incident_id != current_incident.incident_id:
+                if current_incident is not None:
+                    grouped.append((current_incident, tuple(current_impacts)))
+                current_incident = item
+                current_impacts = []
+            if row["target_entity_id"] is not None:
+                current_impacts.append(
+                    IncidentImpact(
+                        incident_id=item.incident_id,
+                        target_entity_id=row["target_entity_id"],
+                        path=decode_strings(row["path"]),
+                        distance=row["distance"],
+                        confidence=decode_decimal(row["confidence"]),
+                        estimated_affected_amount=decode_decimal(
+                            row["estimated_affected_amount"]
+                        ),
+                        reasons=decode_strings(row["impact_reasons"]),
+                        revealed=bool(row["revealed"]),
+                        alternate_path_count=row["alternate_path_count"],
+                    )
+                )
+        if current_incident is not None:
+            grouped.append((current_incident, tuple(current_impacts)))
+        return tuple(grouped)
+
     def add_notification(self, notification: Notification) -> bool:
         with self._db.transaction() as connection:
             cursor = connection.execute(

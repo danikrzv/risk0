@@ -18,7 +18,7 @@ from app.radar.repositories import (
     TopologyRepository,
 )
 from app.radar.service import RadarService
-from tests.radar.repositories.builders import entity, snapshot
+from tests.radar.repositories.builders import entity, health, snapshot
 
 
 NOW = datetime(2026, 10, 10, 13, 11, tzinfo=UTC)
@@ -445,9 +445,17 @@ def test_open_data_gap_incidents_are_resolved_and_their_alerts_read_next_cycle(d
     from app.radar.contracts import Notification
 
     topology = TopologyRepository(database)
+    states = StateRepository(database)
     incidents = IncidentRepository(database)
     topology.upsert_entities(vertical_batch().entities, seen_at=NOW)
     gap = incidents.upsert_active(gap_incident()).incident
+    states.set_health(
+        health(
+            entity_id=gap.source_entity_id,
+            evaluated_at=gap.first_observed_at,
+            status=HealthStatus.UNKNOWN,
+        )
+    )
     incidents.add_notification(
         Notification(
             notification_id=f"notification:{gap.incident_id}",
@@ -463,6 +471,7 @@ def test_open_data_gap_incidents_are_resolved_and_their_alerts_read_next_cycle(d
         database,
         PerCycleCollector(lambda now: ()),
         chain_collector=AnyTimeChainCollector(),
+        states=states,
         incidents=incidents,
         events=events,
     )

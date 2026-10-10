@@ -454,10 +454,15 @@ def create_exposure(
             ),
         )
     try:
-        exposure = context.exposures.create(request, created_at=datetime.now(UTC))
+        if context.database is None:
+            exposure = context.exposures.create(request, created_at=datetime.now(UTC))
+            _propagate_exposure(context, exposure)
+        else:
+            with context.database.transaction():
+                exposure = context.exposures.create(request, created_at=datetime.now(UTC))
+                _propagate_exposure(context, exposure)
     except ValueError:
         raise HTTPException(status_code=422, detail="Invalid exposure.") from None
-    _propagate_exposure(context, exposure)
     context.graph_cache.invalidate()
     return exposure
 
@@ -477,10 +482,9 @@ def _propagate_exposure(context: RadarContext, exposure: ManualExposure) -> None
     estimator = ExposureImpactEstimator()
     relationships = None
     impacts = []
-    for incident in context.incidents.active():
-        stored = context.incidents.impacts(incident.incident_id)
-        if not stored:
-            continue
+    for incident, stored in context.incidents.active_with_impacts_for_entity(
+        exposure.entity_id
+    ):
         if relationships is None:
             relationships = context.topology.relationships()
         impacts.extend(

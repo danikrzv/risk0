@@ -253,6 +253,26 @@ def test_new_exposure_is_propagated_against_active_incidents_at_creation(
     assert impact["impacts"][0]["estimated_affected_amount"] == "60000.00"
 
 
+def test_new_exposure_propagation_does_not_query_each_active_incident(
+    client, radar_context, monkeypatch
+):
+    monkeypatch.setenv("RISK0_DATA_MODE", "fixture")
+    assert client.post("/v1/fixtures/radar/oracle-incident/open").status_code == 201
+
+    def unexpected_query(*args, **kwargs):
+        raise AssertionError("per-incident queries must not be used")
+
+    monkeypatch.setattr(radar_context.incidents, "active", unexpected_query)
+    monkeypatch.setattr(radar_context.incidents, "impacts", unexpected_query)
+
+    response = client.post(
+        "/v1/exposures",
+        json={"entity_id": FIXTURE_CATALOG_VAULT, "mode": "lender", "amount": "100000", "numeraire": "USDC"},
+    )
+
+    assert response.status_code == 201
+
+
 def test_resolving_the_fixture_incident_clears_exposure_impacts(
     client, radar_context, monkeypatch
 ):

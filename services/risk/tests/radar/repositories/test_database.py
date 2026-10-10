@@ -15,6 +15,7 @@ RADAR_TABLES = {
     "state_snapshots",
     "state_hourly_aggregates",
     "health_states",
+    "latest_health_states",
     "similarities",
     "incidents",
     "incident_impacts",
@@ -45,7 +46,7 @@ def test_migrate_creates_every_radar_table_on_an_empty_database(tmp_path):
     database.migrate()
 
     assert RADAR_TABLES <= table_names(path)
-    assert database.applied_migrations() == ("001_radar",)
+    assert database.applied_migrations() == ("001_radar", "002_latest_health")
 
 
 def test_migrate_is_idempotent(tmp_path):
@@ -57,7 +58,7 @@ def test_migrate_is_idempotent(tmp_path):
     database.migrate()
     RadarDatabase(tmp_path / "radar.sqlite3").migrate()
 
-    assert database.applied_migrations() == ("001_radar",)
+    assert database.applied_migrations() == ("001_radar", "002_latest_health")
 
 
 def test_migrate_keeps_an_existing_cache_only_database_intact(tmp_path):

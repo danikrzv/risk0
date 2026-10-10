@@ -104,7 +104,9 @@ def test_open_incident_raised_from_a_data_gap_is_resolved():
     real = IncidentDetector().reconcile((), (health(HealthStatus.WARNING),), NOW).current
     later = NOW + timedelta(minutes=5)
 
-    changes = IncidentDetector().reconcile((gap, *real), (), later)
+    changes = IncidentDetector().reconcile(
+        (gap, *real), (), later, known_data_gap_incident_ids={gap.incident_id}
+    )
 
     assert is_data_gap_incident(gap)
     assert [item.incident_id for item in changes.resolved] == [gap.incident_id]
@@ -130,11 +132,37 @@ def test_data_gap_incident_that_now_observes_a_deterioration_stays_open():
     )
     later = NOW + timedelta(minutes=5)
 
-    changes = IncidentDetector().reconcile((gap,), (health(HealthStatus.CRITICAL, later),), later)
+    changes = IncidentDetector().reconcile(
+        (gap,),
+        (health(HealthStatus.CRITICAL, later),),
+        later,
+        known_data_gap_incident_ids={gap.incident_id},
+    )
 
     assert changes.resolved == ()
     assert changes.updated[0].severity is IncidentSeverity.CRITICAL
     assert changes.updated[0].trigger_metrics["health_status"] == "CRITICAL"
+
+
+def test_legacy_incident_with_unknown_latest_trigger_is_not_assumed_to_be_a_data_gap():
+    from app.radar.contracts import Incident
+
+    legacy = Incident(
+        incident_id="incident:market:1:legacy",
+        source_entity_id="market:1:legacy",
+        severity=IncidentSeverity.WARNING,
+        status=IncidentStatus.OPEN,
+        trigger_metrics={"health_status": "UNKNOWN", "health_score": None},
+        rule_version="radar-health-v1",
+        first_observed_at=NOW,
+        last_observed_at=NOW,
+        reasons=("snapshot is expired",),
+    )
+
+    changes = IncidentDetector().reconcile((legacy,), (), NOW + timedelta(minutes=5))
+
+    assert changes.resolved == ()
+    assert changes.current == (legacy,)
 
 
 def test_multiple_states_for_one_entity_in_a_batch_open_one_incident():

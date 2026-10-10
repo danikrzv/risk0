@@ -5,7 +5,13 @@ from decimal import Decimal
 import pytest
 from pydantic import ValidationError
 
+from app.adapters.morpho import (
+    MorphoDataConflictError,
+    MorphoNotFoundError,
+    MorphoUnavailableError,
+)
 from tests.conftest import MORPHO_BASE_URL
+from tests.fixtures.morpho.rockawayx import ROCKAWAYX_BY_ID
 
 
 WSTETH_WETH = "0xb8fc70e82bc5bb53e773626fcc6a23f7eefa036918d7ef216ecfb1950a94a85e"
@@ -363,3 +369,164 @@ def test_snapshots_reject_binary_floats():
             decimals=6,
             price_usd=0.9997,
         )
+
+
+ROCKAWAYX_WETH = ROCKAWAYX_BY_ID["rockawayx-weth"]
+ROCKAWAYX_EUROP = ROCKAWAYX_BY_ID["rockawayx-europ"]
+ROCKAWAYX_USDC = ROCKAWAYX_BY_ID["rockawayx-confidential-rwa-usdc"]
+MIDAS_BASE = ROCKAWAYX_BY_ID["midas-usdc-prime-base"]
+
+
+@pytest.mark.parametrize(
+    ("address", "version", "chain_id", "symbol", "decimals", "total", "liquidity"),
+    [
+        (
+            MEV_CAPITAL_WETH,
+            "v1",
+            1,
+            "WETH",
+            18,
+            "1857.124314225046976544",
+            "1857.124314225046976544",
+        ),
+        (
+            BELEM_RWA_EURCV,
+            "v2",
+            1,
+            "EURCV",
+            18,
+            "4710489.785220272556475282",
+            "361743.300394771869707524",
+        ),
+        (ROCKAWAYX_USDC.address, "v2", 1, "USDC", 6, "26400000", "3550000"),
+        (
+            ROCKAWAYX_WETH.address,
+            "v2",
+            1,
+            "WETH",
+            18,
+            "0.849860311194908620",
+            "0",
+        ),
+        (ROCKAWAYX_EUROP.address, "v2", 1, "EUROP", 6, "9600", "2400"),
+        (MIDAS_BASE.address, "v2", 8453, "USDC", 6, "585516.841575", "201284.353309"),
+    ],
+)
+def test_vault_units_convert_with_asset_decimals_per_chain(
+    morpho_client, address, version, chain_id, symbol, decimals, total, liquidity
+):
+    envelope = morpho_client.get_vault(address, version, chain_id=chain_id)
+    vault = envelope.value
+
+    assert vault.chain_id == chain_id
+    assert vault.version == version
+    assert vault.asset.symbol == symbol
+    assert vault.asset.decimals == decimals
+    assert vault.total_assets == Decimal(total)
+    assert vault.liquidity_assets == Decimal(liquidity)
+    assert f"/{chain_id}:{address}/state" in envelope.source
+
+
+def test_base_vault_requests_use_chain_8453_everywhere(morpho_client, morpho_api):
+    envelope = morpho_client.get_vault(MIDAS_BASE.address, "v2", chain_id=8453)
+
+    rest_paths = [
+        request.url.path for request in morpho_api.requests if request.method == "GET"
+    ]
+    assert rest_paths == [
+        f"/v0/vaults-v2/8453:{MIDAS_BASE.address}",
+        f"/v1/vaults-v2/8453:{MIDAS_BASE.address}/state",
+    ]
+    assert [body["variables"]["chainId"] for body in morpho_api.graphql_requests()] == [
+        8453
+    ]
+    assert envelope.value.chain_id == 8453
+    assert envelope.block_number == MIDAS_BASE.block
+    assert envelope.value.total_assets_usd == Decimal("585399.74")
+    assert all("/1:" not in source for source in envelope.value.sources)
+
+
+def test_base_vault_is_not_resolved_on_mainnet(morpho_client):
+    with pytest.raises(MorphoNotFoundError):
+        morpho_client.get_vault(MIDAS_BASE.address, "v2")
+
+
+def test_chain_mismatch_in_provider_payload_is_a_conflict(morpho_client, morpho_api):
+    morpho_api.rest[MIDAS_BASE.state_path]["data"]["chain_id"] = 1
+
+    with pytest.raises(MorphoDataConflictError):
+        morpho_client.get_vault(MIDAS_BASE.address, "v2", chain_id=8453)
+
+
+def test_cache_keys_include_chain_so_chains_never_collide(
+    morpho_client, morpho_api, clock
+):
+    morpho_client.get_vault(MIDAS_BASE.address, "v2", chain_id=8453)
+    clock.advance(timedelta(minutes=5))
+    morpho_api.mode = "down"
+
+    stale = morpho_client.get_vault(MIDAS_BASE.address, "v2", chain_id=8453)
+    assert stale.freshness == "stale_usable"
+    assert stale.value.chain_id == 8453
+    with pytest.raises(MorphoUnavailableError):
+        morpho_client.get_vault(MIDAS_BASE.address, "v2", chain_id=1)
+
+
+@pytest.mark.parametrize(
+    ("version", "address", "rest_paths", "graphql_root"),
+    [
+        (
+            "v1",
+            MEV_CAPITAL_WETH,
+            [
+                f"/v0/vaults-v1/1:{MEV_CAPITAL_WETH}",
+                f"/v0/vaults-v1/1:{MEV_CAPITAL_WETH}/state",
+            ],
+            "vaultByAddress",
+        ),
+        (
+            "v2",
+            ROCKAWAYX_WETH.address,
+            [
+                f"/v0/vaults-v2/1:{ROCKAWAYX_WETH.address}",
+                f"/v1/vaults-v2/1:{ROCKAWAYX_WETH.address}/state",
+            ],
+            "vaultV2ByAddress",
+        ),
+    ],
+)
+def test_vault_version_dispatches_to_matching_endpoints(
+    morpho_client, morpho_api, version, address, rest_paths, graphql_root
+):
+    morpho_client.get_vault(address, version)
+
+    assert [
+        request.url.path for request in morpho_api.requests if request.method == "GET"
+    ] == rest_paths
+    (body,) = morpho_api.graphql_requests()
+    assert f"{graphql_root}(" in body["query"]
+    assert body["variables"] == {"address": address, "chainId": 1}
+
+
+def test_genuine_provider_zero_liquidity_is_preserved_not_nulled(morpho_client):
+    vault = morpho_client.get_vault(ROCKAWAYX_WETH.address, "v2").value
+
+    assert vault.liquidity_assets == Decimal(0)
+    assert vault.liquidity_usd == Decimal(0)
+    assert vault.total_assets_usd == Decimal("2124.65")
+
+
+def test_allocations_and_markets_thread_chain_id_into_paths(
+    morpho_client, morpho_api
+):
+    with pytest.raises(MorphoNotFoundError):
+        morpho_client.get_allocations(MIDAS_BASE.address, "v2", chain_id=8453)
+    with pytest.raises(MorphoNotFoundError):
+        morpho_client.get_market(WETH_USDC, chain_id=8453)
+
+    paths = [request.url.path for request in morpho_api.requests]
+    assert paths[0] == f"/v0/vaults-v2/8453:{MIDAS_BASE.address}"
+    assert f"/v0/blue/markets/8453:{WETH_USDC}" in paths
+    assert not any(
+        path.startswith(("/v0/vaults-v2/1:", "/v0/blue/markets/1:")) for path in paths
+    )

@@ -102,29 +102,31 @@ class MorphoClient:
         self._backoff_seconds = backoff_seconds
         self._sleep = sleep
 
-    def get_market(self, market_id: str) -> DataEnvelope[MarketSnapshot]:
+    def get_market(
+        self, market_id: str, *, chain_id: int = CHAIN_ID
+    ) -> DataEnvelope[MarketSnapshot]:
         return self._load(
-            f"market:{CHAIN_ID}:{market_id.lower()}",
+            f"market:{chain_id}:{market_id.lower()}",
             DataEnvelope[MarketSnapshot],
-            lambda: self._fetch_market(market_id),
+            lambda: self._fetch_market(market_id, chain_id),
         )
 
     def get_vault(
-        self, address: str, version: VaultVersion
+        self, address: str, version: VaultVersion, *, chain_id: int = CHAIN_ID
     ) -> DataEnvelope[VaultSnapshot]:
         return self._load(
-            f"vault_{version}:{CHAIN_ID}:{address.lower()}",
+            f"vault_{version}:{chain_id}:{address.lower()}",
             DataEnvelope[VaultSnapshot],
-            lambda: self._fetch_vault(address, version),
+            lambda: self._fetch_vault(address, version, chain_id),
         )
 
     def get_allocations(
-        self, address: str, version: VaultVersion
+        self, address: str, version: VaultVersion, *, chain_id: int = CHAIN_ID
     ) -> DataEnvelope[tuple[AllocationSnapshot, ...]]:
         return self._load(
-            f"allocations_{version}:{CHAIN_ID}:{address.lower()}",
+            f"allocations_{version}:{chain_id}:{address.lower()}",
             DataEnvelope[tuple[AllocationSnapshot, ...]],
-            lambda: self._fetch_allocations(address, version),
+            lambda: self._fetch_allocations(address, version, chain_id),
         )
 
     def _load(
@@ -172,19 +174,21 @@ class MorphoClient:
             )
         return envelope
 
-    def _fetch_market(self, market_id: str) -> DataEnvelope[MarketSnapshot]:
+    def _fetch_market(
+        self, market_id: str, chain_id: int
+    ) -> DataEnvelope[MarketSnapshot]:
         fetched_at = self._clock()
-        selector = f"{CHAIN_ID}:{market_id}"
+        selector = f"{chain_id}:{market_id}"
         config_path = f"/v0/blue/markets/{selector}"
         state_path = f"{config_path}/state"
         config = self._get(config_path)
         state = self._get(state_path)
         metadata = self._graphql(
-            MARKET_QUERY, {"marketId": market_id, "chainId": CHAIN_ID}, "marketById"
+            MARKET_QUERY, {"marketId": market_id, "chainId": chain_id}, "marketById"
         )
 
         for payload in (config, state):
-            _require_identity(payload, "market_id", market_id)
+            _require_identity(payload, "market_id", market_id, chain_id)
         lltv = _units(config["lltv_wad"], WAD_DECIMALS)
         if metadata.get("lltv") is not None and _units(
             metadata["lltv"], WAD_DECIMALS
@@ -206,7 +210,7 @@ class MorphoClient:
 
         return DataEnvelope[MarketSnapshot](
             value=MarketSnapshot(
-                chain_id=CHAIN_ID,
+                chain_id=chain_id,
                 market_id=config["market_id"],
                 loan_asset=loan_asset,
                 collateral_asset=collateral_asset,
@@ -235,12 +239,12 @@ class MorphoClient:
         )
 
     def _fetch_vault(
-        self, address: str, version: VaultVersion
+        self, address: str, version: VaultVersion, chain_id: int
     ) -> DataEnvelope[VaultSnapshot]:
         fetched_at = self._clock()
-        config_path = _vault_path(address, version)
+        config_path = _vault_path(address, version, chain_id)
         state_path = (
-            f"/v1/vaults-v2/{CHAIN_ID}:{address}/state"
+            f"/v1/vaults-v2/{chain_id}:{address}/state"
             if version == "v2"
             else f"{config_path}/state"
         )
@@ -249,7 +253,7 @@ class MorphoClient:
         if version == "v2":
             metadata = self._graphql(
                 VAULT_V2_QUERY,
-                {"address": address, "chainId": CHAIN_ID},
+                {"address": address, "chainId": chain_id},
                 "vaultV2ByAddress",
             )
             total_assets_usd = metadata.get("totalAssetsUsd")
@@ -257,20 +261,20 @@ class MorphoClient:
         else:
             metadata = self._graphql(
                 VAULT_V1_QUERY,
-                {"address": address, "chainId": CHAIN_ID},
+                {"address": address, "chainId": chain_id},
                 "vaultByAddress",
             )
             total_assets_usd = (metadata.get("state") or {}).get("totalAssetsUsd")
             liquidity_usd = None
 
         for payload in (config, state):
-            _require_identity(payload, "address", address)
+            _require_identity(payload, "address", address, chain_id)
         asset = _asset(config["asset"], price_source=metadata["asset"])
         decimals = asset.decimals
 
         return DataEnvelope[VaultSnapshot](
             value=VaultSnapshot(
-                chain_id=CHAIN_ID,
+                chain_id=chain_id,
                 address=config["address"],
                 version=version,
                 name=config["name"],
@@ -307,15 +311,15 @@ class MorphoClient:
         )
 
     def _fetch_allocations(
-        self, address: str, version: VaultVersion
+        self, address: str, version: VaultVersion, chain_id: int
     ) -> DataEnvelope[tuple[AllocationSnapshot, ...]]:
         fetched_at = self._clock()
-        config_path = _vault_path(address, version)
+        config_path = _vault_path(address, version, chain_id)
         allocations_path = f"{config_path}/allocations"
         config = self._get(config_path)
         payload = self._get(allocations_path)
-        _require_identity(config, "address", address)
-        _require_identity(payload, "vault_address", address)
+        _require_identity(config, "address", address, chain_id)
+        _require_identity(payload, "vault_address", address, chain_id)
         decimals = int(config["asset"]["decimals"])
 
         if version == "v2":
@@ -324,7 +328,7 @@ class MorphoClient:
             )
         else:
             state = self._get(f"{config_path}/state")
-            _require_identity(state, "address", address)
+            _require_identity(state, "address", address, chain_id)
             rows = _v1_allocation_rows(payload["allocations"], decimals)
             provider_total_raw = _nonnegative_integer(state["total_assets"])
 
@@ -528,14 +532,16 @@ def _v1_allocation_rows(
     return rows
 
 
-def _vault_path(address: str, version: VaultVersion) -> str:
+def _vault_path(address: str, version: VaultVersion, chain_id: int) -> str:
     if version not in ("v1", "v2"):
         raise ValueError(f"unsupported vault version: {version}")
-    return f"/v0/vaults-{version}/{CHAIN_ID}:{address}"
+    return f"/v0/vaults-{version}/{chain_id}:{address}"
 
 
-def _require_identity(payload: dict[str, Any], field: str, expected: str) -> None:
-    if payload.get("chain_id") != CHAIN_ID:
+def _require_identity(
+    payload: dict[str, Any], field: str, expected: str, chain_id: int
+) -> None:
+    if payload.get("chain_id") != chain_id:
         raise _DataConflictError(f"unexpected chain_id {payload.get('chain_id')}")
     if str(payload.get(field, "")).lower() != expected.lower():
         raise _DataConflictError(f"{field} does not match the requested entity")

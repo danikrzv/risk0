@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   CATALOG_AVAILABILITIES,
+  CATALOG_CHAIN_IDS,
   CATALOG_ENTITY_TYPES,
   CATALOG_PROVENANCE,
   CONFIDENCE_LEVELS,
@@ -17,6 +18,7 @@ import {
   RISK_NODE_TYPES,
   SCENARIO_IDS,
   type AnalysisRequest,
+  type CatalogEntry,
   type CatalogResponse,
   type ExitEstimate,
   type MetricValue,
@@ -45,6 +47,9 @@ type QuoteTimestampIsRequired = Assert<Equal<ExitEstimate["quoted_at"], string>>
 type CatalogVersionIsFixed = Assert<
   Equal<CatalogResponse["schema_version"], "1.0.0">
 >;
+type CatalogChainIdsAreExact = Assert<
+  Equal<CatalogEntry["chain_id"], 1 | 8453>
+>;
 
 const typeParityChecks: [
   RecommendationDecisionIsExact,
@@ -52,7 +57,8 @@ const typeParityChecks: [
   DomainMetricsExcludeNumbers,
   QuoteTimestampIsRequired,
   CatalogVersionIsFixed,
-] = [true, true, true, true, true];
+  CatalogChainIdsAreExact,
+] = [true, true, true, true, true, true];
 
 const lenderPosition = {
   mode: "lender",
@@ -100,6 +106,14 @@ function pythonEnumValues(enumName: string): string[] {
   return [...enumBlock[1].matchAll(/= "([^"]+)"/g)].map((match) => match[1]);
 }
 
+function pythonCatalogChainIds(): number[] {
+  const literal = pythonModels.match(/^CatalogChainId = Literal\[([0-9, ]+)\]$/m);
+  if (!literal) {
+    throw new Error("Unable to parse Python CatalogChainId");
+  }
+  return literal[1].split(",").map((value) => Number(value.trim()));
+}
+
 describe("generated contract parity", () => {
   it("fails check mode when generated types drift from JSON Schema", () => {
     const schemaUrl = new URL(
@@ -137,12 +151,17 @@ describe("generated contract parity", () => {
   });
 
   it("uses exact contract shapes", () => {
-    expect(typeParityChecks).toEqual([true, true, true, true, true]);
+    expect(typeParityChecks).toEqual([true, true, true, true, true, true]);
     expect(lenderPosition.mode).toBe("lender");
     expect(borrowerPosition.mode).toBe("borrower");
     expect(invalidLender).toBeDefined();
     expect(invalidBorrower).toBeDefined();
     expect(invalidRequest).toBeDefined();
+  });
+
+  it("matches the Python CatalogChainId literal", () => {
+    expect([...CATALOG_CHAIN_IDS]).toEqual(pythonCatalogChainIds());
+    expect([...CATALOG_CHAIN_IDS]).toEqual([1, 8453]);
   });
 
   it.each([

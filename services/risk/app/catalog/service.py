@@ -20,6 +20,9 @@ from app.contracts.models import (
 from app.domain.snapshots import DataEnvelope, MarketSnapshot, VaultSnapshot
 
 
+MAINNET_CHAIN_ID = 1
+
+
 class CatalogService:
     def __init__(
         self,
@@ -41,12 +44,19 @@ class CatalogService:
         )
 
     def _hydrate(self, entry: CatalogEntry) -> HydratedCatalogEntry:
-        if not entry.supported:
-            return _unavailable(
-                entry,
-                CatalogAvailability.CATALOG_INACTIVE,
-                "Entry is inactive in the curated catalog; analysis is disabled.",
-            )
+        hydrated = self._hydrate_from_morpho(entry)
+        if entry.supported:
+            return hydrated
+        # Unsupported entries stay listed and are hydrated for display only.
+        return hydrated.model_copy(
+            update={
+                "analysis_available": False,
+                "availability": CatalogAvailability.CATALOG_INACTIVE,
+                "warnings": (_inactive_reason(entry), *hydrated.warnings),
+            }
+        )
+
+    def _hydrate_from_morpho(self, entry: CatalogEntry) -> HydratedCatalogEntry:
         try:
             envelope = self._fetch(entry)
         except MorphoNotFoundError:
@@ -117,11 +127,21 @@ class CatalogService:
         self, entry: CatalogEntry
     ) -> DataEnvelope[MarketSnapshot] | DataEnvelope[VaultSnapshot]:
         identifier = entry.address_or_market_id
+        chain_id = entry.chain_id
         if entry.entity_type is CatalogEntityType.MORPHO_MARKET:
-            return self._morpho.get_market(identifier)
+            return self._morpho.get_market(identifier, chain_id=chain_id)
         if entry.entity_type is CatalogEntityType.MORPHO_VAULT_V2:
-            return self._morpho.get_vault(identifier, "v2")
-        return self._morpho.get_vault(identifier, "v1")
+            return self._morpho.get_vault(identifier, "v2", chain_id=chain_id)
+        return self._morpho.get_vault(identifier, "v1", chain_id=chain_id)
+
+
+def _inactive_reason(entry: CatalogEntry) -> str:
+    if entry.chain_id != MAINNET_CHAIN_ID:
+        return (
+            f"Risk0 analysis is Ethereum mainnet-only; this chain {entry.chain_id} "
+            "entry is listed for reference and analysis is disabled."
+        )
+    return "Entry is inactive in the curated catalog; analysis is disabled."
 
 
 def _metrics(snapshot: MarketSnapshot | VaultSnapshot) -> CatalogMetrics:

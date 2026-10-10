@@ -18,6 +18,9 @@ class NeighborSelection:
     visible: tuple[SimilarityRecord, ...]
 
 
+COMPONENT_QUANTUM = Decimal("0.0000000000000000000000000001")
+
+
 class VaultSimilarity:
     def __init__(
         self, *, clock: Callable[[], datetime] = lambda: datetime.now(UTC)
@@ -51,8 +54,10 @@ class VaultSimilarity:
         else:
             components["same_curator"] = Decimal("0.05") if left.curator == right.curator else Decimal(0)
 
-        normalized = {name: value.quantize(Decimal("0.0000000000000000000000000001")) for name, value in components.items()}
-        score = sum(normalized.values(), Decimal(0)).quantize(Decimal("0.01"))
+        normalized = {name: value.quantize(COMPONENT_QUANTUM) for name, value in components.items()}
+        # Thresholds are strict, so the total is kept unrounded: rounding first
+        # could push a 0.3349 score to 0.33 (or 0.6049 to 0.60) and flip policy.
+        score = sum(normalized.values(), Decimal(0))
         return SimilarityRecord(
             catalog_entity_id=left.entity_id,
             candidate_entity_id=right.entity_id,
@@ -67,11 +72,18 @@ class VaultSimilarity:
     def select_neighbors(
         self, catalog_id: str, scores: Iterable[SimilarityRecord]
     ) -> NeighborSelection:
-        candidates = tuple(
-            score
-            for score in scores
-            if score.catalog_entity_id == catalog_id and score.score > SIMILARITY_STORAGE_THRESHOLD
-        )
+        best: dict[str, SimilarityRecord] = {}
+        for record in scores:
+            if (
+                record.catalog_entity_id != catalog_id
+                or record.candidate_entity_id == catalog_id
+                or record.score <= SIMILARITY_STORAGE_THRESHOLD
+            ):
+                continue
+            kept = best.get(record.candidate_entity_id)
+            if kept is None or (record.score, record.computed_at) > (kept.score, kept.computed_at):
+                best[record.candidate_entity_id] = record
+        candidates = tuple(best.values())
         ordered = tuple(sorted(candidates, key=lambda item: (-item.score, item.candidate_entity_id)))
         visible = tuple(
             item for item in ordered if item.score > SIMILARITY_VISIBILITY_THRESHOLD
@@ -96,6 +108,7 @@ class VaultSimilarity:
     def _weighted_jaccard(
         left: Mapping[str, Decimal], right: Mapping[str, Decimal]
     ) -> Decimal:
+        left, right = _shares(left), _shares(right)
         keys = set(left) | set(right)
         if not keys:
             return Decimal(0)
@@ -131,6 +144,15 @@ class VaultSimilarity:
         left_average = sum(left.lltvs, Decimal(0)) / Decimal(len(left.lltvs))
         right_average = sum(right.lltvs, Decimal(0)) / Decimal(len(right.lltvs))
         return Decimal("0.10") * max(Decimal(0), Decimal(1) - abs(left_average - right_average))
+
+
+def _shares(allocations: Mapping[str, Decimal]) -> dict[str, Decimal]:
+    """Normalize allocations to shares of the modelled total so vaults with
+    different idle/unmodelled remainders compare on the same scale."""
+    total = sum(allocations.values(), Decimal(0))
+    if total <= 0:
+        return {}
+    return {key: value / total for key, value in allocations.items() if value > 0}
 
 
 __all__ = ["NeighborSelection", "VaultProfile", "VaultSimilarity"]

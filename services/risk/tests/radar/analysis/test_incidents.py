@@ -72,3 +72,59 @@ def test_unknown_health_opens_warning_incident_with_missing_data_reason():
 
     assert changes.current[0].severity is IncidentSeverity.WARNING
     assert "unknown state" in changes.current[0].reasons
+
+
+def test_unknown_does_not_downgrade_a_critical_incident():
+    detector = IncidentDetector()
+    opened = detector.reconcile((), (health(HealthStatus.CRITICAL),), NOW).current
+
+    later = NOW + timedelta(minutes=5)
+    changes = detector.reconcile(opened, (health(HealthStatus.UNKNOWN, later),), later)
+
+    assert changes.current[0].severity is IncidentSeverity.CRITICAL
+    assert changes.current[0].last_observed_at == later
+
+
+def test_multiple_states_for_one_entity_in_a_batch_open_one_incident():
+    later = NOW + timedelta(minutes=1)
+    changes = IncidentDetector().reconcile(
+        (),
+        (
+            health(HealthStatus.WARNING),
+            health(HealthStatus.CRITICAL, later),
+            health(HealthStatus.WARNING, NOW),
+        ),
+        later,
+    )
+
+    assert len(changes.opened) == 1
+    assert len(changes.current) == 1
+    assert changes.current[0].severity is IncidentSeverity.CRITICAL
+
+
+def test_open_incident_for_unmonitored_entity_is_resolved():
+    detector = IncidentDetector()
+    opened = detector.reconcile((), (health(HealthStatus.CRITICAL),), NOW).current
+
+    later = NOW + timedelta(minutes=5)
+    kept = detector.reconcile(opened, (), later, monitored_entity_ids={"oracle:1:test"})
+    removed = detector.reconcile(opened, (), later, monitored_entity_ids=set())
+
+    assert kept.resolved == ()
+    assert len(removed.resolved) == 1
+    assert removed.current[0].status is IncidentStatus.RESOLVED
+    assert removed.current[0].resolved_at == later
+
+
+def test_incident_id_is_stable_and_independent_of_reconciliation_time():
+    from datetime import timezone
+
+    detector = IncidentDetector()
+    paris = timezone(timedelta(hours=2))
+    first = detector.reconcile((), (health(HealthStatus.WARNING),), NOW).current[0]
+    second = detector.reconcile(
+        (), (health(HealthStatus.WARNING),), (NOW + timedelta(minutes=7)).astimezone(paris)
+    ).current[0]
+
+    assert first.incident_id == second.incident_id
+    assert first.incident_id == "incident:oracle:1:test:oracle-health-v1:2026-10-10T12:00:00Z"

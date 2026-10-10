@@ -153,7 +153,7 @@ async def test_collector_error_is_persisted_and_does_not_prevent_future_cycles()
     assert failed.status == "failed"
     assert failed.error_count == 1
     assert failed.finished_at == NOW
-    assert "collector unavailable" in failed.message
+    assert "RuntimeError" in failed.message
     assert recovered.status == "completed"
     assert [run.status for run in repository.runs] == ["failed", "completed"]
 
@@ -242,3 +242,176 @@ def test_fastapi_lifespan_leaves_radar_disabled_by_default(monkeypatch):
 
     with TestClient(main.app) as client:
         assert client.get("/v1/health").status_code == 200
+
+
+class TickSleep:
+    """Each loop's sleep returns only when the test releases a tick for it."""
+
+    def __init__(self) -> None:
+        self.ticks: dict[float, asyncio.Queue[None]] = {}
+        self.waiting: dict[float, int] = {}
+
+    def queue(self, delay: float) -> asyncio.Queue[None]:
+        return self.ticks.setdefault(delay, asyncio.Queue())
+
+    async def __call__(self, delay: float) -> None:
+        self.waiting[delay] = self.waiting.get(delay, 0) + 1
+        await self.queue(delay).get()
+
+    def tick(self, delay: float) -> None:
+        self.queue(delay).put_nowait(None)
+
+
+@pytest.mark.anyio
+async def test_loop_survives_a_run_repository_failure():
+    from app.radar.scheduler import RadarScheduler
+
+    class FailingOnceRepository(RecordingRunRepository):
+        def record(self, run: SchedulerRun) -> None:
+            if not self.runs and run.loop == "fast":
+                self.runs.append(run.model_copy(update={"message": "lost"}))
+                raise RuntimeError("database is locked")
+            super().record(run)
+
+    service = ImmediateService()
+    repository = FailingOnceRepository()
+    sleep = TickSleep()
+    scheduler = RadarScheduler(service, repository, clock=lambda: NOW, sleep=sleep)
+
+    await scheduler.start()
+    await wait_until(lambda: sleep.waiting.get(300) == 1)
+    sleep.tick(300)
+    await wait_until(lambda: service.fast_calls == 2)
+    await scheduler.stop()
+
+    assert service.fast_calls == 2
+
+
+@pytest.mark.anyio
+async def test_tick_arriving_during_a_running_cycle_is_skipped_and_recorded():
+    from app.radar.scheduler import RadarScheduler
+
+    release = asyncio.Event()
+
+    class SlowFastService(ImmediateService):
+        async def run_monitoring(self, now: datetime) -> SchedulerRun:
+            self.fast_calls += 1
+            await release.wait()
+            return completed_run("fast", f"fast-{self.fast_calls}")
+
+    service = SlowFastService()
+    repository = RecordingRunRepository()
+    sleep = TickSleep()
+    scheduler = RadarScheduler(service, repository, clock=lambda: NOW, sleep=sleep)
+
+    await scheduler.start()
+    await wait_until(lambda: service.fast_calls == 1 and sleep.waiting.get(300) == 1)
+    sleep.tick(300)
+    await wait_until(
+        lambda: any(run.status == "skipped" for run in repository.runs)
+    )
+    release.set()
+    await wait_until(lambda: any(run.run_id == "fast-1" for run in repository.runs))
+    await scheduler.stop()
+
+    fast_runs = [run for run in repository.runs if run.loop == "fast"]
+    assert [run.status for run in fast_runs] == ["skipped", "completed"]
+    assert service.fast_calls == 1
+
+
+@pytest.mark.anyio
+async def test_first_fast_cycle_waits_for_the_first_discovery():
+    from app.radar.scheduler import RadarScheduler
+
+    release_slow = asyncio.Event()
+    order: list[str] = []
+
+    class OrderedService(ImmediateService):
+        async def run_discovery(self, now: datetime) -> SchedulerRun:
+            await release_slow.wait()
+            order.append("slow")
+            return completed_run("slow", "slow-1")
+
+        async def run_monitoring(self, now: datetime) -> SchedulerRun:
+            order.append("fast")
+            return completed_run("fast", "fast-1")
+
+    scheduler = RadarScheduler(
+        OrderedService(), RecordingRunRepository(), clock=lambda: NOW, sleep=TickSleep()
+    )
+    await scheduler.start()
+    for _ in range(20):
+        await asyncio.sleep(0)
+    assert order == []
+    release_slow.set()
+    await wait_until(lambda: order == ["slow", "fast"])
+    await scheduler.stop()
+
+
+@pytest.mark.anyio
+async def test_failed_cycle_message_never_contains_provider_details():
+    from app.radar.scheduler import RadarScheduler
+
+    class LeakyService(ImmediateService):
+        async def run_monitoring(self, now: datetime) -> SchedulerRun:
+            raise RuntimeError(
+                "Client error for url 'https://eth-mainnet.example.invalid/v2/secret-key'"
+            )
+
+    repository = RecordingRunRepository()
+    scheduler = RadarScheduler(LeakyService(), repository, clock=lambda: NOW)
+
+    failed = await scheduler.run_fast_once()
+
+    assert failed.status == "failed"
+    assert "RuntimeError" in failed.message
+    assert "secret-key" not in failed.message
+    assert "example.invalid" not in failed.message
+
+
+@pytest.mark.anyio
+async def test_stop_cancels_in_flight_cycles_without_leaking_tasks():
+    from app.radar.scheduler import RadarScheduler
+
+    started = asyncio.Event()
+
+    class HangingService(ImmediateService):
+        async def run_discovery(self, now: datetime) -> SchedulerRun:
+            started.set()
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+    scheduler = RadarScheduler(
+        HangingService(), RecordingRunRepository(), clock=lambda: NOW, sleep=TickSleep()
+    )
+    before = asyncio.all_tasks()
+    await scheduler.start()
+    await asyncio.wait_for(started.wait(), timeout=1)
+    await scheduler.stop()
+
+    assert asyncio.all_tasks() == before
+
+
+def test_fixture_mode_scheduler_never_builds_live_rpc_clients(monkeypatch, tmp_path):
+    from app import main
+    from app.api.radar import get_radar_context
+    from app.fixture_mode import fixture_morpho_client
+
+    monkeypatch.setenv("RISK0_DATA_MODE", "fixture")
+    monkeypatch.setenv("RISK0_CACHE_PATH", str(tmp_path / "cache.sqlite3"))
+    monkeypatch.setenv("RISK0_RADAR_DB_PATH", str(tmp_path / "radar.sqlite3"))
+    monkeypatch.setenv("RISK0_FIXTURE_CACHE_PATH", str(tmp_path / "fixture.sqlite3"))
+    monkeypatch.setattr(
+        main.RpcRegistry,
+        "from_environment",
+        classmethod(lambda cls, *args, **kwargs: pytest.fail("fixture mode opened RPC")),
+    )
+    get_radar_context.cache_clear()
+    fixture_morpho_client.cache_clear()
+    try:
+        scheduler = main.build_radar_scheduler()
+        chain = scheduler._service._chain_collector
+        assert chain.collect_all((1,), NOW) == ()
+    finally:
+        get_radar_context.cache_clear()
+        fixture_morpho_client.cache_clear()

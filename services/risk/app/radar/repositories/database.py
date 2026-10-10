@@ -21,6 +21,21 @@ class RadarDatabase:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._timeout_seconds = timeout_seconds
         self._local = threading.local()
+        self._revision = 0
+        self._revision_lock = threading.Lock()
+
+    @property
+    def revision(self) -> int:
+        """Bumped after every committed transaction that changed a row.
+
+        Lets read models (e.g. the graph endpoint) cache safely within this
+        process. Writes made by another process are not observed.
+        """
+        return self._revision
+
+    def _bump_revision(self) -> None:
+        with self._revision_lock:
+            self._revision += 1
 
     def migrate(self) -> None:
         with self._connection() as connection:
@@ -46,6 +61,7 @@ class RadarDatabase:
                     f"(version, applied_at) VALUES ('{migration.stem}', "
                     f"'{encode_timestamp(datetime.now(UTC))}');\nCOMMIT;"
                 )
+        self._bump_revision()
 
     def applied_migrations(self) -> tuple[str, ...]:
         with self.transaction() as connection:
@@ -71,6 +87,8 @@ class RadarDatabase:
                 raise
             else:
                 connection.commit()
+                if connection.total_changes:
+                    self._bump_revision()
             finally:
                 self._local.connection = None
 

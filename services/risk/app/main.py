@@ -41,6 +41,13 @@ def radar_enabled() -> bool:
     raise ValueError(f"{RADAR_ENABLED_ENV} must be a boolean")
 
 
+class _NoChainState:
+    """Fixture-mode chain collector: recorded data only, so no RPC is ever opened."""
+
+    def collect_all(self, chain_ids, now):
+        return ()
+
+
 def build_radar_scheduler() -> RadarScheduler:
     cache_path = Path(
         os.environ.get("RISK0_CACHE_PATH", SERVICE_ROOT / ".cache" / "risk0.sqlite3")
@@ -52,21 +59,29 @@ def build_radar_scheduler() -> RadarScheduler:
         )
     )
     cache = SQLiteCache(cache_path)
-    database = RadarDatabase(database_path)
-    database.migrate()
+    fixture = data_mode() == FIXTURE
     morpho = (
         fixture_morpho_client()
-        if data_mode() == FIXTURE
+        if fixture
         else MorphoClient(os.environ.get("MORPHO_API_URL", DEFAULT_BASE_URL), cache=cache)
     )
-    runs = SchedulerRunRepository(database)
     radar_context = get_radar_context()
+    # Share the API's database so scheduler writes invalidate its graph cache.
+    database = radar_context.database
+    if database is None:
+        database = RadarDatabase(database_path)
+        database.migrate()
+    runs = SchedulerRunRepository(database)
     service = RadarService(
         discovery=MorphoDiscovery(
             morpho, catalog=CatalogRepository(catalog_path).list_entries()
         ),
         morpho_collector=MorphoStateCollector(morpho),
-        chain_collector=ChainStateCollector(RpcRegistry.from_environment()),
+        chain_collector=(
+            _NoChainState()
+            if fixture
+            else ChainStateCollector(RpcRegistry.from_environment())
+        ),
         topology=radar_context.topology,
         states=radar_context.states,
         incidents=radar_context.incidents,

@@ -3,6 +3,7 @@ import json
 import threading
 import time
 from collections import deque
+from itertools import islice
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import asdict, dataclass
 from typing import Literal
@@ -76,12 +77,27 @@ class RadarEventBroker:
             self._events.append(event)
             return event
 
+    @property
+    def sequence(self) -> int:
+        return self._sequence
+
     def events_after(self, sequence: int) -> tuple[RadarEvent, ...]:
+        # Idle subscribers poll this every `poll_seconds`: answer in O(1) when
+        # nothing is new, and slice by position (sequences are contiguous)
+        # instead of scanning the whole replay buffer.
+        if sequence >= self._sequence:
+            return ()
         with self._lock:
-            return tuple(event for event in self._events if event.sequence > sequence)
+            if not self._events:
+                return ()
+            start = max(0, sequence - self._events[0].sequence + 1)
+            return tuple(islice(self._events, start, None))
 
     async def stream(self, *, last_sequence: int) -> AsyncIterator[str]:
-        sequence = last_sequence
+        # Sequences restart at 1 with the process. A Last-Event-ID beyond the
+        # current sequence comes from a previous process: replay this one's
+        # buffer rather than withholding events until the counter catches up.
+        sequence = 0 if last_sequence > self._sequence else last_sequence
         heartbeat_at = time.monotonic() + self._heartbeat_seconds
         while True:
             events = self.events_after(sequence)

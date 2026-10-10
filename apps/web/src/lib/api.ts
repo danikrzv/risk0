@@ -121,6 +121,6 @@ export function getExposureImpact(exposureId: string): Promise<ExposureImpactRes
   return request<ExposureImpactResponse>(`/api/exposures?${query.toString()}`, { method: "GET" })
 }
 
-export function getRadarEventsUrl(): "/api/events" {
-  return "/api/events"
+export function getRadarEventsUrl(lastEventId: number | null = null): string {
+  return lastEventId === null ? "/api/events" : `/api/events?last_event_id=${lastEventId}`
 }

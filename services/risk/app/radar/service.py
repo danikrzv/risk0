@@ -87,6 +87,11 @@ class RadarService:
         self._events = events
         self._batch: DiscoveryBatch | None = None
         self._health_history: dict[str, HealthHistory] = {}
+        # Propagation inputs are incidents (changed only by health updates) and
+        # topology/similarities (changed only by discovery). Exposures created
+        # through the API are propagated at creation. Until either input changes,
+        # re-propagating every fast cycle would only rewrite identical impacts.
+        self._propagation_stale = True
 
     def run_discovery(self, now: datetime) -> SchedulerRun:
         if self._discovery is None:
@@ -110,6 +115,7 @@ class RadarService:
                 batch.entities, batch.relationships, batch.discovered_at
             )
             self._batch = batch
+            self._propagation_stale = True
         except Exception as error:
             return self._record_run(
                 "slow",
@@ -177,8 +183,9 @@ class RadarService:
             for snapshot in sorted(snapshots, key=lambda item: item.entity_id)
             if self._states.append_snapshot(snapshot)
         )
-        health_states = self._evaluate_health(new_snapshots)
-        self._reconcile_incidents(health_states, now)
+        health_states, health_errors = self._evaluate_health(new_snapshots)
+        errors += health_errors
+        errors += self._reconcile_incidents(health_states, now)
         status = "partial" if errors else "completed"
         if new_snapshots:
             self._publish(
@@ -197,16 +204,25 @@ class RadarService:
 
     def _evaluate_health(
         self, snapshots: Sequence[StateSnapshot]
-    ) -> tuple[HealthState, ...]:
+    ) -> tuple[tuple[HealthState, ...], int]:
         entities = {entity.entity_id: entity for entity in self._topology.entities()}
         relationships = self._topology.relationships()
         dependency_ids: dict[str, list[str]] = {}
+        allocations: dict[str, dict[str, Decimal]] = {}
         for relationship in relationships:
             dependency_ids.setdefault(relationship.source_entity_id, []).append(
                 relationship.target_entity_id
             )
+            if (
+                relationship.relationship_type is RadarRelationshipType.ALLOCATED_TO
+                and relationship.weight is not None
+            ):
+                allocations.setdefault(relationship.source_entity_id, {})[
+                    relationship.target_entity_id
+                ] = relationship.weight
         latest = self._states.latest_health_all()
         evaluated: list[HealthState] = []
+        errors = 0
         for snapshot in sorted(snapshots, key=_snapshot_health_order):
             entity = entities.get(snapshot.entity_id)
             if entity is None:
@@ -219,19 +235,45 @@ class RadarService:
             history = self._health_history.get(
                 entity.entity_id, HealthHistory(current=latest.get(entity.entity_id))
             )
-            state = self._health.evaluate(entity, snapshot, dependencies, history)
+            try:
+                if entity.entity_type is RadarEntityType.VAULT and entity.entity_id in allocations:
+                    # Vault health is weighted by allocation share when weights are known.
+                    state = self._health.evaluate(
+                        entity,
+                        snapshot,
+                        dependencies,
+                        history,
+                        allocations=allocations[entity.entity_id],
+                    )
+                else:
+                    state = self._health.evaluate(entity, snapshot, dependencies, history)
+            except Exception:
+                # Isolate a bad entity: the rest of the cycle still evaluates.
+                errors += 1
+                continue
             self._states.set_health(state)
             latest[state.entity_id] = state
             evaluated.append(state)
             self._health_history[state.entity_id] = _next_history(history, state)
-        return tuple(evaluated)
+        return tuple(evaluated), errors
 
     def _reconcile_incidents(
         self, health_states: tuple[HealthState, ...], now: datetime
-    ) -> None:
+    ) -> int:
+        if not health_states and not self._propagation_stale:
+            return 0
+        # Cleared before reading topology so a concurrent discovery that lands
+        # mid-propagation marks the next cycle stale again.
+        self._propagation_stale = False
         if health_states:
             changes = self._incident_detector.reconcile(
-                self._incidents.active(), health_states, now
+                self._incidents.active(),
+                health_states,
+                now,
+                # Incidents whose source left the topology are resolved, not orphaned.
+                monitored_entity_ids={
+                    entity.entity_id for entity in self._topology.entities()
+                },
             )
             for incident in (*changes.opened, *changes.updated):
                 result = self._incidents.upsert_active(incident)
@@ -275,25 +317,33 @@ class RadarService:
         entities = self._topology.entities()
         relationships = self._topology.relationships()
         similarities = self._topology.similarities()
-        active = self._incidents.active()
+        errors = 0
         propagated_by_incident = {}
-        for incident in active:
-            impacts = self._propagation.propagate(
-                incident, entities, relationships, similarities
-            )
+        for incident in self._incidents.active():
+            try:
+                impacts = self._propagation.propagate(
+                    incident, entities, relationships, similarities
+                )
+            except Exception:
+                errors += 1
+                continue
             self._incidents.replace_impacts(incident.incident_id, impacts)
-            propagated_by_incident[incident.incident_id] = impacts
+            propagated_by_incident[incident.incident_id] = (incident, impacts)
         for exposure in self._exposures.list_exposures():
             impacts = []
-            for incident in active:
-                result = self._exposure_impact.estimate(
-                    exposure,
-                    incident,
-                    propagated_by_incident[incident.incident_id],
-                    relationships,
-                )
+            for incident, propagated in propagated_by_incident.values():
+                try:
+                    result = self._exposure_impact.estimate(
+                        exposure, incident, propagated, relationships
+                    )
+                except Exception:
+                    errors += 1
+                    continue
                 impacts.extend(result.impacts)
             self._exposures.replace_impacts(exposure.exposure_id, impacts)
+        if errors:
+            self._propagation_stale = True
+        return errors
 
     def _refresh_similarities(
         self,

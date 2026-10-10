@@ -48,12 +48,16 @@ export function useRadarEvents(options: UseRadarEventsOptions): void {
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
     let reconnectDelay = INITIAL_RECONNECT_DELAY_MS
     let lastSequence = 0
+    // A new EventSource cannot set Last-Event-ID itself, so the last delivered
+    // ID is passed to the same-origin proxy, which forwards it upstream.
+    let lastEventId: number | null = null
     let opened = false
 
     const dispatch = (message: MessageEvent<string>) => {
       const event = parseRadarEvent(message.data)
       if (!event || event.sequence <= lastSequence) return
       lastSequence = event.sequence
+      lastEventId = event.sequence
 
       if (event.type === "graph.updated") callbacks.current.onGraphUpdated?.(event)
       else if (event.type === "notification.created") callbacks.current.onNotification?.(event)
@@ -62,7 +66,7 @@ export function useRadarEvents(options: UseRadarEventsOptions): void {
 
     const connect = () => {
       if (!active) return
-      source = new EventSource(getRadarEventsUrl())
+      source = new EventSource(getRadarEventsUrl(lastEventId))
       for (const eventType of EVENT_TYPES) {
         source.addEventListener(eventType, dispatch as EventListener)
       }

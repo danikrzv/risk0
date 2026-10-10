@@ -38,6 +38,19 @@ function change(label: string, value: string) {
 }
 
 describe("ExposureRail", () => {
+  it("offers only markets as borrower targets, which the risk service requires", () => {
+    const onSubmit = vi.fn()
+    render(<ExposureRail entities={entities} onSubmit={onSubmit} />)
+
+    fireEvent.click(screen.getByRole("radio", { name: "Borrower exposure" }))
+
+    const options = Array.from(screen.getByLabelText("Exposure target").querySelectorAll("option"))
+    expect(options.map((option) => option.getAttribute("value"))).toEqual(["market:1:weth-usdc"])
+    expect(screen.getByLabelText("Exposure target")).toHaveValue("market:1:weth-usdc")
+    fireEvent.click(screen.getByRole("button", { name: "Add exposure" }))
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ entity_id: "market:1:weth-usdc", mode: "borrower" }))
+  })
+
   it("starts with a sensible lender preset and submits a contract request", () => {
     const onSubmit = vi.fn()
     render(<ExposureRail entities={entities} onSubmit={onSubmit} />)
@@ -73,7 +86,7 @@ describe("ExposureRail", () => {
     fireEvent.click(screen.getByRole("button", { name: "Add exposure" }))
 
     expect(onSubmit).toHaveBeenCalledWith({
-      entity_id: "vault:1:catalog",
+      entity_id: "market:1:weth-usdc",
       mode: "borrower",
       amount: "75000",
       numeraire: "USDC",
@@ -128,4 +141,37 @@ describe("ExposureRail", () => {
     expect(screen.getByRole("radio", { name: "Lender exposure" })).toHaveAttribute("name", "exposure-mode")
     expect(screen.getByRole("radio", { name: "Borrower exposure" })).toHaveAttribute("name", "exposure-mode")
   })
+
+  it("submits exact decimal strings and converts LTV without float error", () => {
+    const onSubmit = vi.fn()
+    render(<ExposureRail entities={entities} onSubmit={onSubmit} />)
+
+    fireEvent.click(screen.getByRole("radio", { name: "Borrower exposure" }))
+    change("Collateral amount", " 1e5 ")
+    change("Debt amount", "0.1")
+    change("Borrower LTV (%)", "33.3")
+    fireEvent.click(screen.getByRole("button", { name: "Add exposure" }))
+
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+      amount: "0.1",
+      collateral_amount: "100000",
+      debt_amount: "0.1",
+      ltv: "0.333",
+    }))
+  })
+
+  it("rejects non-decimal amounts and an empty numeraire", () => {
+    const onSubmit = vi.fn()
+    render(<ExposureRail entities={entities} onSubmit={onSubmit} />)
+
+    change("Exposure amount", "0x10")
+    change("Exposure numeraire", "  ")
+    fireEvent.click(screen.getByRole("button", { name: "Add exposure" }))
+
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(screen.getByLabelText("Exposure amount")).toHaveAccessibleDescription("Enter a positive number")
+    expect(screen.getByLabelText("Exposure amount")).toHaveAttribute("aria-invalid", "true")
+    expect(screen.getByLabelText("Exposure numeraire")).toHaveAccessibleDescription("Enter a numeraire")
+  })
 })
+

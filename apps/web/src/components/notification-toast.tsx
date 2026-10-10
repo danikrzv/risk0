@@ -1,7 +1,7 @@
 "use client"
 
 import type { Notification } from "@risk0/contracts"
-import { useEffect, useRef } from "react"
+import { useEffect, useRef, useState } from "react"
 
 const DEFAULT_DISMISS_DELAY_MS = 5_000
 
@@ -18,13 +18,31 @@ export function NotificationToast({
 }) {
   const dismiss = useRef(onDismiss)
   dismiss.current = onDismiss
+  // Auto-dismissal pauses while the user is reading or operating the toast,
+  // so its buttons never vanish under the pointer or keyboard focus.
+  const [hovered, setHovered] = useState(false)
+  const [focused, setFocused] = useState(false)
+  const paused = hovered || focused
   useEffect(() => {
+    if (paused) return
     const timer = setTimeout(() => dismiss.current(), dismissAfterMs)
     return () => clearTimeout(timer)
-  }, [dismissAfterMs, notification.notification_id])
+  }, [dismissAfterMs, notification.notification_id, paused])
 
+  // Only critical incidents interrupt assistive technology; focus never moves.
+  const critical = notification.severity === "CRITICAL"
   return (
-    <article role="alert" aria-live="assertive" aria-atomic="true" data-severity={notification.severity}>
+    <article
+      role={critical ? "alert" : "status"}
+      aria-atomic="true"
+      data-severity={notification.severity}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      onFocus={() => setFocused(true)}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocused(false)
+      }}
+    >
       <strong>{notification.title}</strong>
       <p>{notification.message}</p>
       {onIncidentClick ? (

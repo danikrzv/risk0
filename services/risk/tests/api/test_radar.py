@@ -233,3 +233,153 @@ def test_fixture_radar_replay_opens_propagates_and_resolves_incident(
 
 def test_fixture_radar_controls_are_not_available_in_live_mode(client):
     assert client.post("/v1/fixtures/radar/oracle-incident/open").status_code == 404
+
+
+FIXTURE_CATALOG_VAULT = "vault:1:0x1111111111111111111111111111111111111111"
+
+
+def test_new_exposure_is_propagated_against_active_incidents_at_creation(
+    client, radar_context, monkeypatch
+):
+    monkeypatch.setenv("RISK0_DATA_MODE", "fixture")
+    assert client.post("/v1/fixtures/radar/oracle-incident/open").status_code == 201
+
+    exposure = client.post(
+        "/v1/exposures",
+        json={"entity_id": FIXTURE_CATALOG_VAULT, "mode": "lender", "amount": "100000", "numeraire": "USDC"},
+    ).json()
+    impact = client.get(f"/v1/exposures/{exposure['exposure_id']}/impact").json()
+
+    assert impact["impacts"][0]["estimated_affected_amount"] == "60000.00"
+
+
+def test_resolving_the_fixture_incident_clears_exposure_impacts(
+    client, radar_context, monkeypatch
+):
+    monkeypatch.setenv("RISK0_DATA_MODE", "fixture")
+    client.post("/v1/fixtures/radar/oracle-incident/open")
+    exposure = client.post(
+        "/v1/exposures",
+        json={"entity_id": FIXTURE_CATALOG_VAULT, "mode": "lender", "amount": "100000", "numeraire": "USDC"},
+    ).json()
+    client.post("/v1/fixtures/radar/oracle-incident/open")
+
+    client.post("/v1/fixtures/radar/oracle-incident/resolve")
+    impact = client.get(f"/v1/exposures/{exposure['exposure_id']}/impact").json()
+
+    assert impact["impacts"] == []
+
+
+@pytest.mark.parametrize(
+    ("entity_id", "payload", "expected"),
+    [
+        (VAULT, {"mode": "lender", "amount": "10"}, 201),
+        (MARKET, {"mode": "lender", "amount": "10"}, 201),
+        (MARKET, {"mode": "borrower", "amount": "75", "collateral_amount": "100", "debt_amount": "75", "ltv": "0.75"}, 201),
+        (VAULT, {"mode": "borrower", "amount": "75", "collateral_amount": "100", "debt_amount": "75", "ltv": "0.75"}, 422),
+        ("chain:1:ethereum", {"mode": "lender", "amount": "10"}, 422),
+        (VAULT, {"mode": "lender", "amount": "10", "ltv": "0.5"}, 422),
+        (MARKET, {"mode": "borrower", "amount": "75", "debt_amount": "75"}, 422),
+        (VAULT, {"mode": "lender", "amount": "-1"}, 422),
+    ],
+)
+def test_exposure_target_and_mode_fields_are_validated(
+    client, radar_context, entity_id, payload, expected
+):
+    seed_graph(radar_context)
+    radar_context.topology.upsert_entities(
+        (entity(entity_type=RadarEntityType.CHAIN, key="ethereum"),), seen_at=NOW
+    )
+
+    response = client.post(
+        "/v1/exposures", json={"entity_id": entity_id, "numeraire": "USDC", **payload}
+    )
+
+    assert response.status_code == expected, response.text
+
+
+def test_incident_graph_reads_health_and_exposure_impacts_once(
+    client, radar_context, monkeypatch
+):
+    seed_graph(radar_context)
+    active = incident("incident-market", source_entity_id=MARKET)
+    radar_context.incidents.upsert_active(active)
+    for _ in range(3):
+        radar_context.exposures.create(
+            ExposureCreateRequest(entity_id=VAULT, mode="lender", amount=Decimal("1"), numeraire="USDC"),
+            created_at=NOW,
+        )
+    calls = {"health": 0, "exposure_impacts": 0}
+    latest_health_all = radar_context.states.latest_health_all
+    exposure_impacts = radar_context.exposures.impacts
+
+    def counted_health():
+        calls["health"] += 1
+        return latest_health_all()
+
+    def counted_impacts(exposure_id):
+        calls["exposure_impacts"] += 1
+        return exposure_impacts(exposure_id)
+
+    monkeypatch.setattr(radar_context.states, "latest_health_all", counted_health)
+    monkeypatch.setattr(radar_context.exposures, "impacts", counted_impacts)
+
+    response = client.get(f"/v1/graph/incidents/{active.incident_id}")
+
+    assert response.status_code == 200
+    assert calls["health"] == 1
+    assert calls["exposure_impacts"] <= 1
+
+
+@pytest.fixture
+def cached_context(tmp_path):
+    from app.api.radar import RadarContext
+
+    database = RadarDatabase(tmp_path / "cached.sqlite3")
+    database.migrate()
+    return RadarContext(
+        topology=TopologyRepository(database),
+        states=StateRepository(database),
+        incidents=IncidentRepository(database),
+        exposures=ExposureRepository(database),
+        database=database,
+    )
+
+
+def test_graph_is_served_from_cache_until_the_database_changes(cached_context, monkeypatch):
+    from app.api.radar import get_radar_context
+
+    seed_graph(cached_context)
+    app.dependency_overrides[get_radar_context] = lambda: cached_context
+    calls = {"entities": 0}
+    entities = cached_context.topology.entities
+
+    def counted(**kwargs):
+        calls["entities"] += 1
+        return entities(**kwargs)
+
+    monkeypatch.setattr(cached_context.topology, "entities", counted)
+    try:
+        client = TestClient(app)
+        first = client.get("/v1/graph").json()
+        second = client.get("/v1/graph").json()
+        filtered = client.get("/v1/graph", params={"entity_type": "vault"}).json()
+        assert calls["entities"] == 2
+        assert second["entities"] == first["entities"]
+        assert len(filtered["entities"]) == 1
+
+        cached_context.states.set_health(health(MARKET, NOW, HealthStatus.CRITICAL))
+        third = client.get("/v1/graph").json()
+        assert calls["entities"] == 3
+        market = next(item for item in third["entities"] if item["entity_id"] == MARKET)
+        assert market["metadata"]["health_status"] == "CRITICAL"
+
+        # Reads and no-op writes do not invalidate the cache.
+        cached_context.incidents.list_notifications()
+        cached_context.states.append_snapshot(
+            snapshot(VAULT, NOW, source="https://rpc.example.invalid/key")
+        )
+        client.get("/v1/graph")
+        assert calls["entities"] == 3
+    finally:
+        app.dependency_overrides.clear()

@@ -30,9 +30,21 @@
   color-scheme: dark;
 }
 
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
 body {
   margin: 0;
   background: var(--color-background);
+  overflow-wrap: break-word;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
 }
 
 .terminal-shell {
@@ -96,7 +108,7 @@ p {
 .terminal-nav span {
   padding: 0 1.1rem;
   border-right: 1px solid #111d29;
-  color: #526477;
+  color: var(--color-muted);
   font-size: 0.68rem;
   letter-spacing: 0.09em;
   text-transform: uppercase;
@@ -117,6 +129,11 @@ p {
 
 .terminal-runtime--degraded {
   color: var(--color-stale);
+}
+
+/* Never present an unconfirmed connection in the "safe" colour. */
+.terminal-runtime--connecting {
+  color: var(--color-unavailable);
 }
 
 .terminal-runtime__dot {
@@ -145,7 +162,7 @@ p {
 }
 
 .system-ticker span {
-  color: #526477;
+  color: var(--color-muted);
   font-size: 0.62rem;
   letter-spacing: 0.09em;
 }
@@ -165,8 +182,9 @@ p {
   color: var(--color-stale) !important;
 }
 
+/* Completion is not a safety verdict (the result may be EXIT or UNAVAILABLE). */
 .system-ticker__analysis--done {
-  color: var(--color-safe) !important;
+  color: var(--color-accent) !important;
 }
 
 .terminal-workspace {
@@ -185,7 +203,7 @@ p {
   padding: 0.48rem 0.85rem;
   border-top: 1px solid var(--color-border);
   background: #070b11ee;
-  color: #53677a;
+  color: var(--color-muted);
   font-size: 0.62rem;
   letter-spacing: 0.05em;
 }
@@ -274,6 +292,10 @@ p {
 [aria-label="Live notifications"] article[data-severity="CRITICAL"] {
   border-color: var(--color-danger);
   background: #17090df2;
+}
+
+.radar-layout > * {
+  min-width: 0;
 }
 
 .radar-layout {
@@ -954,7 +976,8 @@ fieldset.panel legend,
     grid-column: span 2;
   }
 
-  .terminal-statusbar span:nth-child(2),
+  /* Keep the not-investment-advice disclaimer visible on phones. */
+  .terminal-statusbar span:nth-child(1),
   .terminal-statusbar span:nth-child(3) {
     display: none;
   }

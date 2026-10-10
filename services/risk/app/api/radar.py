@@ -1,5 +1,6 @@
 import os
-from dataclasses import dataclass
+import threading
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
@@ -7,6 +8,7 @@ from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
+from app.radar.analysis import ExposureImpactEstimator
 from app.radar.contracts import (
     EntityHistoryResponse,
     ExposureCreateRequest,
@@ -15,6 +17,7 @@ from app.radar.contracts import (
     IncidentGraphResponse,
     ManualExposure,
     Notification,
+    PositionMode,
     NotificationResponse,
     RadarEntity,
     RadarEntityType,
@@ -34,12 +37,49 @@ from app.radar.repositories import (
 SERVICE_ROOT = Path(__file__).resolve().parents[2]
 
 
+class GraphCache:
+    """Built graph responses for the current database revision.
+
+    The web refetches GET /v1/graph after every SSE event and on focus, often
+    several times in a row with nothing changed in between. Any committed row
+    change bumps the revision and drops every cached entry.
+    """
+
+    def __init__(self, max_entries: int = 32) -> None:
+        self._max_entries = max_entries
+        self._revision = -1
+        self._entries: dict[tuple[object, ...], RadarGraphResponse] = {}
+        self._lock = threading.Lock()
+
+    def get(self, revision: int, key: tuple[object, ...]) -> RadarGraphResponse | None:
+        with self._lock:
+            if revision != self._revision:
+                return None
+            return self._entries.get(key)
+
+    def put(
+        self, revision: int, key: tuple[object, ...], response: RadarGraphResponse
+    ) -> None:
+        with self._lock:
+            if revision < self._revision:
+                return
+            if revision != self._revision:
+                self._revision = revision
+                self._entries = {}
+            if len(self._entries) >= self._max_entries:
+                self._entries.pop(next(iter(self._entries)))
+            self._entries[key] = response
+
+
 @dataclass(frozen=True, slots=True)
 class RadarContext:
     topology: TopologyRepository
     states: StateRepository
     incidents: IncidentRepository
     exposures: ExposureRepository
+    # When set, GET /v1/graph is cached per database revision.
+    database: RadarDatabase | None = None
+    graph_cache: GraphCache = field(default_factory=GraphCache, compare=False)
 
 
 @lru_cache(maxsize=1)
@@ -59,6 +99,7 @@ def get_radar_context() -> RadarContext:
         states=StateRepository(database),
         incidents=IncidentRepository(database),
         exposures=ExposureRepository(database),
+        database=database,
     )
 
 
@@ -73,6 +114,30 @@ def graph(
     visible: bool | None = None,
     incident_id: str | None = None,
     context: RadarContext = Depends(get_radar_context),
+) -> RadarGraphResponse:
+    key = (chain_id, entity_type, health_status, visible, incident_id)
+    # Read the revision before building: a write that commits mid-build bumps
+    # it, so this (possibly older) result is never served for the new data.
+    revision = context.database.revision if context.database is not None else None
+    if revision is not None:
+        cached = context.graph_cache.get(revision, key)
+        if cached is not None:
+            return cached.model_copy(update={"generated_at": datetime.now(UTC)})
+    response = _build_graph(
+        context, chain_id, entity_type, health_status, visible, incident_id
+    )
+    if revision is not None:
+        context.graph_cache.put(revision, key, response)
+    return response
+
+
+def _build_graph(
+    context: RadarContext,
+    chain_id: int | None,
+    entity_type: RadarEntityType | None,
+    health_status: HealthStatus | None,
+    visible: bool | None,
+    incident_id: str | None,
 ) -> RadarGraphResponse:
     entities = context.topology.entities(
         chain_id=chain_id, entity_type=entity_type, visible=visible
@@ -135,8 +200,9 @@ def incident_graph(
     for impact in impacts:
         entity_ids.update(impact.path)
         entity_ids.add(impact.target_entity_id)
+    latest_health = context.states.latest_health_all()
     entities = tuple(
-        _entity_with_health(entity, context.states.latest_health_all())
+        _entity_with_health(entity, latest_health)
         for entity in context.topology.entities(entity_ids=tuple(entity_ids))
     )
     relationships = tuple(
@@ -151,19 +217,7 @@ def incident_graph(
         if similarity.catalog_entity_id in entity_ids
         and similarity.candidate_entity_id in entity_ids
     )
-    exposure_ids = {
-        exposure.exposure_id
-        for exposure in context.exposures.list_exposures()
-        if any(
-            impact.incident_id == incident_id
-            for impact in context.exposures.impacts(exposure.exposure_id)
-        )
-    }
-    exposures = tuple(
-        exposure
-        for exposure in context.exposures.list_exposures()
-        if exposure.exposure_id in exposure_ids
-    )
+    exposures = context.exposures.list_exposures_for_incident(incident_id)
     return IncidentGraphResponse(
         incident=incident,
         entities=entities,
@@ -253,12 +307,55 @@ def create_exposure(
     request: ExposureCreateRequest,
     context: RadarContext = Depends(get_radar_context),
 ) -> ManualExposure:
-    if context.topology.get_entity(request.entity_id) is None:
+    target = context.topology.get_entity(request.entity_id)
+    if target is None:
         raise _not_found("Entity")
+    allowed = (
+        _BORROWER_TARGETS if request.mode is PositionMode.BORROWER else _LENDER_TARGETS
+    )
+    if target.entity_type not in allowed:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Borrower exposures require a market or position."
+                if request.mode is PositionMode.BORROWER
+                else "Lender exposures require a vault, market, or position."
+            ),
+        )
     try:
-        return context.exposures.create(request, created_at=datetime.now(UTC))
+        exposure = context.exposures.create(request, created_at=datetime.now(UTC))
     except ValueError:
         raise HTTPException(status_code=422, detail="Invalid exposure.") from None
+    _propagate_exposure(context, exposure)
+    return exposure
+
+
+_LENDER_TARGETS = frozenset(
+    {RadarEntityType.VAULT, RadarEntityType.MARKET, RadarEntityType.POSITION}
+)
+_BORROWER_TARGETS = frozenset({RadarEntityType.MARKET, RadarEntityType.POSITION})
+
+
+def _propagate_exposure(context: RadarContext, exposure: ManualExposure) -> None:
+    """Estimate a new exposure against the stored impacts of every active incident.
+
+    Monitoring only re-propagates when incidents or topology change, so without
+    this a new exposure would show no impact until the next such change.
+    """
+    estimator = ExposureImpactEstimator()
+    relationships = None
+    impacts = []
+    for incident in context.incidents.active():
+        stored = context.incidents.impacts(incident.incident_id)
+        if not stored:
+            continue
+        if relationships is None:
+            relationships = context.topology.relationships()
+        impacts.extend(
+            estimator.estimate(exposure, incident, stored, relationships).impacts
+        )
+    if impacts:
+        context.exposures.replace_impacts(exposure.exposure_id, impacts)
 
 
 @router.get(

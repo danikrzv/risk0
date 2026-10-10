@@ -187,6 +187,27 @@ describe("RadarGraph", () => {
     )
   })
 
+  it("highlights only edges that lie on a propagation path, not every edge between path nodes", () => {
+    const shortcut: RadarRelationship = {
+      ...relationships[0],
+      source_entity_id: "vault:1:catalog",
+      target_entity_id: "oracle:1:oracle",
+      relationship_type: "similar_to",
+    }
+    render(
+      <RadarGraph
+        graph={{ ...graph, relationships: [...relationships, shortcut] }}
+        healthStates={healthStates}
+        selectedIncident={incident}
+        impacts={impacts}
+      />,
+    )
+
+    const list = screen.getByRole("list", { name: "Radar relationships" })
+    expect(within(list).getByText(/similar to/).closest("li")).toHaveAttribute("data-incident-path", "false")
+    expect(within(list).getByText(/allocated to/).closest("li")).toHaveAttribute("data-incident-path", "true")
+  })
+
   it("selects graph entities through accessible node controls", () => {
     const onSelectEntity = vi.fn()
     render(<RadarGraph graph={graph} healthStates={healthStates} onSelectEntity={onSelectEntity} />)

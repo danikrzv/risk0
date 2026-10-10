@@ -1,0 +1,156 @@
+from datetime import UTC, datetime
+from decimal import Decimal
+
+import pytest
+
+from app.radar.contracts import (
+    ExposureCreateRequest,
+    HealthStatus,
+    RadarEntityType,
+    RadarRelationship,
+)
+from app.radar.discovery.morpho import DiscoveryBatch
+from app.radar.repositories import (
+    ExposureRepository,
+    IncidentRepository,
+    RadarDatabase,
+    StateRepository,
+    TopologyRepository,
+)
+from app.radar.service import RadarService
+from tests.radar.repositories.builders import entity, snapshot
+
+
+NOW = datetime(2026, 10, 10, 13, 11, tzinfo=UTC)
+MARKET = "market:1:market-a"
+VAULT = "vault:1:vault-a"
+
+
+@pytest.fixture
+def database(tmp_path):
+    database = RadarDatabase(tmp_path / "radar.sqlite3")
+    database.migrate()
+    return database
+
+
+class FixedDiscovery:
+    def __init__(self, batch: DiscoveryBatch) -> None:
+        self.batch = batch
+
+    def discover(self, now: datetime) -> DiscoveryBatch:
+        assert now == NOW
+        return self.batch
+
+
+class FixedMorphoCollector:
+    def __init__(self, snapshots: tuple) -> None:
+        self.snapshots = snapshots
+
+    def collect(self, batch: DiscoveryBatch, now: datetime) -> tuple:
+        assert batch.discovered_at == NOW
+        assert now == NOW
+        return self.snapshots
+
+
+class EmptyChainCollector:
+    def collect_all(self, chain_ids: tuple[int, ...], now: datetime) -> tuple:
+        assert chain_ids == (1,)
+        assert now == NOW
+        return ()
+
+
+def test_vertical_monitoring_cycle_is_persisted_and_idempotent(database):
+    market = entity(RadarEntityType.MARKET, "market-a")
+    vault = entity(RadarEntityType.VAULT, "vault-a", catalog=True)
+    relationship = RadarRelationship(
+        source_entity_id=VAULT,
+        target_entity_id=MARKET,
+        relationship_type="allocated_to",
+        weight=Decimal("1"),
+    )
+    batch = DiscoveryBatch(
+        discovered_at=NOW,
+        chains=(),
+        protocols=(),
+        vaults=(vault,),
+        markets=(market,),
+        assets=(),
+        oracles=(),
+        irms=(),
+        relationships=(relationship,),
+        sources=(),
+        failures=(),
+        complete_chain_ids=(1,),
+        market_records=(),
+        vault_records=(),
+    )
+    market_snapshot = snapshot(
+        MARKET,
+        NOW,
+        metrics={
+            "utilization": Decimal("0.50"),
+            "available_liquidity": Decimal("100"),
+            "lender_hhi": Decimal("0.10"),
+            "borrower_hhi": Decimal("0.10"),
+            "near_liquidation_debt_ratio": Decimal("0.05"),
+            "bad_debt": Decimal("1"),
+        },
+    )
+    topology = TopologyRepository(database)
+    states = StateRepository(database)
+    incidents = IncidentRepository(database)
+    exposures = ExposureRepository(database)
+    service = RadarService(
+        discovery=FixedDiscovery(batch),
+        morpho_collector=FixedMorphoCollector((market_snapshot,)),
+        chain_collector=EmptyChainCollector(),
+        topology=topology,
+        states=states,
+        incidents=incidents,
+        exposures=exposures,
+    )
+
+    discovery_run = service.run_discovery(NOW)
+    exposure = exposures.create(
+        ExposureCreateRequest(
+            entity_id=VAULT,
+            mode="lender",
+            amount=Decimal("1000"),
+            numeraire="USDC",
+        ),
+        created_at=NOW,
+        exposure_id="exposure-1",
+    )
+    first = service.run_monitoring(NOW)
+    second = service.run_monitoring(NOW)
+
+    assert discovery_run.status == "completed"
+    assert first.status == "completed"
+    assert first.processed_count == 1
+    assert second.status == "completed"
+    assert second.processed_count == 0
+    assert len(states.history(MARKET).snapshots) == 1
+    assert states.latest_health(MARKET).status is HealthStatus.CRITICAL
+    assert len(incidents.active()) == 1
+    incident = incidents.active()[0]
+    assert [impact.target_entity_id for impact in incidents.impacts(incident.incident_id)] == [VAULT]
+    assert exposures.impacts(exposure.exposure_id)[0].estimated_affected_amount == Decimal("1000")
+    assert len(incidents.list_notifications().notifications) == 1
+
+
+def test_monitoring_without_topology_records_a_partial_run(database):
+    service = RadarService(
+        discovery=None,
+        morpho_collector=None,
+        chain_collector=None,
+        topology=TopologyRepository(database),
+        states=StateRepository(database),
+        incidents=IncidentRepository(database),
+        exposures=ExposureRepository(database),
+    )
+
+    run = service.run_monitoring(NOW)
+
+    assert run.status == "partial"
+    assert run.error_count == 1
+    assert "discovery" in run.message.lower()

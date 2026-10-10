@@ -94,6 +94,12 @@ oracle health, quotes, gas, and price history are missing, so analyses are
 `services/risk/.cache/risk0.sqlite3` (git-ignored). Set `RISK0_CACHE_PATH` to
 move it.
 
+The continuous Morpho radar is opt-in. Set `RISK0_RADAR_ENABLED=true` to run
+its five-minute monitoring loop and hourly discovery loop inside the FastAPI
+lifespan. Radar tables share the cache database by default; set
+`RISK0_RADAR_DB_PATH` to keep them in a separate SQLite file. Fixture and test
+runs leave the scheduler disabled unless the flag is explicitly enabled.
+
 ### Docker
 
 ```bash

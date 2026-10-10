@@ -7,6 +7,7 @@ import { GET } from "./catalog/route"
 import { GET as getEvents } from "./events/route"
 import { GET as getExposureImpact, POST as createExposure } from "./exposures/route"
 import { GET as getGraph } from "./graph/route"
+import { POST as markAllNotificationsRead } from "./notifications/read-all/route"
 import { GET as getNotifications, POST as markNotificationRead } from "./notifications/route"
 
 const UPSTREAM = "http://risk.internal:8000/secret-path"
@@ -153,8 +154,36 @@ describe("GET /api/catalog", () => {
     const response = await GET()
     const text = await response.text()
 
-    expect(response.status).toBe(502)
+    expect(response.status).toBe(503)
+    expect(JSON.parse(text)).toEqual({ error: "Risk service is starting or unreachable" })
     expect(text).not.toContain("risk.internal")
+  })
+
+  it("maps a busy upstream (503) to a retryable 503 without forwarding its body", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ detail: "Risk database busy" }, { status: 503 })))
+
+    const response = await GET()
+    const text = await response.text()
+
+    expect(response.status).toBe(503)
+    expect(JSON.parse(text)).toEqual({ error: "Risk service is busy — retrying" })
+    expect(text).not.toContain("database")
+  })
+
+  it("maps refused connections and timeouts to 503 and other errors to 502", async () => {
+    const refused = Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNREFUSED" } })
+    const timeout = new DOMException("The operation was aborted due to timeout", "TimeoutError")
+    for (const failure of [refused, timeout]) {
+      vi.stubGlobal("fetch", vi.fn(async () => Promise.reject(failure)))
+      const response = await GET()
+      expect(response.status).toBe(503)
+      expect(await response.json()).toEqual({ error: "Risk service is starting or unreachable" })
+    }
+
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("not json", { status: 200 })))
+    const malformed = await GET()
+    expect(malformed.status).toBe(502)
+    expect(await malformed.json()).toEqual({ error: "Risk service unavailable" })
   })
 
   it("reports a missing server configuration without calling upstream", async () => {
@@ -350,6 +379,49 @@ describe("POST /api/notifications", () => {
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
     expect(url).toBe(`${UPSTREAM}/v1/notifications/notification-1/read`)
     expect(init.method).toBe("POST")
+  })
+})
+
+describe("POST /api/notifications/read-all", () => {
+  it("marks every notification read and returns only the validated summary", async () => {
+    const fetchMock = vi.fn(async () => Response.json({ schema_version: "1.0.0", updated: 24_031, debug: UPSTREAM }))
+    vi.stubGlobal("fetch", fetchMock)
+
+    const response = await markAllNotificationsRead()
+    const text = await response.text()
+
+    expect(response.status).toBe(200)
+    expect(JSON.parse(text)).toEqual({ schema_version: "1.0.0", updated: 24_031 })
+    expect(text).not.toContain("risk.internal")
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toBe(`${UPSTREAM}/v1/notifications/read-all`)
+    expect(init.method).toBe("POST")
+    expect(init.cache).toBe("no-store")
+    expect(init.signal).toBeInstanceOf(AbortSignal)
+  })
+
+  it("rejects invalid summaries and maps upstream failures", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ schema_version: "1.0.0", updated: "all" })))
+    expect((await markAllNotificationsRead()).status).toBe(502)
+
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ detail: "Risk database busy" }, { status: 503 })))
+    const busy = await markAllNotificationsRead()
+    expect(busy.status).toBe(503)
+    expect(await busy.json()).toEqual({ error: "Risk service is busy — retrying" })
+
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(`failure from ${UPSTREAM}`, { status: 500 })))
+    const failed = await markAllNotificationsRead()
+    expect(failed.status).toBe(502)
+    expect(await failed.text()).not.toContain("risk.internal")
+  })
+
+  it("reports a missing server configuration without calling upstream", async () => {
+    vi.stubEnv("RISK_API_URL", "")
+    const fetchMock = vi.fn()
+    vi.stubGlobal("fetch", fetchMock)
+
+    expect((await markAllNotificationsRead()).status).toBe(503)
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 })
 

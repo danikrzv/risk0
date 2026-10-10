@@ -1,5 +1,7 @@
 import type { IncidentGraphResponse, RadarGraphResponse } from "@risk0/contracts"
 
+import { upstreamErrorFailure, upstreamStatusFailure } from "../../../lib/upstream-errors"
+
 const UPSTREAM_TIMEOUT_MS = 15_000
 const FILTER_NAMES = ["chain_id", "entity_type", "status", "visible", "incident_id"] as const
 
@@ -145,13 +147,13 @@ export async function GET(request: Request): Promise<Response> {
       cache: "no-store",
       signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
     })
-    if (!upstream.ok) return Response.json({ error: "Risk service unavailable" }, { status: 502 })
+    if (!upstream.ok) return upstreamStatusFailure(upstream.status)
     const body: unknown = await upstream.json().catch(() => null)
     if (incidentGraphId ? !isIncidentGraphResponse(body) : !isRadarGraphResponse(body)) {
       return Response.json({ error: "Risk service returned an invalid response" }, { status: 502 })
     }
     return Response.json(body)
-  } catch {
-    return Response.json({ error: "Risk service unavailable" }, { status: 502 })
+  } catch (error) {
+    return upstreamErrorFailure(error)
   }
 }

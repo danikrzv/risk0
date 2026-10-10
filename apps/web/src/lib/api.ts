@@ -108,6 +108,33 @@ export function markNotificationRead(notificationId: string): Promise<Notificati
   })
 }
 
+/** Upstream `POST /v1/notifications/read-all` summary (not yet in the generated contracts). */
+export interface NotificationReadAllResponse {
+  schema_version: "1.0.0"
+  updated: number
+}
+
+export function markAllNotificationsRead(): Promise<NotificationReadAllResponse> {
+  return request<NotificationReadAllResponse>("/api/notifications/read-all", { method: "POST" })
+}
+
+/**
+ * 503 means the risk service is busy (SQLite locked) or still starting; 0
+ * means this server could not be reached. Both are worth retrying.
+ */
+export function isRetryableError(error: unknown): boolean {
+  return error instanceof ApiError && (error.status === 503 || error.status === 0)
+}
+
+const RETRY_BASE_DELAY_MS = 1_000
+const RETRY_MAX_DELAY_MS = 30_000
+
+/** Exponential backoff with ±20 % jitter: about 1 s, 2 s, 4 s … capped at 30 s. */
+export function retryDelayMs(attempt: number, random: () => number = Math.random): number {
+  const base = Math.min(RETRY_MAX_DELAY_MS, RETRY_BASE_DELAY_MS * 2 ** Math.max(0, attempt))
+  return Math.round(base * (0.8 + 0.4 * random()))
+}
+
 export function createExposure(exposure: ExposureCreateRequest): Promise<ManualExposure> {
   return request<ManualExposure>("/api/exposures", {
     method: "POST",

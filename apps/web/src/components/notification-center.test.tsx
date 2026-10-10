@@ -120,4 +120,19 @@ describe("NotificationCenter", () => {
     fireEvent.click(within(screen.getByLabelText("Notification history")).getByRole("button", { name: "View incident Liquidity warning" }))
     expect(onIncidentClick).toHaveBeenCalledWith("incident-1")
   })
+
+  it("reloads history after the event stream reconnects", async () => {
+    const { useRadarEvents } = await import("../hooks/use-radar-events")
+    let onReconnect: (() => void) | undefined
+    vi.mocked(useRadarEvents).mockImplementation((options) => {
+      onReconnect = options.onReconnect
+    })
+    render(<NotificationCenter />)
+    await screen.findByRole("button", { name: "Notifications, 1 unread" })
+    expect(api.getNotifications).toHaveBeenCalledTimes(1)
+
+    await act(async () => onReconnect?.())
+    await waitFor(() => expect(api.getNotifications).toHaveBeenCalledTimes(2))
+  })
 })
+

@@ -1,5 +1,6 @@
 const EVENT_STREAM_TIMEOUT_MS = 5 * 60_000
-const MAX_EVENT_ID_CHARACTERS = 1_024
+const MAX_EVENT_ID_CHARACTERS = 32
+const EVENT_ID = /^\d+$/
 
 export const dynamic = "force-dynamic"
 
@@ -8,8 +9,12 @@ export async function GET(request: Request): Promise<Response> {
   if (!baseUrl) return Response.json({ error: "Risk service is not configured" }, { status: 503 })
 
   const headers = new Headers({ accept: "text/event-stream" })
-  const lastEventId = request.headers.get("Last-Event-ID")
-  if (lastEventId && lastEventId.length <= MAX_EVENT_ID_CHARACTERS) {
+  // EventSource sends Last-Event-ID itself only on its own retries; the client
+  // passes it as a query parameter when it reconnects with a new EventSource.
+  const lastEventId =
+    request.headers.get("Last-Event-ID") ?? new URL(request.url).searchParams.get("last_event_id")
+  // The risk service rejects non-numeric IDs, which would turn into a reconnect loop.
+  if (lastEventId && lastEventId.length <= MAX_EVENT_ID_CHARACTERS && EVENT_ID.test(lastEventId)) {
     headers.set("Last-Event-ID", lastEventId)
   }
 

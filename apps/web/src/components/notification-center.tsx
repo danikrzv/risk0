@@ -46,6 +46,9 @@ export function NotificationCenter({
     onNotification: (event) => {
       void refresh(event.resource_id)
     },
+    onReconnect: () => {
+      void refresh()
+    },
   })
 
   const unreadCount = useMemo(

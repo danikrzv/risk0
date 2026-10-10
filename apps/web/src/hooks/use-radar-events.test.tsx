@@ -143,6 +143,22 @@ describe("useRadarEvents", () => {
   })
 })
 
+describe("useRadarEvents resume", () => {
+  it("reconnects with the last seen event ID so missed events are replayed", () => {
+    vi.useFakeTimers()
+    renderHook(() => useRadarEvents({}))
+    const first = FakeEventSource.instances[0]
+    act(() => {
+      first.onopen?.()
+      first.emit("incident.opened", event(8, "incident.opened", "incident-8"))
+      first.onerror?.()
+      vi.advanceTimersByTime(1_000)
+    })
+
+    expect(FakeEventSource.instances[1].url).toBe("/api/events?last_event_id=8")
+  })
+})
+
 function event(sequence: number, type: string, resourceId: string) {
   return { sequence, type, resource_id: resourceId, summary: {} }
 }

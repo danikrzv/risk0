@@ -451,4 +451,30 @@ describe("GET /api/events", () => {
     expect(invalid.status).toBe(502)
     expect(await invalid.json()).toEqual({ error: "Risk service returned an invalid response" })
   })
+
+  it("resumes from a last_event_id query parameter and drops malformed event IDs", async () => {
+    const fetchMock = vi.fn(async () => new Response("", { headers: { "content-type": "text/event-stream" } }))
+    vi.stubGlobal("fetch", fetchMock)
+
+    await getEvents(new Request("http://localhost/api/events?last_event_id=17"))
+    await getEvents(new Request("http://localhost/api/events?last_event_id=abc", { headers: { "Last-Event-ID": "-3" } }))
+
+    const [, resumed] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(new Headers(resumed.headers).get("Last-Event-ID")).toBe("17")
+    const [, malformed] = fetchMock.mock.calls[1] as unknown as [string, RequestInit]
+    expect(new Headers(malformed.headers).has("Last-Event-ID")).toBe(false)
+  })
+
+  it("aborts the upstream stream when the browser disconnects", async () => {
+    const fetchMock = vi.fn(async () => new Response("", { headers: { "content-type": "text/event-stream" } }))
+    vi.stubGlobal("fetch", fetchMock)
+    const client = new AbortController()
+
+    await getEvents(new Request("http://localhost/api/events", { signal: client.signal }))
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(init.signal?.aborted).toBe(false)
+    client.abort()
+    expect(init.signal?.aborted).toBe(true)
+  })
 })
+

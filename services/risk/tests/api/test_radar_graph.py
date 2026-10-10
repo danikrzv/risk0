@@ -25,6 +25,7 @@ from app.radar.repositories import (
     StateRepository,
     TopologyRepository,
 )
+from app.radar.synthetic import build_synthetic_radar
 from tests.radar.repositories.builders import NOW, entity, health, incident
 
 
@@ -402,120 +403,6 @@ def test_mark_all_notifications_read_counts_only_unread(client, context):
     Draft202012Validator(
         {"$ref": "#/$defs/NotificationReadAllResponse", "$defs": schema["$defs"]}
     ).validate(first.json())
-
-
-def build_synthetic_radar(
-    context,
-    *,
-    markets: int = 8_000,
-    vaults: int = 11_700,
-    incidents: int = 20_000,
-) -> dict[str, tuple[str, ...]]:
-    """A live-sized radar: ~20k entities, ~50k relationships, ~20k incidents.
-
-    Shaped like Morpho: a few hubs (chain, protocol, a stablecoin, an IRM),
-    a catalog of 15 vaults whose dependencies are visible, and one open
-    incident per entity with propagated paths (one incident reaches 5,000
-    targets).
-    """
-    chain = "chain:1:ethereum"
-    protocol = "protocol:1:morpho"
-    assets = [f"asset:1:asset-{index:03d}" for index in range(200)]
-    oracles = [f"oracle:1:oracle-{index:03d}" for index in range(150)]
-    irms = [f"irm:1:irm-{index}" for index in range(5)]
-    market_ids = [f"market:1:market-{index:05d}" for index in range(markets)]
-    vault_ids = [f"vault:1:vault-{index:05d}" for index in range(vaults)]
-    catalog = vault_ids[:15]
-    # Visible peers the first catalog vault is similar to.
-    peers = vault_ids[15:25]
-    # Each catalog vault allocates to three markets; those and their
-    # dependencies are visible, as discovery marks them.
-    catalog_markets = [market_ids[index * 37 % markets] for index in range(45)]
-
-    def market_dependencies(index: int) -> tuple[str, str, str, str]:
-        # asset-000 is the stablecoin hub every fourth market lends.
-        loan = assets[0] if index % 4 == 0 else assets[index % len(assets)]
-        return loan, assets[(index * 7 + 1) % len(assets)], oracles[index % len(oracles)], irms[index % len(irms)]
-
-    visible = {chain, protocol, *catalog, *peers, *catalog_markets}
-    for index, market in enumerate(market_ids):
-        if market in catalog_markets:
-            visible.update(market_dependencies(index))
-
-    def made(entity_id: str):
-        return _entity(entity_id, catalog=entity_id in catalog, visible=entity_id in visible)
-
-    all_ids = [chain, protocol, *assets, *oracles, *irms, *market_ids, *vault_ids]
-    relationships = [_relationship(protocol, chain, "deployed_on")]
-    for index, market in enumerate(market_ids):
-        loan, collateral, oracle, irm = market_dependencies(index)
-        relationships += [
-            _relationship(market, loan, "lends"),
-            _relationship(market, collateral, "uses_collateral"),
-            _relationship(market, oracle, "uses_oracle"),
-            _relationship(market, irm, "uses_irm"),
-            _relationship(market, protocol, "deployed_on"),
-        ]
-    for index, vault in enumerate(vault_ids):
-        allocations = (
-            catalog_markets[index * 3 : index * 3 + 3]
-            if vault in catalog
-            else [market_ids[index % markets]]
-        )
-        relationships += [
-            _relationship(vault, market, "allocated_to", Decimal("0.3"))
-            for market in allocations
-        ]
-
-    with context.database.transaction():
-        context.topology.upsert_entities(map(made, all_ids), seen_at=NOW)
-        context.topology.upsert_relationships(relationships, seen_at=NOW)
-        context.topology.replace_similarities(
-            catalog[0],
-            tuple(_similarity(vault, catalog[0]) for vault in vault_ids[15:200]),
-        )
-        for entity_id in all_ids:
-            context.states.set_health(health(entity_id, NOW, HealthStatus.WARNING))
-        sources = all_ids[:incidents]
-        for index, source in enumerate(sources):
-            opened = incident(
-                f"incident-{index:05d}",
-                source_entity_id=source,
-                severity=IncidentSeverity.CRITICAL if index % 1_000 == 0 else IncidentSeverity.WARNING,
-                first_observed_at=NOW + timedelta(seconds=index),
-            )
-            context.incidents.upsert_active(opened)
-            reach = 5_000 if source == assets[0] else 2
-            context.incidents.replace_impacts(
-                opened.incident_id,
-                tuple(
-                    IncidentImpact(
-                        incident_id=opened.incident_id,
-                        target_entity_id=target,
-                        path=(source, target),
-                        distance=1,
-                        confidence=Decimal("0.7"),
-                        estimated_affected_amount=None,
-                        reasons=("synthetic",),
-                        revealed=target.startswith("vault:"),
-                    )
-                    for target in _impact_targets(index, source, reach, vault_ids)
-                ),
-            )
-    return {
-        "catalog": tuple(catalog),
-        "visible": tuple(sorted(visible)),
-        "peers": tuple(peers),
-    }
-
-
-def _impact_targets(index: int, source: str, reach: int, vault_ids: list[str]):
-    start = index * 13 % len(vault_ids)
-    return [
-        vault
-        for vault in (vault_ids[(start + offset) % len(vault_ids)] for offset in range(reach))
-        if vault != source
-    ]
 
 
 # Upper bound for the default view of a live-sized radar; the unpruned graph

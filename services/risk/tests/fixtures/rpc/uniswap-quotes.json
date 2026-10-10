@@ -1,0 +1,24 @@
+{
+  "_comment": "Synthetic QuoterV2 responses. Keys are SYMBOL/fee/SYMBOL[/fee/SYMBOL]:amountInUnits; any route and amount not listed reverts. Token addresses are the public mainnet contracts, prices and outputs are invented.",
+  "block_number": "0x15f900",
+  "gas_price_wei": "0x6fc23ac00",
+  "tokens": {
+    "WBTC": {"address": "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599", "decimals": 8},
+    "WETH": {"address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "decimals": 18},
+    "USDC": {"address": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", "decimals": 6}
+  },
+  "quotes": {
+    "WBTC/3000/USDC:100000000": {"amount_out": "64990000000", "gas_estimate": "125000"},
+    "WBTC/500/USDC:100000000": {"amount_out": "64850000000", "gas_estimate": "90000"},
+    "WBTC/3000/WETH/500/USDC:100000000": {"amount_out": "65010000000", "gas_estimate": "180000"},
+    "WBTC/500/WETH/500/USDC:100000000": {"amount_out": "65000500000", "gas_estimate": "175000"},
+    "WBTC/3000/WETH/3000/USDC:100000000": {"amount_out": "64900000000", "gas_estimate": "185000"},
+    "WBTC/3000/WETH/500/USDC:10000": {"amount_out": "6502000", "gas_estimate": "180000"},
+    "WBTC/3000/USDC:10000": {"amount_out": "6500000", "gas_estimate": "125000"},
+    "WETH/500/USDC:1000000000000000000": {"amount_out": "2999123456", "gas_estimate": "120000"},
+    "WETH/3000/USDC:1000000000000000000": {"amount_out": "2990000000", "gas_estimate": "118000"},
+    "WETH/500/USDC:100000000000000": {"amount_out": "300000", "gas_estimate": "120000"},
+    "USDC/500/WETH:1000000000": {"amount_out": "333000000000000000", "gas_estimate": "110000"},
+    "USDC/500/WETH:100000": {"amount_out": "33340000000000", "gas_estimate": "110000"}
+  }
+}

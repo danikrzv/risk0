@@ -270,6 +270,19 @@ describe("RadarGraph", () => {
     expect(screen.queryByRole("button", { name: /Warning Hidden Neighbor/ })).not.toBeInTheDocument()
   })
 
+  it("searches entities and expands the graph workspace", () => {
+    render(<RadarGraph graph={graph} healthStates={healthStates} />)
+
+    fireEvent.change(screen.getByLabelText("Search graph"), { target: { value: "oracle" } })
+    expect(screen.getByRole("button", { name: /USDC Oracle/ })).toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: /Catalog Vault/ })).not.toBeInTheDocument()
+
+    const graphRegion = screen.getByRole("region", { name: "Morpho radar graph" })
+    fireEvent.click(screen.getByRole("button", { name: "Expand graph" }))
+    expect(graphRegion).toHaveClass("radar-graph--expanded")
+    expect(screen.getByRole("button", { name: "Exit expanded graph" })).toHaveAttribute("aria-pressed", "true")
+  })
+
   it("explains similarity scores for visible neighboring vaults", () => {
     render(<RadarGraph graph={graph} healthStates={healthStates} />)
 

@@ -3,7 +3,7 @@
 import "@xyflow/react/dist/style.css"
 
 import type { HealthState, HealthStatus, Incident, IncidentImpact, RadarEntity, RadarGraphResponse } from "@risk0/contracts"
-import { Background, Controls, type Edge, MarkerType, type Node, Position, ReactFlow } from "@xyflow/react"
+import { Background, Controls, type Edge, MarkerType, MiniMap, type Node, Position, ReactFlow } from "@xyflow/react"
 import { memo, useMemo, useState } from "react"
 
 import { RadarEntityDetail } from "./radar-entity-detail"
@@ -81,6 +81,8 @@ export const RadarGraph = memo(function RadarGraph({
   const [chainFilter, setChainFilter] = useState("all")
   const [typeFilter, setTypeFilter] = useState("all")
   const [healthFilter, setHealthFilter] = useState("all")
+  const [searchQuery, setSearchQuery] = useState("")
+  const [expanded, setExpanded] = useState(false)
   const health = useMemo(() => healthByEntity(graph.entities, healthStates), [graph.entities, healthStates])
   const incidentPath = useMemo(() => {
     const path = new Set(impacts.flatMap((impact) => impact.path))
@@ -95,10 +97,12 @@ export const RadarGraph = memo(function RadarGraph({
   const visibleEntities = useMemo(() => policyVisibleEntities.filter((entity) => {
     if (incidentPath.has(entity.entity_id)) return true
     const status = health.get(entity.entity_id) ?? "UNKNOWN"
+    const query = searchQuery.trim().toLowerCase()
     return (chainFilter === "all" || String(entity.chain_id) === chainFilter)
       && (typeFilter === "all" || entity.entity_type === typeFilter)
       && (healthFilter === "all" || status === healthFilter)
-  }), [chainFilter, health, healthFilter, incidentPath, policyVisibleEntities, typeFilter])
+      && (!query || entity.label.toLowerCase().includes(query) || entity.address_or_key.toLowerCase().includes(query))
+  }), [chainFilter, health, healthFilter, incidentPath, policyVisibleEntities, searchQuery, typeFilter])
   const visibleIds = useMemo(() => new Set(visibleEntities.map((entity) => entity.entity_id)), [visibleEntities])
   const chainIds = useMemo(
     () => [...new Set(policyVisibleEntities.map((entity) => entity.chain_id))].sort((left, right) => left - right),
@@ -153,14 +157,20 @@ export const RadarGraph = memo(function RadarGraph({
   })), [incidentEdges, visibleRelationships])
 
   return (
-    <section className="panel radar-graph" aria-labelledby="radar-heading">
+    <section className={`panel radar-graph${expanded ? " radar-graph--expanded" : ""}`} aria-labelledby="radar-heading">
       <div className="radar-graph__header">
         <div><span className="eyebrow">DEPENDENCY TOPOLOGY</span><h2 id="radar-heading">Morpho radar graph</h2></div>
-        <ul className="radar-legend" aria-label="Health status legend">
-          {HEALTH_STATUSES.map((status) => <li key={status} data-health-status={status}>{status}</li>)}
-        </ul>
+        <div className="radar-graph__header-actions">
+          <ul className="radar-legend" aria-label="Health status legend">
+            {HEALTH_STATUSES.map((status) => <li key={status} data-health-status={status}>{status}</li>)}
+          </ul>
+          <button type="button" aria-pressed={expanded} onClick={() => setExpanded((value) => !value)}>
+            {expanded ? "Exit expanded graph" : "Expand graph"}
+          </button>
+        </div>
       </div>
       <div className="radar-filters" aria-label="Graph filters">
+        <label>Search graph<input type="search" value={searchQuery} placeholder="Name or address" onChange={(event) => setSearchQuery(event.target.value)} /></label>
         <label>Chain filter<select value={chainFilter} onChange={(event) => setChainFilter(event.target.value)}><option value="all">All chains</option>{chainIds.map((chainId) => <option key={chainId} value={chainId}>{chainId}</option>)}</select></label>
         <label>Entity type filter<select value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)}><option value="all">All entity types</option>{entityTypes.map((type) => <option key={type} value={type}>{type}</option>)}</select></label>
         <label>Health filter<select value={healthFilter} onChange={(event) => setHealthFilter(event.target.value)}><option value="all">All health states</option>{HEALTH_STATUSES.map((status) => <option key={status} value={status}>{status}</option>)}</select></label>
@@ -178,6 +188,7 @@ export const RadarGraph = memo(function RadarGraph({
           fitViewOptions={{ padding: selectedIncident ? 0.25 : 0.15 }}
         >
           <Background />
+          <MiniMap pannable zoomable />
           <Controls showInteractive={false} />
         </ReactFlow>
       </div>
@@ -193,7 +204,8 @@ export const RadarGraph = memo(function RadarGraph({
           onClose={() => onSelectEntity(null)}
         />
       ) : null}
-      <div className="radar-graph__accessible">
+      <details className="radar-graph__accessible">
+        <summary>Explore topology as lists ({visibleEntities.length} entities, {visibleRelationships.length} relationships)</summary>
         <ul className="radar-nodes" aria-label="Radar nodes">
           {visibleEntities.map((entity) => {
             const status = statusOf(entity)
@@ -233,7 +245,7 @@ export const RadarGraph = memo(function RadarGraph({
             {similarity.missing_dimensions.length > 0 ? <small>Missing: {similarity.missing_dimensions.map((name) => name.replaceAll("_", " ")).join(", ")}</small> : null}
           </li>)}
         </ul> : null}
-      </div>
+      </details>
       {impacts.length > 0 ? (
         <div className="radar-impact-summary" aria-label="Incident impact summary">
           <strong>{impacts.length} impacted entities</strong>

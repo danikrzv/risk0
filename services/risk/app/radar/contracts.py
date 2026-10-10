@@ -142,6 +142,14 @@ class SimilarityRecord(RadarContractModel):
     normally_visible: bool
     computed_at: UtcDateTime
 
+    @model_validator(mode="after")
+    def validate_pair_and_flags(self) -> "SimilarityRecord":
+        if self.catalog_entity_id == self.candidate_entity_id:
+            raise ValueError("a vault cannot be similar to itself")
+        if self.normally_visible and not self.stored:
+            raise ValueError("normally visible similarities must be stored")
+        return self
+
 
 class Incident(RadarContractModel):
     incident_id: NonEmptyString
@@ -161,6 +169,10 @@ class Incident(RadarContractModel):
             raise ValueError("open incidents cannot have resolved_at")
         if self.status is IncidentStatus.RESOLVED and self.resolved_at is None:
             raise ValueError("resolved incidents require resolved_at")
+        if self.last_observed_at < self.first_observed_at:
+            raise ValueError("last_observed_at cannot precede first_observed_at")
+        if self.resolved_at is not None and self.resolved_at < self.first_observed_at:
+            raise ValueError("resolved_at cannot precede first_observed_at")
         return self
 
 
@@ -174,6 +186,16 @@ class IncidentImpact(RadarContractModel):
     reasons: tuple[NonEmptyString, ...]
     revealed: bool
     alternate_path_count: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def validate_path(self) -> "IncidentImpact":
+        if self.path[-1] != self.target_entity_id:
+            raise ValueError("impact path must end at the target entity")
+        if self.distance != len(self.path) - 1:
+            raise ValueError("impact distance must equal the number of path edges")
+        if len(set(self.path)) != len(self.path):
+            raise ValueError("impact path must not repeat entities")
+        return self
 
 
 class Notification(RadarContractModel):

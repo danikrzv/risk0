@@ -43,13 +43,13 @@
       "candidate_entity_id": "vault:1:0x2222222222222222222222222222222222222222",
       "score": "0.72",
       "components": {
-        "shared_markets": "0.30",
+        "shared_markets": "0.27",
         "asset_overlap": "0.15",
         "oracle_overlap": "0.10",
-        "irm_match": "0.07",
+        "irm_match": "0.05",
         "lltv_proximity": "0.05",
-        "same_chain": "0.03",
-        "same_curator": "0.02"
+        "same_chain": "0.05",
+        "same_curator": "0.05"
       },
       "missing_dimensions": [],
       "model_version": "vault-similarity-v1",

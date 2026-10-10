@@ -206,3 +206,74 @@ def test_reusing_a_resolved_incident_id_is_rejected(incidents):
         incidents.upsert_active(incident(first_observed_at=NOW + timedelta(hours=1)))
 
     assert incidents.get("incident-1").status is IncidentStatus.RESOLVED
+
+
+def test_mark_all_read_marks_only_unread_notifications(incidents):
+    incidents.upsert_active(incident())
+    for index in range(3):
+        incidents.add_notification(notification(f"n-{index}", minutes=index))
+    incidents.mark_read("n-0", NOW + timedelta(minutes=10))
+
+    assert incidents.mark_all_read(NOW + timedelta(minutes=20)) == 2
+    assert incidents.mark_all_read(NOW + timedelta(minutes=30)) == 0
+    assert incidents.get_notification("n-0").read_at == NOW + timedelta(minutes=10)
+    assert incidents.get_notification("n-2").read_at == NOW + timedelta(minutes=20)
+
+
+def test_top_active_ranks_severity_then_preferred_source_then_recency(incidents):
+    incidents.upsert_active(
+        incident("old-critical", severity=IncidentSeverity.CRITICAL)
+    )
+    incidents.upsert_active(
+        incident(
+            "new-warning",
+            source_entity_id=NEIGHBOR_VAULT,
+            severity=IncidentSeverity.WARNING,
+            first_observed_at=NOW + timedelta(hours=2),
+        )
+    )
+    incidents.upsert_active(
+        incident(
+            "preferred-warning",
+            source_entity_id=CATALOG_VAULT,
+            severity=IncidentSeverity.WARNING,
+            first_observed_at=NOW + timedelta(hours=1),
+        )
+    )
+
+    ranked = incidents.top_active(10, preferred_source_ids=(CATALOG_VAULT,))
+    capped = incidents.top_active(1)
+    restricted = incidents.top_active(10, source_ids=(NEIGHBOR_VAULT,))
+
+    assert [item.incident_id for item in ranked] == [
+        "old-critical",
+        "preferred-warning",
+        "new-warning",
+    ]
+    assert [item.incident_id for item in capped] == ["old-critical"]
+    assert [item.incident_id for item in restricted] == ["new-warning"]
+
+
+def test_path_entity_ids_keep_revealed_then_preferred_paths_per_incident(incidents):
+    incidents.upsert_active(incident())
+    hidden = "vault:1:0x3333333333333333333333333333333333333333"
+    market = "market:1:0x" + "ab" * 32
+    incidents.replace_impacts(
+        "incident-1",
+        (
+            impact(target_entity_id=NEIGHBOR_VAULT),
+            impact(target_entity_id=CATALOG_VAULT),
+            impact(target_entity_id=hidden).model_copy(
+                update={"path": (ORACLE, market, hidden), "distance": 2, "revealed": True}
+            ),
+        ),
+    )
+
+    everything = incidents.path_entity_ids(("incident-1",))
+    top_two = incidents.path_entity_ids(
+        ("incident-1",), paths_per_incident=2, preferred_target_ids=(CATALOG_VAULT,)
+    )
+
+    assert set(everything) == {ORACLE, market, hidden, CATALOG_VAULT, NEIGHBOR_VAULT}
+    assert set(top_two) == {ORACLE, market, hidden, CATALOG_VAULT}
+    assert incidents.path_entity_ids(()) == ()

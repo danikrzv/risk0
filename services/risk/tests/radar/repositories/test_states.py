@@ -226,3 +226,14 @@ def test_prune_drops_superseded_health_history_older_than_30_days(states):
     assert [h.evaluated_at for h in states.history(CATALOG_VAULT).health_states] == [
         NOW - timedelta(days=1)
     ]
+
+
+def test_latest_health_for_returns_each_entitys_newest_evaluation(states):
+    states.set_health(health(CATALOG_VAULT, NOW - timedelta(hours=1), HealthStatus.HEALTHY))
+    states.set_health(health(CATALOG_VAULT, NOW, HealthStatus.WARNING))
+
+    latest = states.latest_health_for((CATALOG_VAULT, "vault:1:0xunknown"))
+
+    assert list(latest) == [CATALOG_VAULT]
+    assert latest[CATALOG_VAULT].status is HealthStatus.WARNING
+    assert states.latest_health_for(()) == {}

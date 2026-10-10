@@ -193,3 +193,42 @@ def test_similarities_are_replaced_per_catalog_vault_and_only_stored_records_per
     assert stored[0].missing_dimensions == ("oracle_overlap",)
     assert stored[0].normally_visible is True
     assert topology.similarities(candidate_entity_id=NEIGHBOR_VAULT) == ()
+
+
+def test_neighbour_ids_skip_hidden_vaults_and_hub_seeds(topology):
+    hub = "asset:1:hub"
+    oracle = "oracle:1:oracle"
+    markets = [f"market:1:m{index}" for index in range(5)]
+    topology.upsert_entities(
+        (
+            entity(catalog=True),
+            entity(key=NEIGHBOR_VAULT.rsplit(":", 1)[1], visible=False),
+            entity(RadarEntityType.ASSET, "hub"),
+            entity(RadarEntityType.ORACLE, "oracle"),
+            *(entity(RadarEntityType.MARKET, market.rsplit(":", 1)[1], visible=False) for market in markets),
+        ),
+        seen_at=NOW,
+    )
+    topology.upsert_relationships(
+        (
+            RadarRelationship(source_entity_id=CATALOG_VAULT, target_entity_id=markets[0], relationship_type="allocated_to", weight=Decimal("0.2")),
+            RadarRelationship(source_entity_id=CATALOG_VAULT, target_entity_id=markets[1], relationship_type="allocated_to", weight=Decimal("0.8")),
+            RadarRelationship(source_entity_id=NEIGHBOR_VAULT, target_entity_id=markets[0], relationship_type="allocated_to"),
+            RadarRelationship(source_entity_id=markets[0], target_entity_id=oracle, relationship_type="uses_oracle"),
+            *(RadarRelationship(source_entity_id=market, target_entity_id=hub, relationship_type="lends") for market in markets),
+        ),
+        seen_at=NOW,
+    )
+
+    assert topology.neighbour_ids((markets[0],)) == (CATALOG_VAULT, hub, oracle)
+    assert topology.neighbour_ids((hub,), max_degree=4) == ()
+    assert set(topology.neighbour_ids((hub,), max_degree=5)) == set(markets)
+    # Shared by both seeds first, then the heaviest edge.
+    assert topology.neighbour_ids((CATALOG_VAULT, oracle), limit=2) == (
+        markets[0],
+        markets[1],
+    )
+    assert [
+        (item.source_entity_id, item.target_entity_id)
+        for item in topology.relationships_among((CATALOG_VAULT, markets[1], hub))
+    ] == [(markets[1], hub), (CATALOG_VAULT, markets[1])]

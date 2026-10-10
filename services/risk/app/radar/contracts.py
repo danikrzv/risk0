@@ -308,6 +308,11 @@ class NotificationResponse(RadarContractModel):
     generated_at: UtcDateTime
 
 
+
+class NotificationReadAllResponse(RadarContractModel):
+    schema_version: Literal["1.0.0"] = "1.0.0"
+    updated: int = Field(ge=0)
+
 class ExposureCreateRequest(ExposureFields):
     pass
 

@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from collections import defaultdict
 from collections.abc import Sequence
@@ -170,6 +171,24 @@ class StateRepository:
                 ) latest USING (entity_id, evaluated_at)
                 ORDER BY h.entity_id
                 """
+            ).fetchall()
+        return {row["entity_id"]: _health(row) for row in rows}
+
+    def latest_health_for(self, entity_ids: Sequence[str]) -> dict[str, HealthState]:
+        """Latest health of each given entity that has been evaluated."""
+        if not entity_ids:
+            return {}
+        with self._db.transaction() as connection:
+            rows = connection.execute(
+                """
+                SELECT h.* FROM json_each(?) AS ids
+                JOIN health_states h ON h.entity_id = ids.value
+                AND h.evaluated_at = (
+                    SELECT MAX(evaluated_at) FROM health_states
+                    WHERE entity_id = ids.value
+                )
+                """,
+                (json.dumps(list(entity_ids)),),
             ).fetchall()
         return {row["entity_id"]: _health(row) for row in rows}
 

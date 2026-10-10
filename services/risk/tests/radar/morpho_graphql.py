@@ -297,6 +297,9 @@ class FakeMorphoGraphql:
         self.requests: list[dict] = []
         self.failing_chains: set[int] = set()
         self.failing_roots: set[str] = set()
+        # Requests whose id filter names any of these fail like an oversized
+        # filter does upstream.
+        self.failing_ids: set[str] = set()
         self.mode = "ok"
 
     def http_client(self) -> httpx.Client:
@@ -318,6 +321,9 @@ class FakeMorphoGraphql:
         chain_ids = variables.get("chainIds") or []
         if root in self.failing_roots or any(c in self.failing_chains for c in chain_ids):
             return httpx.Response(503, json={"message": "unavailable"})
+        filtered = (variables.get("marketIds") or []) + (variables.get("addresses") or [])
+        if root != "marketPositions" and self.failing_ids.intersection(filtered):
+            return httpx.Response(413, json={"message": "payload too large"})
         if root == "chains":
             return httpx.Response(200, json={"data": {"chains": self.world["chains"]}})
         items = [

@@ -90,6 +90,10 @@ VAULT_FIELDS = (
 )
 ASSET_FIELDS = ("price_usd",)
 ORACLE_FIELDS = ("oracle_price", "usd_reference_price")
+# Morpho rejects longer id filters (HTTP 413 or GraphQL errors), and one
+# failed request must not blank a whole chain, so ids are fetched in chunks.
+ID_FILTER_CHUNK = 100
+
 _ENTITY_ERRORS = (
     ArithmeticError,
     DecimalException,
@@ -162,24 +166,22 @@ class _ChainCollection:
     ) -> None:
         if not records:
             return
-        try:
-            envelope = self.client.discover_markets(
-                self.chain_id, market_ids=[record.market_id for record in records]
-            )
-        except MorphoError:
-            envelope = None
-        current = (
-            {market.market_id.lower(): market for market in envelope.value.items}
-            if envelope is not None
-            else {}
-        )
-        oracle_markets: dict[str, list[DiscoveredMarket]] = defaultdict(list)
+        current: dict[str, tuple[DiscoveredMarket, DataEnvelope]] = {}
+        for chunk in _chunks([record.market_id for record in records]):
+            try:
+                envelope = self.client.discover_markets(self.chain_id, market_ids=chunk)
+            except MorphoError:
+                continue
+            for market in envelope.value.items:
+                current[market.market_id.lower()] = (market, envelope)
+        oracle_markets: dict[str, list[tuple[DiscoveredMarket, DataEnvelope]]] = defaultdict(list)
         for record in records:
             market_entity = entity_id(RadarEntityType.MARKET, self.chain_id, record.market_id)
-            market = current.get(record.market_id.lower())
-            if envelope is None or market is None:
+            found = current.get(record.market_id.lower())
+            if found is None:
                 self._unknown(market_entity, RadarEntityType.MARKET, MARKET_FIELDS + DISTRIBUTION_FIELDS)
                 continue
+            market, envelope = found
             try:
                 self._market(market_entity, market, envelope, market_entity in position_market_ids)
                 for asset in (market.loan_asset, market.collateral_asset):
@@ -189,34 +191,34 @@ class _ChainCollection:
                 self._unknown(market_entity, RadarEntityType.MARKET, MARKET_FIELDS + DISTRIBUTION_FIELDS)
                 continue
             if market.oracle_address is not None and market.collateral_asset is not None:
-                oracle_markets[market.oracle_address.lower()].append(market)
+                oracle_markets[market.oracle_address.lower()].append((market, envelope))
         for oracle, users in oracle_markets.items():
             oracle_entity = entity_id(RadarEntityType.ORACLE, self.chain_id, oracle)
+            users = sorted(users, key=lambda user: user[0].market_id)
             try:
-                self._oracle(oracle_entity, sorted(users, key=lambda m: m.market_id), envelope)
+                # Described by its first market, so it carries that market's envelope.
+                self._oracle(oracle_entity, [market for market, _ in users], users[0][1])
             except _ENTITY_ERRORS:
                 self._unknown(oracle_entity, RadarEntityType.ORACLE, ORACLE_FIELDS)
 
     def collect_vaults(self, records: Sequence[DiscoveredVault]) -> None:
         if not records:
             return
-        try:
-            envelope = self.client.discover_vaults(
-                self.chain_id, addresses=[record.address for record in records]
-            )
-        except MorphoError:
-            envelope = None
-        current = (
-            {vault.address.lower(): vault for vault in envelope.value.items}
-            if envelope is not None
-            else {}
-        )
+        current: dict[str, tuple[DiscoveredVault, DataEnvelope]] = {}
+        for chunk in _chunks([record.address for record in records]):
+            try:
+                envelope = self.client.discover_vaults(self.chain_id, addresses=chunk)
+            except MorphoError:
+                continue
+            for vault in envelope.value.items:
+                current[vault.address.lower()] = (vault, envelope)
         for record in records:
             vault_entity = entity_id(RadarEntityType.VAULT, self.chain_id, record.address)
-            vault = current.get(record.address.lower())
-            if envelope is None or vault is None:
+            found = current.get(record.address.lower())
+            if found is None:
                 self._unknown(vault_entity, RadarEntityType.VAULT, VAULT_FIELDS)
                 continue
+            vault, envelope = found
             try:
                 self._vault(vault_entity, vault, envelope)
                 self._asset(vault.asset, envelope)
@@ -417,6 +419,10 @@ class _ChainCollection:
 
     def _store(self, snapshot: StateSnapshot) -> None:
         self.snapshots[snapshot.entity_id] = snapshot
+
+
+def _chunks(ids: Sequence[str]) -> list[list[str]]:
+    return [list(ids[start : start + ID_FILTER_CHUNK]) for start in range(0, len(ids), ID_FILTER_CHUNK)]
 
 
 def _distribution(

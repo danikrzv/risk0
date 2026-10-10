@@ -24,6 +24,7 @@ NOW = datetime(2026, 10, 10, 12, tzinfo=UTC)
 WSTETH_MARKET = f"market:1:{M_WSTETH_WETH}"
 WETH_USDC_MARKET = f"market:1:{M_WETH_USDC}"
 BASE_MARKET = f"market:8453:{M_BASE}"
+ORACLE_WSTETH_WETH_ENTITY = f"oracle:1:{ORACLE_WSTETH_WETH}"
 
 
 @pytest.fixture
@@ -199,6 +200,28 @@ def test_one_malformed_market_does_not_abort_the_batch(client, api, batch):
     assert broken.freshness is FreshnessStatus.EXPIRED
     assert broken.metrics["borrow_assets"] is None
     assert snapshots[WSTETH_MARKET].freshness is FreshnessStatus.FRESH
+
+
+def test_ids_are_fetched_in_chunks_and_a_failed_chunk_only_blanks_its_own_entities(
+    client, api, batch, monkeypatch
+):
+    from app.radar.collectors import morpho as collector
+
+    monkeypatch.setattr(collector, "ID_FILTER_CHUNK", 1)
+    api.failing_ids = {M_WETH_USDC}
+
+    snapshots = collect(client, batch)
+
+    filters = [
+        (request.get("variables") or {}).get("marketIds")
+        or (request.get("variables") or {}).get("addresses")
+        for request in api.requests
+        if "marketPositions" not in request["query"]
+    ]
+    assert all(len(ids) <= 1 for ids in filters if ids)
+    assert snapshots[WETH_USDC_MARKET].freshness is FreshnessStatus.EXPIRED
+    assert snapshots[WSTETH_MARKET].freshness is FreshnessStatus.FRESH
+    assert snapshots[ORACLE_WSTETH_WETH_ENTITY].freshness is FreshnessStatus.FRESH
 
 
 def test_market_missing_from_the_provider_is_unknown(client, api, batch):

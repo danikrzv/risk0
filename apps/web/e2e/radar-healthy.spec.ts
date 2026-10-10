@@ -4,6 +4,8 @@ test("healthy radar shows the catalog topology and accepts a manual exposure", a
   await page.goto("/")
 
   const graph = page.getByRole("region", { name: "Morpho radar graph" })
+  // Node buttons live in the collapsed "Explore topology as lists" section.
+  await graph.getByText(/^Explore topology as lists/).click()
   await expect(graph.getByRole("button", { name: /Belem Sentinel USDC HEALTHY/ })).toBeVisible()
   await expect(graph.getByRole("button", { name: /Institutional USDC Peer HEALTHY/ })).toBeVisible()
   await expect(graph.getByRole("button", { name: /Hidden 48% Neighbor/ })).toHaveCount(0)

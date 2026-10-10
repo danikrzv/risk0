@@ -23,6 +23,8 @@ test("oracle incident opens, propagates to exposure, and resolves", async ({ pag
   await history.getByRole("button", { name: "View incident Critical oracle deviation" }).click()
 
   const graph = page.getByRole("region", { name: "Morpho radar graph" })
+  // Node buttons live in the collapsed "Explore topology as lists" section.
+  await graph.getByText(/^Explore topology as lists/).click()
   const hidden = graph.getByRole("button", { name: /Hidden 48% Neighbor HEALTHY/ })
   await expect(hidden).toBeVisible()
   await expect(hidden).toHaveAttribute("data-revealed", "true")

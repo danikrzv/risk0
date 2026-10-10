@@ -24,7 +24,7 @@ NEAR_LIQUIDATION_HEALTH_FACTOR = Decimal("1.10")
 MARKET_FIELDS = (
     "supply_assets",
     "borrow_assets",
-    "liquidity_assets",
+    "available_liquidity",
     "collateral_assets",
     "supply_usd",
     "borrow_usd",
@@ -32,7 +32,7 @@ MARKET_FIELDS = (
     "collateral_usd",
     "utilization",
     "lltv",
-    "bad_debt_assets",
+    "bad_debt",
     "bad_debt_usd",
     "oracle_price",
     "loan_price_usd",
@@ -42,9 +42,23 @@ MARKET_FIELDS = (
     "state_timestamp",
     "state_age_seconds",
 )
-# Fields that do not apply to a market without collateral (an idle market).
-_COLLATERAL_FIELDS = frozenset(
-    {"collateral_assets", "collateral_usd", "oracle_price", "collateral_price_usd"}
+# `missing_fields` lists only fields that health depends on, because any listed field
+# makes the entity UNKNOWN; optional figures (USD values) stay null in `metrics`.
+MARKET_REQUIRED = (
+    "supply_assets",
+    "borrow_assets",
+    "available_liquidity",
+    "utilization",
+    "lltv",
+    "bad_debt",
+)
+# A market without collateral (an idle market) has no oracle price to require.
+MARKET_COLLATERAL_REQUIRED = ("oracle_price",)
+VAULT_REQUIRED = (
+    "total_assets",
+    "withdrawal_liquidity",
+    "allocation_hhi",
+    "unmodelled_allocation_ratio",
 )
 DISTRIBUTION_FIELDS = (
     "lender_count",
@@ -54,7 +68,7 @@ DISTRIBUTION_FIELDS = (
     "top_lender_share",
     "top_borrower_share",
     "near_liquidation_debt",
-    "near_liquidation_share",
+    "near_liquidation_debt_ratio",
     "max_borrower_ltv",
     "min_health_factor",
     "borrowers_without_health_factor",
@@ -62,12 +76,12 @@ DISTRIBUTION_FIELDS = (
 VAULT_FIELDS = (
     "total_assets",
     "total_assets_usd",
-    "liquidity_assets",
+    "withdrawal_liquidity",
     "liquidity_usd",
     "idle_assets",
     "allocated_assets",
     "unmodelled_assets",
-    "unmodelled_share",
+    "unmodelled_allocation_ratio",
     "allocation_count",
     "max_allocation_share",
     "allocation_hhi",
@@ -229,7 +243,7 @@ class _ChainCollection:
         metrics: dict[str, MetricValue] = {
             "supply_assets": market.supply_assets,
             "borrow_assets": market.borrow_assets,
-            "liquidity_assets": market.liquidity_assets,
+            "available_liquidity": market.liquidity_assets,
             "collateral_assets": market.collateral_assets,
             "supply_usd": market.supply_usd,
             "borrow_usd": market.borrow_usd,
@@ -237,7 +251,7 @@ class _ChainCollection:
             "collateral_usd": market.collateral_usd,
             "utilization": market.utilization,
             "lltv": market.lltv,
-            "bad_debt_assets": market.bad_debt_assets,
+            "bad_debt": market.bad_debt_assets,
             "bad_debt_usd": market.bad_debt_usd,
             "oracle_price": market.oracle_price,
             "loan_price_usd": market.loan_asset.price_usd,
@@ -253,12 +267,10 @@ class _ChainCollection:
                 else Decimal(max(_epoch(self.now) - market.state_timestamp, 0))
             ),
         }
-        applicable = [
-            name
-            for name in MARKET_FIELDS
-            if market.collateral_asset is not None or name not in _COLLATERAL_FIELDS
-        ]
-        missing = [name for name in applicable if metrics[name] is None]
+        required = MARKET_REQUIRED + (
+            MARKET_COLLATERAL_REQUIRED if market.collateral_asset is not None else ()
+        )
+        missing = [name for name in required if metrics[name] is None]
         positions = self._positions(market) if with_positions else None
         if positions is None:
             metrics.update({name: None for name in DISTRIBUTION_FIELDS})
@@ -298,12 +310,12 @@ class _ChainCollection:
         metrics: dict[str, MetricValue] = {
             "total_assets": total,
             "total_assets_usd": vault.total_assets_usd,
-            "liquidity_assets": vault.liquidity_assets,
+            "withdrawal_liquidity": vault.liquidity_assets,
             "liquidity_usd": vault.liquidity_usd,
             "idle_assets": vault.idle_assets,
             "allocated_assets": sum(amounts, Decimal(0)),
             "unmodelled_assets": vault.unmodelled_assets,
-            "unmodelled_share": vault.unmodelled_assets / total if total else None,
+            "unmodelled_allocation_ratio": vault.unmodelled_assets / total if total else None,
             "allocation_count": Decimal(len(amounts)),
             "max_allocation_share": max(shares) if shares else None,
             "allocation_hhi": sum((share * share for share in shares), Decimal(0)) if shares else None,
@@ -311,10 +323,10 @@ class _ChainCollection:
             "listed": vault.listed,
             "version": vault.version,
         }
-        # Vault V1 has no idle bucket, and an empty vault has no allocation shares.
-        not_applicable = {"idle_assets"} if vault.version == "v1" else set()
-        if not total:
-            not_applicable |= {"unmodelled_share", "max_allocation_share", "allocation_hhi"}
+        # An empty vault has no allocation shares to measure.
+        not_applicable = (
+            set() if total else {"unmodelled_allocation_ratio", "allocation_hhi"}
+        )
         self._store(
             build_snapshot(
                 vault_entity,
@@ -327,7 +339,7 @@ class _ChainCollection:
                 metrics=metrics,
                 missing_fields=(
                     name
-                    for name in VAULT_FIELDS
+                    for name in VAULT_REQUIRED
                     if metrics[name] is None and name not in not_applicable
                 ),
             )
@@ -385,7 +397,7 @@ class _ChainCollection:
                 source_identity=self.source_identity,
                 freshness=envelope.freshness,
                 metrics=metrics,
-                missing_fields=(name for name in ORACLE_FIELDS if metrics[name] is None),
+                missing_fields=() if metrics["oracle_price"] is not None else ("oracle_price",),
             )
         )
 
@@ -432,7 +444,7 @@ def _distribution(
         "top_lender_share": _top_share(lenders),
         "top_borrower_share": _top_share(debts),
         "near_liquidation_debt": near,
-        "near_liquidation_share": near / total_debt if total_debt else None,
+        "near_liquidation_debt_ratio": near / total_debt if total_debt else None,
         # A position's LTV is LLTV / health factor, so the riskiest is LLTV / min HF.
         "max_borrower_ltv": lltv / min_health if min_health else None,
         "min_health_factor": min_health,

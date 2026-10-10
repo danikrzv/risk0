@@ -95,11 +95,12 @@ def test_market_snapshot_carries_exact_state_and_provenance(client, batch):
     metrics = snapshot.metrics
     assert metrics["supply_assets"] == Decimal("1000")
     assert metrics["borrow_assets"] == Decimal("800")
-    assert metrics["liquidity_assets"] == Decimal("200")
+    assert metrics["available_liquidity"] == Decimal("200")
     assert metrics["utilization"] == Decimal("0.8")
     assert metrics["lltv"] == Decimal("0.86")
     assert metrics["oracle_price"] == Decimal("2500")
     assert metrics["bad_debt_usd"] == Decimal("0")
+    assert metrics["bad_debt"] == Decimal("0")
     assert metrics["listed"] is True
     assert metrics["state_age_seconds"] == Decimal(int(NOW.timestamp()) - 1791633000)
     assert all(not isinstance(value, float) for value in metrics.values())
@@ -116,7 +117,7 @@ def test_market_distribution_metrics_are_derived_from_positions(client, batch):
     assert metrics["top_borrower_share"] == Decimal("0.8")
     assert metrics["borrower_hhi"] == Decimal("0.68")
     assert metrics["near_liquidation_debt"] == Decimal("400")
-    assert metrics["near_liquidation_share"] == Decimal("0.8")
+    assert metrics["near_liquidation_debt_ratio"] == Decimal("0.8")
     assert metrics["max_borrower_ltv"] == Decimal("0.965") / Decimal("1.02")
     assert metrics["min_health_factor"] == Decimal("1.02")
 
@@ -144,15 +145,15 @@ def test_vault_snapshot_reports_allocation_concentration_and_unmodelled_assets(
 
     v1 = snapshots[f"vault:1:{CATALOG_VAULT}"].metrics
     assert v1["total_assets"] == Decimal("1000")
-    assert v1["liquidity_assets"] == Decimal("400")
+    assert v1["withdrawal_liquidity"] == Decimal("400")
     assert v1["allocation_count"] == Decimal(2)
     assert v1["max_allocation_share"] == Decimal("0.6")
     assert v1["allocation_hhi"] == Decimal("0.52")
-    assert v1["unmodelled_share"] == Decimal(0)
+    assert v1["unmodelled_allocation_ratio"] == Decimal(0)
 
     v2 = snapshots[f"vault:1:{V2_VAULT}"].metrics
     assert v2["unmodelled_assets"] == Decimal("0.5")
-    assert v2["unmodelled_share"] == Decimal("0.5") / Decimal("3")
+    assert v2["unmodelled_allocation_ratio"] == Decimal("0.5") / Decimal("3")
     assert v2["idle_assets"] == Decimal("0.5")
 
 
@@ -266,3 +267,36 @@ def test_discovered_topology_and_collected_state_persist_together(
     # Re-collecting the same cached observation does not duplicate history.
     again = collect(client, batch)
     assert not states.append_snapshot(again[WSTETH_MARKET])
+
+
+def test_optional_usd_figures_stay_null_without_making_the_market_unknown(
+    client, api, batch
+):
+    api.world["markets"][1][1]["state"]["supplyAssetsUsd"] = None
+
+    snapshot = collect(client, batch)[WSTETH_MARKET]
+
+    assert snapshot.metrics["supply_usd"] is None
+    assert "supply_usd" not in snapshot.missing_fields
+    assert snapshot.missing_fields == ()
+
+
+def test_collected_snapshots_feed_the_health_evaluator(client, api, batch):
+    from app.radar.analysis.health import HealthEvaluator, HealthHistory
+    from app.radar.contracts import HealthStatus
+
+    api.failing_chains = {8453}
+    snapshots = collect(client, batch)
+    entities = {entity.entity_id: entity for entity in batch.entities}
+    evaluator = HealthEvaluator()
+
+    def evaluate(entity_id: str) -> HealthStatus:
+        return evaluator.evaluate(
+            entities[entity_id], snapshots[entity_id], (), HealthHistory()
+        ).status
+
+    assert evaluate(WSTETH_MARKET) is not HealthStatus.UNKNOWN
+    assert evaluate(f"vault:1:{CATALOG_VAULT}") is not HealthStatus.UNKNOWN
+    assert evaluate(BASE_MARKET) is HealthStatus.UNKNOWN
+    # Markets without position data cannot be judged on concentration.
+    assert evaluate(WETH_USDC_MARKET) is HealthStatus.UNKNOWN

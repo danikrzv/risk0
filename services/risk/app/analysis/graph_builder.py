@@ -10,13 +10,27 @@ Graph shape, matching the scenario engine's traversal rules:
 - vault:          --lends--> vault asset, --deployed_on--> Morpho
 - Morpho --deployed_on--> Ethereum
 - position --exits_through--> pool --exits_through--> pool tokens already in the graph
+- vault --allocated_to(weight)--> protocol "Unmodelled allocation" for every
+  allocation row that is not a Morpho market (for example a V2 adapter), so an
+  unknown share of the vault is visible with `exposure_unknown=True` instead of
+  disappearing as zero exposure. The scenario engine must treat scenarios that
+  touch such a node as UNAVAILABLE rather than as zero risk.
+
+Allocation rows are aggregated per market (Morpho V2 may split one market over
+several adapters): weights and supplied assets are summed before the edge is
+emitted, a negative weight is skipped with a warning, a per-market weight above
+1 is capped with a warning, and a total above 1 is warned about. Exit pools are
+only accepted on Ethereum mainnet and only when at least one of their tokens is
+an asset already in the graph.
 
 Every node carries the provenance, freshness and `observed_at` of the envelope
-that supplied it. The position node is "user input" at validation time; Morpho
-and Ethereum come from the curated catalog at build time. Missing data (exit
-pools, allocations, allocated-market details, oracle health, pool depth, a
-liquidity figure that cannot be expressed in the numeraire) is reported in
-`completeness_warnings` and never substituted.
+that supplied it; a URL provenance is reduced to scheme, host and path so that
+credentials or API keys embedded in a source never reach a published graph.
+The position node is "user input" at validation time; Morpho and Ethereum come
+from the curated catalog at build time. Missing data (exit pools, allocations,
+allocated-market details, oracle health, pool depth, a liquidity figure that
+cannot be expressed in the numeraire) is reported in `completeness_warnings`
+and never substituted.
 
 Metric keys read by `app.analysis.scenario_engine`: `symbol` on asset nodes,
 `lltv` on market nodes, `available_liquidity` (position-numeraire units) on
@@ -25,8 +39,10 @@ vault and market nodes, `liquidity_depth` on pool nodes, and `age_seconds` and
 """
 
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
+from urllib.parse import urlsplit, urlunsplit
 
 from app.contracts.models import (
     CatalogEntityType,
@@ -68,6 +84,40 @@ from app.domain.snapshots import (
 
 ONE = Decimal(1)
 ZERO = Decimal(0)
+HUNDRED = Decimal(100)
+PERCENT_QUANTUM = Decimal("0.01")
+UNMODELLED_ALLOCATION_LABEL = "Unmodelled allocation"
+UNMODELLED_ALLOCATION_PREFIX = "unmodelled-allocation-"
+
+
+@dataclass
+class _Allocation:
+    """Allocation rows aggregated per target (market id or adapter)."""
+
+    weight: Decimal = ZERO
+    supply_assets: Decimal = ZERO
+    supply_cap: Decimal | None = ZERO
+    pending_removal: bool = False
+    adapter_addresses: set[str | None] = field(default_factory=set)
+    rows: int = 0
+
+    def add(self, row: AllocationSnapshot) -> None:
+        self.weight += row.weight
+        self.supply_assets += row.supply_assets
+        if self.supply_cap is None or row.supply_cap is None:
+            self.supply_cap = None
+        else:
+            self.supply_cap += row.supply_cap
+        self.pending_removal = self.pending_removal or row.pending_removal
+        self.adapter_addresses.add(row.adapter_address.lower() if row.adapter_address else None)
+        self.rows += 1
+
+    @property
+    def adapter_address(self) -> str | None:
+        """The single adapter behind the rows, or None when there are several (or none)."""
+        if len(self.adapter_addresses) == 1:
+            return next(iter(self.adapter_addresses))
+        return None
 
 
 def build_risk_graph(
@@ -227,7 +277,7 @@ class _Builder:
         *,
         label: str,
         primary: bool,
-        allocation: AllocationSnapshot | None = None,
+        allocation: _Allocation | None = None,
     ) -> str:
         market = envelope.value
         available = self._liquidity_in_numeraire(
@@ -307,57 +357,121 @@ class _Builder:
                 "the underlying market exposure is unknown."
             )
             return
-        rows = sorted(
-            envelope.value,
-            key=lambda row: ((row.market_id or "").lower(), (row.adapter_address or "").lower()),
-        )
-        for allocation in rows:
-            if allocation.weight <= ZERO:
+        assert self.context.vault is not None
+        vault_address = self.context.vault.value.address.lower()
+        markets: dict[str, _Allocation] = {}
+        unmodelled: dict[str, _Allocation] = {}
+        total = ZERO
+        for index, allocation in enumerate(envelope.value):
+            if allocation.vault_address.lower() != vault_address:
+                raise GraphConstructionError(
+                    f"allocation row {index} belongs to vault {allocation.vault_address.lower()}, "
+                    f"not to {vault_address}"
+                )
+            if allocation.weight < ZERO:
+                self._warn(
+                    f"Allocation weight {allocation.weight} to "
+                    f"{_allocation_target(allocation)} is negative and was ignored."
+                )
                 continue
+            if allocation.weight == ZERO:
+                continue
+            total += allocation.weight
             if allocation.market_id is None:
-                self._warn(
-                    f"Allocation of {allocation.supply_assets} to adapter "
-                    f"{(allocation.adapter_address or 'unknown').lower()} is not a Morpho market "
-                    "and is not modelled as an allocated_to edge."
+                key = (
+                    allocation.adapter_address.lower()
+                    if allocation.adapter_address
+                    else f"{UNMODELLED_ALLOCATION_PREFIX}{index}"
                 )
-                continue
-            weight = allocation.weight
-            if weight > ONE:
-                self._warn(
-                    f"Allocation weight {weight} to market {allocation.market_id.lower()} exceeds 1; "
-                    "it was capped at 1."
-                )
-                weight = ONE
-            detail = self.allocation_markets.get(allocation.market_id.lower())
-            if detail is not None:
-                if detail.value.market_id.lower() != allocation.market_id.lower():
-                    raise GraphConstructionError(
-                        f"allocation market snapshot {detail.value.market_id} does not match "
-                        f"allocation {allocation.market_id}"
-                    )
-                market = detail.value
-                market_node = self._add_market(
-                    detail,
-                    label=f"{market.collateral_asset.symbol} collateral / {market.loan_asset.symbol} debt",
-                    primary=False,
-                    allocation=allocation,
-                )
+                unmodelled.setdefault(key, _Allocation()).add(allocation)
             else:
-                market_node = self._add_envelope_node(
-                    RiskNodeType.MARKET,
-                    allocation.market_id,
-                    f"Morpho market {allocation.market_id.lower()}",
-                    {"market_id": allocation.market_id.lower(), **_allocation_metrics(allocation)},
-                    envelope,
+                markets.setdefault(allocation.market_id.lower(), _Allocation()).add(allocation)
+        if total > ONE:
+            self._warn(
+                f"Vault allocation weights sum to {total}, which exceeds 1; "
+                "each allocated_to edge keeps its reported weight."
+            )
+        for market_id in sorted(markets):
+            self._add_market_allocation(vault_id, market_id, markets[market_id], envelope)
+        unmodelled_share = ZERO
+        for key in sorted(unmodelled):
+            unmodelled_share += self._add_unmodelled_allocation(vault_id, key, unmodelled[key], envelope)
+        if unmodelled_share > ZERO:
+            percent = (unmodelled_share * HUNDRED).quantize(PERCENT_QUANTUM)
+            self._warn(
+                f"{percent}% of vault allocations could not be modelled; "
+                "scenario exposure for that share is unknown."
+            )
+
+    def _add_market_allocation(
+        self,
+        vault_id: str,
+        market_id: str,
+        allocation: _Allocation,
+        envelope: DataEnvelope[tuple[AllocationSnapshot, ...]],
+    ) -> None:
+        weight = self._capped_weight(allocation.weight, f"market {market_id}")
+        detail = self.allocation_markets.get(market_id)
+        if detail is not None:
+            if detail.value.market_id.lower() != market_id:
+                raise GraphConstructionError(
+                    f"allocation market snapshot {detail.value.market_id} does not match "
+                    f"allocation {market_id}"
                 )
-                self._add_edge(
-                    market_node, node_id(RiskNodeType.PROTOCOL, MORPHO_KEY), RiskEdgeType.DEPLOYED_ON
-                )
-                self._warn(
-                    f"Allocated market {allocation.market_id.lower()} has no market snapshot; "
-                    "its loan asset, collateral, oracle and LLTV are unknown."
-                )
-            self._add_edge(vault_id, market_node, RiskEdgeType.ALLOCATED_TO, weight)
+            market = detail.value
+            market_node = self._add_market(
+                detail,
+                label=f"{market.collateral_asset.symbol} collateral / {market.loan_asset.symbol} debt",
+                primary=False,
+                allocation=allocation,
+            )
+        else:
+            market_node = self._add_envelope_node(
+                RiskNodeType.MARKET,
+                market_id,
+                f"Morpho market {market_id}",
+                {"market_id": market_id, **_allocation_metrics(allocation)},
+                envelope,
+            )
+            self._add_edge(
+                market_node, node_id(RiskNodeType.PROTOCOL, MORPHO_KEY), RiskEdgeType.DEPLOYED_ON
+            )
+            self._warn(
+                f"Allocated market {market_id} has no market snapshot; "
+                "its loan asset, collateral, oracle and LLTV are unknown."
+            )
+        self._add_edge(vault_id, market_node, RiskEdgeType.ALLOCATED_TO, weight)
+
+    def _add_unmodelled_allocation(
+        self,
+        vault_id: str,
+        key: str,
+        allocation: _Allocation,
+        envelope: DataEnvelope[tuple[AllocationSnapshot, ...]],
+    ) -> Decimal:
+        """Emit a visible node for an allocation that is not a Morpho market; return its share."""
+        adapter = allocation.adapter_address
+        weight = self._capped_weight(allocation.weight, f"adapter {adapter or key}")
+        self._warn(
+            f"Allocation of {allocation.supply_assets} to adapter {adapter or 'unknown'} is not "
+            "a Morpho market; it is kept as an unmodelled allocation with unknown exposure."
+        )
+        metrics: dict[str, MetricValue] = {
+            "exposure_unknown": True,
+            "weight": weight,
+            **_allocation_metrics(allocation),
+        }
+        node = self._add_envelope_node(
+            RiskNodeType.PROTOCOL, key, UNMODELLED_ALLOCATION_LABEL, metrics, envelope
+        )
+        self._add_edge(vault_id, node, RiskEdgeType.ALLOCATED_TO, weight)
+        return weight
+
+    def _capped_weight(self, weight: Decimal, target: str) -> Decimal:
+        if weight > ONE:
+            self._warn(f"Allocation weight {weight} to {target} exceeds 1; it was capped at 1.")
+            return ONE
+        return weight
 
     def _add_pools(self, position_id: str) -> None:
         pools = self.context.exit_pools
@@ -369,6 +483,18 @@ class _Builder:
         for envelope in sorted(pools, key=lambda item: item.value.pool_address.lower()):
             pool = envelope.value
             address = pool.pool_address.lower()
+            if pool.chain_id != CHAIN_ID:
+                raise GraphConstructionError(
+                    f"exit pool {address} is on chain {pool.chain_id}; only Ethereum mainnet "
+                    f"(chain {CHAIN_ID}) pools are supported"
+                )
+            token_ids = tuple(node_id(RiskNodeType.ASSET, token.address) for token in (pool.token0, pool.token1))
+            if not any(token_id in self.nodes for token_id in token_ids):
+                self._warn(
+                    f"Exit pool {address} ({pool.token0.symbol}/{pool.token1.symbol}) trades neither "
+                    "asset of this position and was ignored; it does not count towards exit depth."
+                )
+                continue
             depth = self.pool_depths.get(address)
             if depth is None:
                 self._warn(
@@ -392,8 +518,7 @@ class _Builder:
                 RiskNodeType.POOL, pool.pool_address, _pool_label(pool), metrics, envelope
             )
             self._add_edge(position_id, pool_id, RiskEdgeType.EXITS_THROUGH)
-            for token in (pool.token0, pool.token1):
-                asset_id = node_id(RiskNodeType.ASSET, token.address)
+            for asset_id in token_ids:
                 if asset_id in self.nodes:
                     self._add_edge(pool_id, asset_id, RiskEdgeType.EXITS_THROUGH)
 
@@ -410,6 +535,11 @@ class _Builder:
         key = address.lower()
         observation = self.oracles.get(key)
         if observation is not None:
+            if observation.value.oracle_address.lower() != key:
+                raise GraphConstructionError(
+                    f"oracle observation for {observation.value.oracle_address.lower()} was "
+                    f"supplied under oracle key {key}"
+                )
             metrics: dict[str, MetricValue] = {
                 "address": key,
                 "age_seconds": observation.value.age_seconds,
@@ -454,7 +584,7 @@ class _Builder:
             key,
             label,
             metrics,
-            provenance=envelope.source,
+            provenance=public_source(envelope.source),
             freshness=envelope.freshness,
             observed_at=envelope.fetched_at,
         )
@@ -520,16 +650,36 @@ def _unique_by_address(assets: Iterable[AssetInfo]) -> tuple[AssetInfo, ...]:
     return tuple(seen.values())
 
 
-def _allocation_metrics(allocation: AllocationSnapshot) -> dict[str, MetricValue]:
+def _allocation_metrics(allocation: _Allocation) -> dict[str, MetricValue]:
     return {
         "allocation_weight": allocation.weight,
         "allocated_assets": allocation.supply_assets,
         "supply_cap": allocation.supply_cap,
         "pending_removal": allocation.pending_removal,
-        "adapter_address": (
-            allocation.adapter_address.lower() if allocation.adapter_address else None
-        ),
+        "adapter_address": allocation.adapter_address,
+        "allocation_rows": Decimal(allocation.rows),
     }
+
+
+def _allocation_target(allocation: AllocationSnapshot) -> str:
+    if allocation.market_id is not None:
+        return f"market {allocation.market_id.lower()}"
+    if allocation.adapter_address is not None:
+        return f"adapter {allocation.adapter_address.lower()}"
+    return "an unidentified adapter"
+
+
+def public_source(source: str) -> str:
+    """Reduce a URL source to scheme, host and path; anything that is not a URL is unchanged.
+
+    Userinfo (`user:secret@`), the query string and the fragment are dropped so a
+    provider URL carrying credentials or an API key never becomes node provenance.
+    """
+    parts = urlsplit(source)
+    if not parts.scheme or not parts.netloc:
+        return source
+    host = parts.netloc.rpartition("@")[2]
+    return urlunsplit((parts.scheme, host, parts.path, "", ""))
 
 
 def _pool_label(pool: PoolSnapshot) -> str:

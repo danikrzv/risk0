@@ -495,17 +495,149 @@ def test_missing_allocations_produce_a_warning_not_fabricated_edges():
     assert any("allocation" in warning.lower() for warning in graph.completeness_warnings)
 
 
-def test_adapter_level_allocation_without_market_is_reported_not_guessed():
+def test_adapter_level_allocation_without_market_is_a_visible_unmodelled_node():
     adapter = "0x00000000000000000000000000000000000000ad"
     context = vault_context(
-        allocations=(allocation(WETH_USDC_MARKET, "0.7", "3500"), allocation(None, "0.3", "1500", adapter=adapter))
+        allocations=(allocation(None, "0.7", "3500", adapter=adapter), allocation(WETH_USDC_MARKET, "0.3", "1500"))
+    )
+
+    graph = build(vault_lender_position(), context)
+    nodes = nodes_by_id(graph)
+    unmodelled_id = f"protocol:1:{adapter}"
+
+    # The unknown 70% is a node and a weighted edge, never silently dropped (spec section 15).
+    assert unmodelled_id in nodes
+    node = nodes[unmodelled_id]
+    assert node.node_type is RiskNodeType.PROTOCOL
+    assert node.label == "Unmodelled allocation"
+    assert node.metrics["exposure_unknown"] is True
+    assert node.metrics["weight"] == Decimal("0.7")
+    assert node.metrics["allocated_assets"] == Decimal("3500")
+    assert node.metrics["adapter_address"] == adapter
+    assert node.provenance == ALLOCATIONS_SOURCE
+    edges = edge_set(graph)
+    assert (VAULT_ID, unmodelled_id, RiskEdgeType.ALLOCATED_TO, Decimal("0.7")) in edges
+    assert (VAULT_ID, MARKET_A_ID, RiskEdgeType.ALLOCATED_TO, Decimal("0.3")) in edges
+    allocated = [edge for edge in graph.edges if edge.relationship is RiskEdgeType.ALLOCATED_TO]
+    assert len(allocated) == 2
+    assert any(adapter in warning for warning in graph.completeness_warnings)
+    assert any(
+        "70.00% of vault allocations could not be modelled" in warning
+        and "scenario exposure for that share is unknown" in warning
+        for warning in graph.completeness_warnings
+    )
+    # The engine still accepts the graph; treating exposure_unknown as UNAVAILABLE is its follow-up.
+    results = ScenarioEngine().run(vault_lender_position(), graph, all_selections(), {})
+    assert len(results) == len(ScenarioId)
+
+
+def test_unmodelled_allocation_without_adapter_address_gets_an_indexed_node():
+    context = vault_context(
+        allocations=(allocation(WETH_USDC_MARKET, "0.75", "3750"), allocation(None, "0.25", "1250"))
+    )
+
+    graph = build(vault_lender_position(), context)
+    nodes = nodes_by_id(graph)
+
+    unmodelled_id = "protocol:1:unmodelled-allocation-1"
+    assert unmodelled_id in nodes
+    assert nodes[unmodelled_id].metrics["exposure_unknown"] is True
+    assert nodes[unmodelled_id].metrics["adapter_address"] is None
+    assert (VAULT_ID, unmodelled_id, RiskEdgeType.ALLOCATED_TO, Decimal("0.25")) in edge_set(graph)
+    assert any("25.00% of vault allocations could not be modelled" in warning for warning in graph.completeness_warnings)
+    assert all(NODE_ID_PATTERN.match(node.node_id) for node in graph.nodes)
+
+
+def test_allocation_rows_to_the_same_market_are_summed():
+    adapter_a = "0x" + "a" * 40
+    adapter_b = "0x" + "b" * 40
+    context = vault_context(
+        allocations=(
+            allocation(WETH_USDC_MARKET, "0.3", "1500", adapter=adapter_a),
+            allocation(WETH_USDC_MARKET, "0.3", "1500", adapter=adapter_b),
+            allocation(WBTC_USDC_MARKET, "0.4", "2000"),
+        )
+    )
+
+    graph = build(vault_lender_position(), context)
+    nodes = nodes_by_id(graph)
+
+    assert (VAULT_ID, MARKET_A_ID, RiskEdgeType.ALLOCATED_TO, Decimal("0.6")) in edge_set(graph)
+    assert nodes[MARKET_A_ID].metrics["allocation_weight"] == Decimal("0.6")
+    assert nodes[MARKET_A_ID].metrics["allocated_assets"] == Decimal("3000")
+    assert nodes[MARKET_A_ID].metrics["adapter_address"] is None
+    assert nodes[MARKET_B_ID].metrics["adapter_address"] is None
+    assert not any("exceed" in warning for warning in graph.completeness_warnings)
+
+
+def test_summed_allocation_rows_above_one_are_capped_with_a_warning():
+    context = vault_context(
+        allocations=(
+            allocation(WETH_USDC_MARKET, "0.6", "3000", adapter="0x" + "a" * 40),
+            allocation("0x" + WETH_USDC_MARKET[2:].upper(), "0.6", "3000", adapter="0x" + "b" * 40),
+        )
     )
 
     graph = build(vault_lender_position(), context)
 
-    allocated = [edge for edge in graph.edges if edge.relationship is RiskEdgeType.ALLOCATED_TO]
-    assert len(allocated) == 1
-    assert any(adapter in warning for warning in graph.completeness_warnings)
+    assert (VAULT_ID, MARKET_A_ID, RiskEdgeType.ALLOCATED_TO, Decimal("1")) in edge_set(graph)
+    assert any("capped" in warning for warning in graph.completeness_warnings)
+
+
+def test_negative_allocation_weight_is_skipped_with_a_warning():
+    context = vault_context(
+        allocations=(allocation(WETH_USDC_MARKET, "0.7", "3500"), allocation(WBTC_USDC_MARKET, "-0.2", "1000"))
+    )
+
+    graph = build(vault_lender_position(), context)
+
+    assert (VAULT_ID, MARKET_A_ID, RiskEdgeType.ALLOCATED_TO, Decimal("0.7")) in edge_set(graph)
+    assert MARKET_B_ID not in nodes_by_id(graph)
+    assert any("-0.2" in warning and "negative" in warning.lower() for warning in graph.completeness_warnings)
+
+
+def test_allocation_weights_summing_above_one_produce_a_warning():
+    context = vault_context(
+        allocations=(allocation(WETH_USDC_MARKET, "0.7", "3500"), allocation(WBTC_USDC_MARKET, "0.6", "3000"))
+    )
+
+    graph = build(vault_lender_position(), context)
+    edges = edge_set(graph)
+
+    assert (VAULT_ID, MARKET_A_ID, RiskEdgeType.ALLOCATED_TO, Decimal("0.7")) in edges
+    assert (VAULT_ID, MARKET_B_ID, RiskEdgeType.ALLOCATED_TO, Decimal("0.6")) in edges
+    assert any("1.3" in warning and "exceed" in warning.lower() for warning in graph.completeness_warnings)
+
+
+def test_allocation_for_another_vault_is_rejected():
+    foreign = AllocationSnapshot(
+        vault_address="0x" + "9" * 40,
+        market_id=WETH_USDC_MARKET,
+        adapter_address=None,
+        supply_assets=Decimal("1"),
+        supply_cap=None,
+        weight=Decimal("0.5"),
+        pending_removal=False,
+    )
+
+    with pytest.raises(GraphConstructionError, match="vault"):
+        build(vault_lender_position(), vault_context(allocations=(foreign,)))
+
+
+def test_allocation_vault_address_comparison_ignores_hex_case():
+    row = AllocationSnapshot(
+        vault_address="0x" + VAULT_ADDRESS[2:].upper(),
+        market_id=WETH_USDC_MARKET,
+        adapter_address=None,
+        supply_assets=Decimal("2000"),
+        supply_cap=None,
+        weight=Decimal("0.4"),
+        pending_removal=False,
+    )
+
+    graph = build(vault_lender_position(), vault_context(allocations=(row,)))
+
+    assert (VAULT_ID, MARKET_A_ID, RiskEdgeType.ALLOCATED_TO, Decimal("0.4")) in edge_set(graph)
 
 
 # Provenance and freshness
@@ -541,6 +673,51 @@ def test_every_node_carries_provenance_freshness_and_observed_at_from_its_envelo
         assert node.observed_at.tzinfo is not None
 
 
+def test_oracle_observation_must_match_its_mapping_key():
+    context = GraphContext(
+        entry=market_entry(),
+        market=envelope(market_snapshot(), MARKET_SOURCE),
+        oracles={ORACLE_A: envelope(oracle_observation(ORACLE_B, age="99999", deviation="0.5"), ORACLE_SOURCE)},
+    )
+
+    with pytest.raises(GraphConstructionError, match="oracle"):
+        build(borrower_position(), context)
+
+
+def test_oracle_observation_key_comparison_ignores_hex_case():
+    context = GraphContext(
+        entry=market_entry(),
+        market=envelope(market_snapshot(), MARKET_SOURCE),
+        oracles={"0x" + ORACLE_A[2:].upper(): envelope(oracle_observation(ORACLE_A), ORACLE_SOURCE)},
+    )
+
+    graph = build(borrower_position(), context)
+
+    assert nodes_by_id(graph)[ORACLE_A_ID].metrics["age_seconds"] == Decimal("60")
+
+
+def test_envelope_source_credentials_and_query_are_stripped_from_provenance():
+    secret_source = "https://user:secret@rpc.example/v1/abc?key=x#frag"
+    context = GraphContext(
+        entry=market_entry(),
+        market=envelope(market_snapshot(), "morpho graphql fixture"),
+        exit_pools=(envelope(pool_snapshot(), secret_source),),
+        oracles={ORACLE_A: envelope(oracle_observation(), "https://rpc.example:8545/oracle?token=abc")},
+        pool_depths={POOL_A: Decimal("1000000")},
+    )
+
+    graph = build(borrower_position(), context)
+    nodes = nodes_by_id(graph)
+
+    assert nodes[POOL_A_ID].provenance == "https://rpc.example/v1/abc"
+    assert nodes[ORACLE_A_ID].provenance == "https://rpc.example:8545/oracle"
+    assert nodes[MARKET_A_ID].provenance == "morpho graphql fixture"
+    for node in graph.nodes:
+        assert "secret" not in node.provenance
+        assert "key=x" not in node.provenance
+        assert "token=abc" not in node.provenance
+
+
 def test_oracle_without_live_observation_has_none_metrics_and_a_warning():
     graph = build(borrower_position(), market_context(with_oracle=False))
     node = nodes_by_id(graph)[ORACLE_A_ID]
@@ -559,6 +736,44 @@ def test_missing_exit_pools_produce_a_warning():
 
     assert not any(node.node_type is RiskNodeType.POOL for node in graph.nodes)
     assert any("exit pool" in warning.lower() for warning in graph.completeness_warnings)
+
+
+def test_exit_pool_on_another_chain_is_rejected():
+    foreign_pool = pool_snapshot().model_copy(update={"chain_id": 10})
+    context = GraphContext(
+        entry=market_entry(),
+        market=envelope(market_snapshot(), MARKET_SOURCE),
+        exit_pools=(envelope(foreign_pool, POOL_SOURCE),),
+        pool_depths={POOL_A: Decimal("1000000")},
+    )
+
+    with pytest.raises(GraphConstructionError, match="chain"):
+        build(borrower_position(), context)
+
+
+def test_exit_pool_unrelated_to_the_graph_assets_is_omitted_with_a_warning():
+    dai = AssetInfo(address="0x6B175474E89094C44Da98b954EedeAC495271d0F", symbol="DAI", decimals=18, price_usd=Decimal(1))
+    unrelated = pool_snapshot(POOL_B, token0=dai, token1=wbtc())
+    context = GraphContext(
+        entry=market_entry(),
+        market=envelope(market_snapshot(), MARKET_SOURCE),
+        exit_pools=(envelope(pool_snapshot(), POOL_SOURCE), envelope(unrelated, POOL_SOURCE)),
+        pool_depths={POOL_A: Decimal("1000000"), POOL_B: Decimal("5000000")},
+    )
+
+    graph = build(borrower_position(), context)
+    nodes = nodes_by_id(graph)
+
+    assert POOL_A_ID in nodes
+    assert POOL_B_ID not in nodes
+    assert not any(POOL_B_ID in (edge.source, edge.target) for edge in graph.edges)
+    assert any(POOL_B in warning and "DAI/WBTC" in warning for warning in graph.completeness_warnings)
+    liquidity = next(
+        result
+        for result in ScenarioEngine().run(borrower_position(), graph, all_selections(), {})
+        if result.scenario_id == ScenarioId.LIQUIDITY_COLLAPSE.value
+    )
+    assert liquidity.stressed_values["exit_pool_depth"] == Decimal("1000000")
 
 
 def test_pool_without_depth_has_none_depth_and_a_warning():

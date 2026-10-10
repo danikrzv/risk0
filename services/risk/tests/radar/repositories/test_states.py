@@ -1,0 +1,228 @@
+from datetime import timedelta
+from decimal import Decimal
+
+import pytest
+
+from app.radar.contracts import HealthStatus, RadarEntityType
+from tests.radar.repositories.builders import (
+    CATALOG_VAULT,
+    NOW,
+    entity,
+    health,
+    incident,
+    snapshot,
+)
+
+
+@pytest.fixture
+def states(database):
+    from app.radar.repositories import StateRepository, TopologyRepository
+
+    TopologyRepository(database).upsert_entities((entity(),), seen_at=NOW)
+    return StateRepository(database)
+
+
+def test_snapshot_round_trip_preserves_metric_types_and_missing_fields(states):
+    original = snapshot(
+        metrics={
+            "utilization": Decimal("0.912345678901234567890"),
+            "status_label": "0.5",
+            "listed": True,
+            "liquidity_usd": None,
+        },
+        missing_fields=("liquidity_usd",),
+        freshness="stale_usable",
+    )
+
+    assert states.append_snapshot(original) is True
+
+    assert states.latest_snapshot(CATALOG_VAULT) == original
+    restored = states.latest_snapshot(CATALOG_VAULT).metrics
+    assert isinstance(restored["utilization"], Decimal)
+    assert isinstance(restored["status_label"], str)
+    assert restored["liquidity_usd"] is None
+
+
+def test_duplicate_snapshots_are_ignored(states):
+    assert states.append_snapshot(snapshot()) is True
+    assert states.append_snapshot(snapshot()) is False
+    assert (
+        states.append_snapshot(
+            snapshot(snapshot_id="another-id-for-the-same-observation")
+        )
+        is False
+    )
+
+    assert len(states.history(CATALOG_VAULT).snapshots) == 1
+
+
+def test_delayed_snapshot_is_rejected_and_does_not_regress_latest_state(states):
+    current = snapshot(observed_at=NOW, metrics={"utilization": Decimal("0.95")})
+    delayed = snapshot(
+        observed_at=NOW - timedelta(minutes=5), metrics={"utilization": Decimal("0.10")}
+    )
+
+    assert states.append_snapshot(current) is True
+    assert states.append_snapshot(delayed) is False
+
+    assert states.latest_snapshot(CATALOG_VAULT) == current
+
+
+def test_snapshots_from_independent_sources_are_tracked_separately(states):
+    morpho = snapshot(observed_at=NOW, source_identity="morpho:1")
+    rpc = snapshot(observed_at=NOW - timedelta(minutes=1), source_identity="rpc:1")
+
+    assert states.append_snapshot(morpho) is True
+    assert states.append_snapshot(rpc) is True
+
+    assert states.latest_snapshot(CATALOG_VAULT) == morpho
+    assert states.latest_snapshot(CATALOG_VAULT, source_identity="rpc:1") == rpc
+
+
+def test_snapshots_require_a_known_entity(states):
+    import sqlite3
+
+    with pytest.raises(sqlite3.IntegrityError):
+        states.append_snapshot(snapshot("vault:1:0xunknown"))
+
+
+def test_latest_health_never_regresses_to_a_delayed_evaluation(states):
+    critical = health(evaluated_at=NOW, status=HealthStatus.CRITICAL)
+    delayed_healthy = health(evaluated_at=NOW - timedelta(minutes=5))
+
+    states.set_health(critical)
+    states.set_health(delayed_healthy)
+    states.set_health(critical)
+
+    assert states.latest_health(CATALOG_VAULT) == critical
+    assert states.latest_health_all() == {CATALOG_VAULT: critical}
+    assert len(states.history(CATALOG_VAULT).health_states) == 2
+
+
+def test_unknown_health_is_stored_explicitly(states):
+    unknown = health(status=HealthStatus.UNKNOWN)
+
+    states.set_health(unknown)
+
+    stored = states.latest_health(CATALOG_VAULT)
+    assert stored.status is HealthStatus.UNKNOWN
+    assert stored.score is None
+    assert stored.missing_fields == ("utilization",)
+
+
+def test_history_is_paginated_newest_first(states):
+    for minutes in range(5):
+        states.append_snapshot(snapshot(observed_at=NOW + timedelta(minutes=5 * minutes)))
+        states.set_health(health(evaluated_at=NOW + timedelta(minutes=5 * minutes)))
+
+    first = states.history(CATALOG_VAULT, limit=2)
+    second = states.history(CATALOG_VAULT, limit=2, cursor=first.next_cursor)
+    last = states.history(CATALOG_VAULT, limit=2, cursor=second.next_cursor)
+
+    assert [s.observed_at for s in first.snapshots] == [
+        NOW + timedelta(minutes=20),
+        NOW + timedelta(minutes=15),
+    ]
+    assert [h.evaluated_at for h in first.health_states] == [
+        NOW + timedelta(minutes=20),
+        NOW + timedelta(minutes=15),
+    ]
+    assert [s.observed_at for s in second.snapshots] == [
+        NOW + timedelta(minutes=10),
+        NOW + timedelta(minutes=5),
+    ]
+    assert [s.observed_at for s in last.snapshots] == [NOW]
+    assert [h.evaluated_at for h in last.health_states] == [NOW]
+    assert last.next_cursor is None
+
+
+def test_history_rejects_an_invalid_cursor(states):
+    with pytest.raises(ValueError):
+        states.history(CATALOG_VAULT, cursor="not-a-cursor")
+
+
+def test_hourly_aggregate_summarizes_numeric_metrics_without_inventing_values(states):
+    hour = NOW
+    for minutes, utilization, liquidity in (
+        (0, "0.50", None),
+        (5, "0.70", "100"),
+        (10, "0.60", None),
+    ):
+        states.append_snapshot(
+            snapshot(
+                observed_at=hour + timedelta(minutes=minutes),
+                metrics={
+                    "utilization": Decimal(utilization),
+                    "liquidity_usd": Decimal(liquidity) if liquidity else None,
+                    "bad_debt_usd": None,
+                    "label": f"cycle-{minutes}",
+                },
+                freshness="fresh" if minutes else "stale_usable",
+            )
+        )
+
+    assert states.aggregate_hour(hour + timedelta(minutes=17)) == 1
+    assert states.aggregate_hour(hour) == 1
+
+    (aggregate,) = states.hourly(CATALOG_VAULT, start=hour, end=hour + timedelta(hours=1))
+    assert aggregate.hour_start == hour
+    assert aggregate.state_type is RadarEntityType.VAULT
+    assert aggregate.sample_count == 3
+    assert aggregate.worst_freshness == "stale_usable"
+    assert aggregate.metrics["utilization"] == {
+        "min": Decimal("0.50"),
+        "max": Decimal("0.70"),
+        "mean": Decimal("0.60"),
+        "last": Decimal("0.60"),
+        "count": Decimal(3),
+    }
+    assert aggregate.metrics["liquidity_usd"]["count"] == Decimal(1)
+    assert aggregate.metrics["liquidity_usd"]["last"] is None
+    assert aggregate.metrics["bad_debt_usd"] == {
+        "min": None,
+        "max": None,
+        "mean": None,
+        "last": None,
+        "count": Decimal(0),
+    }
+    assert aggregate.metrics["label"] == {"last": "cycle-10"}
+
+
+def test_prune_applies_30_day_raw_and_one_year_hourly_retention(database, states):
+    from app.radar.repositories import IncidentRepository
+
+    old = NOW - timedelta(days=31)
+    assert states.aggregate_hour(NOW - timedelta(days=400)) == 0
+    states.append_snapshot(snapshot(observed_at=NOW - timedelta(days=400)))
+    assert states.aggregate_hour(NOW - timedelta(days=400)) == 1
+    states.append_snapshot(snapshot(observed_at=old))
+    states.append_snapshot(snapshot(observed_at=NOW - timedelta(days=29)))
+    states.set_health(health(evaluated_at=old))
+    IncidentRepository(database).upsert_active(
+        incident(source_entity_id=CATALOG_VAULT, first_observed_at=old)
+    )
+
+    result = states.prune(NOW)
+
+    remaining = states.history(CATALOG_VAULT, limit=100).snapshots
+    assert [s.observed_at for s in remaining] == [NOW - timedelta(days=29)]
+    assert result.removed_snapshots == 2
+    assert result.removed_hourly_aggregates == 1
+    # Hours are summarized before raw snapshots age out.
+    assert states.hourly(CATALOG_VAULT, start=old - timedelta(hours=1), end=old + timedelta(hours=1))
+    # The latest health of every entity survives retention.
+    assert states.latest_health(CATALOG_VAULT) == health(evaluated_at=old)
+    assert IncidentRepository(database).active(source_entity_id=CATALOG_VAULT)
+
+
+def test_prune_drops_superseded_health_history_older_than_30_days(states):
+    old = NOW - timedelta(days=40)
+    states.set_health(health(evaluated_at=old))
+    states.set_health(health(evaluated_at=NOW - timedelta(days=1)))
+
+    result = states.prune(NOW)
+
+    assert result.removed_health_states == 1
+    assert [h.evaluated_at for h in states.history(CATALOG_VAULT).health_states] == [
+        NOW - timedelta(days=1)
+    ]

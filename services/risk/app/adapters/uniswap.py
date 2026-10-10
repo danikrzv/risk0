@@ -3,10 +3,23 @@
 The client enumerates candidate routes (direct pools on every supported fee tier,
 plus two-hop routes through WETH or USDC), simulates each with QuoterV2 at the
 current block, skips pools that revert, and keeps the route with the highest
-output net of gas. Price impact is measured against a "marginal" probe quote of
-1/10,000 of the trade on the winning route, so it isolates depth-driven loss from
-the pool fee. Quotes are cached by exact request key for 15 seconds and are never
-served once older than that.
+output net of gas. Price impact is measured against a "marginal" probe quote on
+the winning route: 1/10,000 of the trade, enlarged when needed so the probe's
+expected output is at least `MIN_PROBE_OUTPUT_UNITS` base units of the output
+token (otherwise integer rounding of a low-decimal output would swamp the
+marginal rate), and never larger than the trade itself. When the probe output is
+still rounding-limited, the marginal output is taken at the top of its rounding
+range, so the reported impact is a conservative upper bound instead of zero.
+Quotes are cached by exact request key for 15 seconds and are never served once
+older than that.
+
+Reverts: a JSON-RPC error counts as an `eth_call` revert only when it is code 3,
+or a generic server error (-32000 / -32015, which geth also uses for "header not
+found", missing trie nodes, and rate limits) that carries revert evidence, that
+is "execution reverted" in its message or a `data` field. Everything else is a
+provider error. A revert on a control call (`eth_blockNumber`, `eth_gasPrice`) is
+a provider error too. An `eth_call` that returns empty data (`0x`) is treated as
+a reverted pool, not as a provider fault.
 
 Calldata is ABI-encoded by hand (no web3 dependency). The function selectors are
 constants because the standard library has no keccak-256; they are the public
@@ -52,8 +65,13 @@ CACHE_NAMESPACE = "uniswap"
 # Spec § 9: quotes refresh every 15 seconds and expire immediately after.
 QUOTE_POLICY = CachePolicy(ttl=QUOTE_TTL, retention=QUOTE_TTL)
 PRICE_IMPACT_PROBE_DIVISOR = 10_000
+# A probe yielding fewer base units than this is rounding-limited: the pool returns
+# whole units, so 1000 units bound the rounding error of the marginal rate to 0.1%.
+MIN_PROBE_OUTPUT_UNITS = 1_000
 CALCULATION_PRECISION = 60
-_REVERT_ERROR_CODES = frozenset({3, -32000, -32015})
+_REVERT_ERROR_CODE = 3
+_SERVER_ERROR_CODES = frozenset({-32000, -32015})
+_EMPTY_CALL_DATA = "0x"
 _WORD_HEX = 64
 
 RpcCall = Callable[[str, list[object]], object]
@@ -165,7 +183,7 @@ class UniswapClient:
             )
             amount_out = _units(best.amount_out_units, request.token_out.decimals)
             gas_cost_eth, gas_cost_out, net_amount_out = ranked[best.index]
-            probe_units = max(1, amount_units // PRICE_IMPACT_PROBE_DIVISOR)
+            probe_units = _probe_size(amount_units, best.amount_out_units)
             probe = self._simulate(best.route, probe_units, block_tag)
             marginal_out: Decimal | None = None
             fee_cost_out: Decimal | None = None
@@ -176,7 +194,18 @@ class UniswapClient:
                     "Marginal probe quote reverted; price impact is unavailable."
                 )
             else:
-                marginal_rate = _units(probe[0], request.token_out.decimals) / _units(
+                probe_out_units = probe[0]
+                if probe_out_units < MIN_PROBE_OUTPUT_UNITS:
+                    # The pool returns whole base units, so the probe's true output lies
+                    # in [probe_out, probe_out + 1). Taking the top of that range makes
+                    # the marginal rate, and the impact derived from it, an upper bound.
+                    probe_out_units += 1
+                    warnings.append(
+                        f"Marginal probe returned only {probe[0]} base units of "
+                        f"{request.token_out.symbol}; price impact is an upper bound "
+                        "limited by output rounding."
+                    )
+                marginal_rate = _units(probe_out_units, request.token_out.decimals) / _units(
                     probe_units, request.token_in.decimals
                 )
                 marginal_out = (request.amount_in * marginal_rate).quantize(NUMERAIRE_PLACES)
@@ -233,7 +262,7 @@ class UniswapClient:
     def _simulate(
         self, route: ExitRoute, amount_units: int, block_tag: str
     ) -> tuple[int, int] | None:
-        """Return (amount_out_units, gas_estimate), or None when the pool reverted."""
+        """(amount_out_units, gas_estimate), or None when the pool reverted or returned no data."""
         if route.hops == 1:
             data = encode_quote_exact_input_single(
                 route.path[0], route.path[1], amount_units, route.fee_tiers[0]
@@ -248,13 +277,14 @@ class UniswapClient:
             output = self._call("eth_call", [{"to": self._quoter, "data": data}, block_tag])
         except UniswapCallReverted:
             reverted = True
-        if reverted:
+        if reverted or output == _EMPTY_CALL_DATA:
             return None
         return decode_quote_output(output)
 
     # Transport
 
     def _call(self, method: str, params: list[object]) -> object:
+        """Only `eth_call` may revert; a revert on any other method is a provider error."""
         reverted = False
         failed = False
         result: object = None
@@ -264,8 +294,10 @@ class UniswapClient:
             reverted = True
         except Exception:
             failed = True
-        if reverted:
+        if reverted and method == "eth_call":
             raise UniswapCallReverted()
+        if reverted:
+            raise UniswapProviderError(f"Uniswap provider returned an error for {method}")
         if failed:
             raise UniswapProviderError(f"Uniswap provider request failed for {method}")
         return result
@@ -461,11 +493,37 @@ def _units(raw_units: int, decimals: int) -> Decimal:
     return Decimal(f"{int(raw_units)}E-{decimals}")
 
 
+def _probe_size(amount_units: int, amount_out_units: int) -> int:
+    """Input for the marginal probe, in token_in base units.
+
+    1/10,000 of the trade, enlarged so that at the full quote's average rate the
+    probe yields at least `MIN_PROBE_OUTPUT_UNITS` base units of token_out, and
+    capped at the trade itself (a probe cannot be more marginal than that).
+    """
+    by_fraction = amount_units // PRICE_IMPACT_PROBE_DIVISOR
+    by_output = -(-MIN_PROBE_OUTPUT_UNITS * amount_units // amount_out_units)
+    return max(1, min(amount_units, max(by_fraction, by_output)))
+
+
 def _is_revert(error: dict[str, object]) -> bool:
+    """True only for an unambiguous `eth_call` revert.
+
+    Code 3 is the JSON-RPC execution-error code. Codes -32000 and -32015 are the
+    generic server errors geth also uses for "header not found", missing trie
+    nodes, and rate limits, so they count as reverts only with revert evidence:
+    "execution reverted" in the message or a `data` field (the revert payload).
+    """
     code = error.get("code")
+    if not isinstance(code, int) or isinstance(code, bool):
+        return False
+    if code == _REVERT_ERROR_CODE:
+        return True
+    if code not in _SERVER_ERROR_CODES:
+        return False
     message = error.get("message")
-    return (isinstance(code, int) and code in _REVERT_ERROR_CODES) or (
-        isinstance(message, str) and "revert" in message.lower()
+    data = error.get("data")
+    return (isinstance(message, str) and "execution reverted" in message.lower()) or (
+        data is not None and data != ""
     )
 
 

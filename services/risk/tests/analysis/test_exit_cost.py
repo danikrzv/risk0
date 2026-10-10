@@ -347,6 +347,85 @@ def test_unvaluable_numeraire_is_unavailable_not_zero(service):
         service.estimate_lender(lender("30000", numeraire="EUR"), vault(), quote(), GAS)
 
 
+# USD numeraire: a USD stablecoin is reported in USD directly and never swapped
+
+
+def test_lender_usd_stable_in_a_usd_numeraire_needs_no_swap(service):
+    estimate = service.estimate_lender(
+        lender("30000", numeraire="USD"), vault(asset=USDC, liquidity="500000"), None, GAS
+    )
+
+    assert estimate.withdrawable is True
+    assert estimate.route == ("USDC",)
+    assert estimate.fees == 0 and estimate.slippage == 0 and estimate.price_impact == 0
+    assert estimate.total_cost == gas_cost(GAS.morpho_withdraw_gas)
+    assert estimate.source == "morpho:fixture"
+    assert estimate.warnings == ()
+
+
+def test_lender_usd_stable_ignores_a_quote_instead_of_billing_a_fabricated_swap(service):
+    bogus = quote(
+        token_in=USDC,
+        token_out=WETH,
+        amount_in="30000",
+        amount_out="10",
+        minimum_out="9.95",
+        marginal_out="10.01",
+        fee_cost="0.005",
+        impact_cost="0.01",
+    )
+
+    estimate = service.estimate_lender(lender("30000"), market(liquidity="500000"), bogus, GAS)
+
+    assert estimate.route == ("USDC",)
+    assert estimate.fees == 0 and estimate.slippage == 0 and estimate.price_impact == 0
+    assert estimate.total_cost == gas_cost(GAS.morpho_withdraw_gas)
+    assert any("Quote ignored" in warning for warning in estimate.warnings)
+
+
+def test_lender_quote_must_buy_an_asset_reported_in_the_numeraire(service):
+    into_wbtc = quote(
+        token_in=WETH,
+        token_out=WBTC,
+        amount_in="10",
+        amount_out="0.46",
+        minimum_out="0.4577",
+        marginal_out="0.4615",
+        fee_cost="0.0002",
+        impact_cost="0.0015",
+    )
+
+    with pytest.raises(ExitCostUnavailableError, match="WBTC"):
+        service.estimate_lender(lender("30000"), vault(), into_wbtc, GAS)
+
+
+# Quote warnings
+
+
+def test_quote_warnings_propagate_into_the_estimate(service):
+    probe_warning = (
+        "Marginal probe output was below the full quote; price impact was floored at zero."
+    )
+    lender_quote = quote(impact_cost="0")
+    flagged_lender_quote = lender_quote.model_copy(
+        update={"value": lender_quote.value.model_copy(update={"warnings": (probe_warning,)})}
+    )
+    borrower_quote = quote(
+        amount_in="6.7", amount_out="20050", minimum_out="19949.75", marginal_out="20060", fee_cost="10", impact_cost="0"
+    )
+    flagged_borrower_quote = borrower_quote.model_copy(
+        update={"value": borrower_quote.value.model_copy(update={"warnings": (probe_warning,)})}
+    )
+
+    lender_estimate = service.estimate_lender(lender("30000"), vault(), flagged_lender_quote, GAS)
+    borrower_estimate = service.estimate_borrower(
+        borrower(), market(), flagged_borrower_quote, GAS
+    )
+
+    assert probe_warning in lender_estimate.warnings
+    assert probe_warning in borrower_estimate.warnings
+
+
 # Quote freshness and block lag
 
 
@@ -374,7 +453,7 @@ def test_quote_age_maps_to_freshness_thresholds(service, age_seconds, freshness)
     assert expired_warning is (freshness is FreshnessStatus.EXPIRED)
 
 
-def test_quote_from_a_materially_older_block_carries_a_warning(service):
+def test_quote_from_a_materially_older_block_is_expired_with_a_warning(service):
     assert MAX_QUOTE_BLOCK_LAG == 20
     within = service.estimate_lender(
         lender("30000"), vault(), quote(block_number=SNAPSHOT_BLOCK - 20), GAS
@@ -384,7 +463,9 @@ def test_quote_from_a_materially_older_block_carries_a_warning(service):
     )
 
     assert within.warnings == ()
+    assert within.freshness is FreshnessStatus.FRESH
     assert behind.quote_block == SNAPSHOT_BLOCK - 21
+    assert behind.freshness is FreshnessStatus.EXPIRED
     assert any("21 blocks" in warning and "20" in warning for warning in behind.warnings)
 
 
@@ -487,6 +568,17 @@ def test_borrower_quote_must_sell_collateral_for_the_loan_asset(service):
         service.estimate_borrower(borrower(), market(), quote(token_in=WBTC), GAS)
     with pytest.raises(ExitCostUnavailableError, match="loan asset"):
         service.estimate_borrower(borrower(), market(), quote(token_out=WBTC), GAS)
+
+
+def test_borrower_stale_snapshot_carries_a_warning_like_the_lender(service):
+    swap = quote(amount_in="6.7", amount_out="20050", minimum_out="19949.75", marginal_out="20060", fee_cost="10", impact_cost="4")
+
+    estimate = service.estimate_borrower(
+        borrower(), market(freshness=FreshnessStatus.STALE_USABLE), swap, GAS
+    )
+
+    assert estimate.withdrawable is True
+    assert any("stale" in warning for warning in estimate.warnings)
 
 
 def test_borrower_cannot_sell_more_collateral_than_held(service):

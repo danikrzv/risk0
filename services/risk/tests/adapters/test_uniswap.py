@@ -329,6 +329,102 @@ def test_no_viable_route_is_an_explicit_error(monkeypatch):
         client(monkeypatch, FakeQuoter()).quote_exact_input(request("USDC", "WBTC", "1"))
 
 
+def test_empty_call_data_skips_the_pool_instead_of_aborting_the_quote(monkeypatch):
+    quoter = FakeQuoter()
+
+    def rpc(method: str, params: list[object]) -> object:
+        if method == "eth_call" and decode_call(params[0]["data"])[0] == "WBTC/500/USDC":
+            return "0x"
+        return quoter(method, params)
+
+    quote = client(monkeypatch, rpc).quote_exact_input(request()).value
+
+    assert quote.route.steps() == ("WBTC", "WETH@0.3%", "USDC@0.05%")
+    # The 0.05% direct pool is viable in the fixture; its empty reply counts as a revert.
+    assert quote.reverted == quote.candidates - 4
+    assert quote.price_impact_cost_out == Decimal("10")
+
+
+def test_empty_call_data_from_every_pool_is_no_viable_route(monkeypatch):
+    def rpc(method: str, params: list[object]) -> object:
+        if method == "eth_call":
+            return "0x"
+        return FIXTURE[{"eth_blockNumber": "block_number", "eth_gasPrice": "gas_price_wei"}[method]]
+
+    with pytest.raises(UniswapQuoteUnavailableError, match="no viable Uniswap route"):
+        client(monkeypatch, rpc).quote_exact_input(request())
+
+
+def test_malformed_non_empty_call_data_is_still_a_provider_error(monkeypatch):
+    def rpc(method: str, params: list[object]) -> object:
+        if method == "eth_call":
+            return "0x" + "00" * 64
+        return FIXTURE[{"eth_blockNumber": "block_number", "eth_gasPrice": "gas_price_wei"}[method]]
+
+    with pytest.raises(UniswapProviderError, match="truncated"):
+        client(monkeypatch, rpc).quote_exact_input(request())
+
+
+# Price-impact probe sizing
+
+
+def probe_fixture(quotes: dict[str, dict[str, str]]) -> dict:
+    return {
+        "block_number": FIXTURE["block_number"],
+        "gas_price_wei": FIXTURE["gas_price_wei"],
+        "tokens": FIXTURE["tokens"],
+        "quotes": quotes,
+    }
+
+
+def test_probe_is_enlarged_until_it_yields_1000_output_units(monkeypatch):
+    # 100 USDC -> 0.001538 WBTC. A 1/10,000 probe (0.01 USDC) would return 15 sats, which
+    # rounds the marginal rate down below the full quote and floors the impact at zero.
+    # 1000 sats at the full quote's average rate need ceil(1000 * 1e8 / 153800) = 650196 units.
+    quoter = FakeQuoter(
+        probe_fixture(
+            {
+                "USDC/500/WBTC:100000000": {"amount_out": "153800", "gas_estimate": "100000"},
+                "USDC/500/WBTC:10000": {"amount_out": "15", "gas_estimate": "100000"},
+                "USDC/500/WBTC:650196": {"amount_out": "1001", "gas_estimate": "100000"},
+            }
+        )
+    )
+
+    quote = client(monkeypatch, quoter).quote_exact_input(request("USDC", "WBTC", "100")).value
+
+    assert quoter.quoted[-1] == "USDC/500/WBTC:650196"
+    expected_marginal = (
+        Decimal("100") * (Decimal("0.00001001") / Decimal("0.650196"))
+    ).quantize(Decimal("1E-18"))
+    assert quote.amount_out == Decimal("0.001538")
+    assert quote.marginal_amount_out == expected_marginal
+    assert quote.price_impact_cost_out == expected_marginal - Decimal("0.001538")
+    assert quote.price_impact_cost_out > 0
+    assert quote.fee_cost_out == (
+        expected_marginal / (1 - Decimal("0.0005")) - expected_marginal
+    ).quantize(Decimal("1E-18"))
+    assert not any("floored" in warning or "rounding" in warning for warning in quote.warnings)
+
+
+def test_rounding_limited_probe_reports_an_upper_bound_not_zero(monkeypatch):
+    # 0.01 USDC -> 15 sats: no probe within the trade can yield 1000 sats, so the probe is
+    # the whole trade and the marginal output is taken at the top of its rounding range
+    # (16 sats), making the impact a conservative 1 sat instead of zero.
+    quoter = FakeQuoter(
+        probe_fixture({"USDC/500/WBTC:10000": {"amount_out": "15", "gas_estimate": "100000"}})
+    )
+
+    quote = client(monkeypatch, quoter).quote_exact_input(request("USDC", "WBTC", "0.01")).value
+
+    assert quoter.quoted[-1] == "USDC/500/WBTC:10000"
+    assert quote.amount_out == Decimal("0.00000015")
+    assert quote.marginal_amount_out == Decimal("0.00000016")
+    assert quote.price_impact_cost_out == Decimal("0.00000001")
+    assert quote.price_impact > 0
+    assert any("upper bound" in warning for warning in quote.warnings)
+
+
 # Caching (15 second TTL, expire immediately after)
 
 
@@ -493,6 +589,137 @@ def test_non_revert_json_rpc_errors_are_provider_errors_without_bodies(monkeypat
     assert secret not in repr(error.value)
     assert error.value.__cause__ is None
     assert error.value.__context__ is None
+
+
+def json_rpc_stub(monkeypatch, respond) -> list[dict]:
+    """Route `httpx.post` to `respond(method) -> payload`; returns the posted bodies."""
+    posted: list[dict] = []
+
+    class Response:
+        def __init__(self, payload: dict) -> None:
+            self._payload = payload
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return self._payload
+
+    def post(url: str, *, json: dict, timeout: float) -> Response:
+        posted.append(json)
+        return Response(respond(json["method"]))
+
+    monkeypatch.setattr("app.adapters.uniswap.httpx.post", post)
+    return posted
+
+
+def control_result(method: str) -> dict:
+    key = {"eth_blockNumber": "block_number", "eth_gasPrice": "gas_price_wei"}[method]
+    return {"jsonrpc": "2.0", "id": 1, "result": FIXTURE[key]}
+
+
+def assert_sanitized(error: BaseException, secret: str) -> None:
+    assert secret not in f"{error!r} {error} {error.args}"
+    assert "https://" not in f"{error!r} {error} {error.args}"
+    assert error.__cause__ is None
+    assert error.__context__ is None
+
+
+@pytest.mark.parametrize("code", [-32000, -32015])
+def test_generic_server_errors_on_eth_call_are_node_problems_not_reverts(monkeypatch, code):
+    secret = "header-not-found-token"
+
+    def respond(method: str) -> dict:
+        if method == "eth_call":
+            return {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "error": {"code": code, "message": f"header not found {secret}"},
+            }
+        return control_result(method)
+
+    json_rpc_stub(monkeypatch, respond)
+    uniswap = UniswapClient(settings(monkeypatch, secret))
+
+    with pytest.raises(UniswapProviderError) as error:
+        uniswap.quote_exact_input(request())
+
+    assert not isinstance(error.value, UniswapQuoteUnavailableError)
+    assert_sanitized(error.value, secret)
+
+
+def test_generic_server_error_on_a_control_call_is_a_sanitized_provider_error(monkeypatch):
+    secret = "gas-price-node-token"
+
+    def respond(method: str) -> dict:
+        if method == "eth_gasPrice":
+            return {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "error": {"code": -32000, "message": f"missing trie node {secret}"},
+            }
+        return control_result(method)
+
+    json_rpc_stub(monkeypatch, respond)
+    uniswap = UniswapClient(settings(monkeypatch, secret))
+
+    with pytest.raises(UniswapProviderError) as error:
+        uniswap.quote_exact_input(request())
+
+    assert "eth_gasPrice" in str(error.value)
+    assert_sanitized(error.value, secret)
+
+
+def test_a_revert_from_a_control_call_never_escapes_as_a_bare_revert(monkeypatch):
+    def rpc(method: str, params: list[object]) -> object:
+        raise UniswapCallReverted()
+
+    with pytest.raises(UniswapProviderError) as error:
+        client(monkeypatch, rpc).quote_exact_input(request())
+
+    assert "eth_blockNumber" in str(error.value)
+    assert error.value.__cause__ is None
+    assert error.value.__context__ is None
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        {"code": 3, "message": "execution reverted", "data": "0x"},
+        {"code": -32000, "message": "execution reverted"},
+        {"code": -32000, "message": "execution reverted: STF", "data": "0x08c379a0"},
+        {"code": -32015, "message": "VM execution error.", "data": "0x"},
+    ],
+    ids=["code-3", "server-error-message", "server-error-message-and-data", "server-error-data"],
+)
+def test_reverts_need_code_3_or_a_server_error_with_revert_evidence(monkeypatch, error):
+    def respond(method: str) -> dict:
+        if method == "eth_call":
+            return {"jsonrpc": "2.0", "id": 1, "error": error}
+        return control_result(method)
+
+    json_rpc_stub(monkeypatch, respond)
+    uniswap = UniswapClient(settings(monkeypatch))
+
+    with pytest.raises(UniswapQuoteUnavailableError, match="no viable Uniswap route"):
+        uniswap.quote_exact_input(request())
+
+
+def test_a_revert_message_under_another_code_is_not_a_revert(monkeypatch):
+    def respond(method: str) -> dict:
+        if method == "eth_call":
+            return {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "error": {"code": -32603, "message": "internal error: reverted upstream"},
+            }
+        return control_result(method)
+
+    json_rpc_stub(monkeypatch, respond)
+    uniswap = UniswapClient(settings(monkeypatch))
+
+    with pytest.raises(UniswapProviderError):
+        uniswap.quote_exact_input(request())
 
 
 def test_client_repr_and_serialized_quotes_never_contain_the_rpc_url(monkeypatch):

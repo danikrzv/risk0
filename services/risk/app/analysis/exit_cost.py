@@ -20,6 +20,18 @@ from the snapshot (lender: asset `price_usd` for a USD numeraire, 1 when the
 numeraire is the asset) or from the validated position (borrower: value / amount).
 Anything that cannot be valued raises `ExitCostUnavailableError` instead of
 becoming zero.
+
+Swap rule (lender): an asset is reported in the numeraire *without* a swap when it
+is the numeraire itself, or when the numeraire is USD and the asset is one of the
+listed USD stablecoins (`USD_STABLE_SYMBOLS`), valued at its snapshot `price_usd`.
+Every other asset must be swapped, and the quote must both sell the withdrawal
+asset and buy an asset that is itself reported in the numeraire; a quote into any
+other token is rejected rather than costed.
+
+Quote timing: a quote at or beyond `QUOTE_MAX_AGE`, or more than
+`MAX_QUOTE_BLOCK_LAG` blocks away from the snapshot, is reported `EXPIRED`. The
+quote's own warnings (probe rounding, gross-output ranking) are carried into the
+estimate.
 """
 
 from collections.abc import Callable
@@ -44,6 +56,10 @@ CALCULATION_PRECISION = 60
 ZERO = Decimal(0)
 ONE = Decimal(1)
 USD_NUMERAIRES = frozenset({"usd"})
+# USD-pegged stablecoins that are reported in a USD numeraire at their snapshot
+# `price_usd` without a swap. Deliberately a short, explicit allowlist: anything
+# else (WETH, WBTC, ...) must be swapped into one of these through a quote.
+USD_STABLE_SYMBOLS = frozenset({"usdc", "usdt", "dai", "usds", "pyusd"})
 
 
 class ExitCostUnavailableError(ValueError):
@@ -129,13 +145,14 @@ class ExitCostService:
             elif snapshot.freshness is FreshnessStatus.STALE_USABLE:
                 warnings.append(f"Liquidity snapshot from {snapshot.source} is stale.")
 
-            swap_required = asset.symbol.casefold() != numeraire.casefold()
+            swap_required = not _reported_in_numeraire(asset, numeraire)
             if swap_required:
                 if quote is None:
                     raise ExitCostUnavailableError(
                         f"converting {asset.symbol} to {numeraire} requires a Uniswap quote"
                     )
                 _require_token(quote.value, "token_in", asset, "the withdrawal asset")
+                _require_numeraire_token(quote.value, numeraire)
                 out_price = _price_in_numeraire(quote.value.request.token_out, numeraire)
                 swap = _swap_costs(quote.value, out_price)
                 if quote.value.amount_in != withdrawable_amount:
@@ -281,6 +298,8 @@ class ExitCostService:
                     f"Market snapshot from {snapshot.source} is expired; the exit cannot "
                     "be confirmed."
                 )
+            elif snapshot.freshness is FreshnessStatus.STALE_USABLE:
+                warnings.append(f"Market snapshot from {snapshot.source} is stale.")
             gas_cost = _quantize(
                 gas.cost(gas.morpho_repay_gas + gas.morpho_withdraw_collateral_gas + swap.gas_units)
             )
@@ -339,12 +358,33 @@ def _price_in_numeraire(asset: AssetInfo, numeraire: str) -> Decimal:
     raise ExitCostUnavailableError(f"cannot value {asset.symbol} in {numeraire}")
 
 
+def _reported_in_numeraire(asset: AssetInfo, numeraire: str) -> bool:
+    """Whether `asset` is reported in `numeraire` without a swap.
+
+    True when the asset is the numeraire itself, or when the numeraire is USD and
+    the asset is a listed USD stablecoin (`USD_STABLE_SYMBOLS`). Anything else has
+    to be swapped into such an asset through a quote.
+    """
+    symbol = asset.symbol.casefold()
+    key = numeraire.casefold()
+    return symbol == key or (key in USD_NUMERAIRES and symbol in USD_STABLE_SYMBOLS)
+
+
 def _require_token(quote: ExitQuote, side: str, asset: AssetInfo, role: str) -> None:
     token = getattr(quote.request, side)
     if token.address.lower() != asset.address.lower():
         verb = "sells" if side == "token_in" else "buys"
         raise ExitCostUnavailableError(
             f"quote {verb} {token.symbol}, not {role} {asset.symbol}"
+        )
+
+
+def _require_numeraire_token(quote: ExitQuote, numeraire: str) -> None:
+    """The quote must buy an asset that is itself reported in the numeraire."""
+    token = quote.request.token_out
+    if not _reported_in_numeraire(token, numeraire):
+        raise ExitCostUnavailableError(
+            f"quote buys {token.symbol}, which is not reported in the {numeraire} numeraire"
         )
 
 
@@ -367,8 +407,12 @@ def _quote_meta(
     snapshot: DataEnvelope[VaultSnapshot] | DataEnvelope[MarketSnapshot],
     now: datetime,
 ) -> _QuoteMeta:
-    """Timing of the datum the estimate rests on: the quote, or the snapshot if no swap."""
-    warnings: list[str] = []
+    """Timing of the datum the estimate rests on: the quote, or the snapshot if no swap.
+
+    A quote's own warnings are carried into the estimate. A quote more than
+    `MAX_QUOTE_BLOCK_LAG` blocks away from the snapshot is `EXPIRED`, like one at
+    or beyond `QUOTE_MAX_AGE`.
+    """
     if quote is None:
         quoted_at = _aware(snapshot.fetched_at)
         return _QuoteMeta(
@@ -379,6 +423,7 @@ def _quote_meta(
             age_seconds=_age_seconds(quoted_at, now),
             warnings=(),
         )
+    warnings: list[str] = list(quote.value.warnings)
     quoted_at = _aware(quote.fetched_at)
     age = _age_seconds(quoted_at, now)
     freshness = quote_freshness(quoted_at, now)
@@ -391,10 +436,11 @@ def _quote_meta(
     if quote_block is not None and snapshot.block_number is not None:
         lag = abs(snapshot.block_number - quote_block)
         if lag > MAX_QUOTE_BLOCK_LAG:
+            freshness = FreshnessStatus.EXPIRED
             warnings.append(
                 f"Quote block {quote_block} is {lag} blocks away from snapshot block "
-                f"{snapshot.block_number} (limit {MAX_QUOTE_BLOCK_LAG}); refresh the quote "
-                "before relying on it."
+                f"{snapshot.block_number} (limit {MAX_QUOTE_BLOCK_LAG}); the quote is "
+                "treated as expired and must be refreshed before relying on it."
             )
     return _QuoteMeta(
         quoted_at=quoted_at,

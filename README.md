@@ -141,6 +141,7 @@ RISK0_DATA_MODE=fixture docker compose up --build    # fixture mode
 uv run --project services/risk pytest services/risk/tests -m "not live" -v   # Python unit + API tests
 pnpm test                                                 # contracts + web (Vitest)
 pnpm --filter @risk0/web exec playwright test             # golden end-to-end flows
+pnpm --filter @risk0/web test:e2e:scale                   # browser scale regression (live-sized radar)
 RISK0_DATA_MODE=live uv run --project services/risk \
   pytest services/risk/tests/live/test_live_smoke.py -v   # opt-in live smoke test
 ```
@@ -157,6 +158,15 @@ RISK0_DATA_MODE=live uv run --project services/risk \
   degraded WBTC/USDC market (`UNAVAILABLE`, never styled as safe). Headless runs
   use Playwright's `chromium-headless-shell` build. On a new machine, run
   `pnpm --filter @risk0/web exec playwright install chromium-headless-shell` once.
+- **Scale** (`apps/web/playwright.scale.config.ts`, specs in `apps/web/e2e-scale`):
+  its own risk service and Next servers on ports 8720 and 3720
+  (`RISK0_E2E_SCALE_RISK_PORT`, `RISK0_E2E_SCALE_WEB_PORT`) and its own temp radar
+  database, seeded by `services/risk/scripts/seed_synthetic_radar.py` with a
+  live-sized synthetic radar (~20k entities, ~50k relationships, ~20k open
+  incidents; `app/radar/synthetic.py`). It checks that `/api/graph` stays under
+  500 kB, the canvas draws at most 400 nodes within 10 s, the incident rail lists
+  at most 50 incidents, and selection, search, and a 5,000-vault incident stay
+  responsive. The golden flows never see this data.
 - **Live smoke** is skipped unless `RISK0_DATA_MODE=live` and `ETHEREUM_RPC_URL`
   are set. It checks Morpho catalog hydration, that the RPC reports chain ID 1,
   and a WETH→USDC Uniswap quote. If no route exists, the quote check is skipped

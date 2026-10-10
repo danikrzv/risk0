@@ -35,6 +35,10 @@ type AnalysisState =
   | { status: "error"; message: string }
   | { status: "done"; result: AnalysisResponse; numeraire: string; receivedAt: number }
 
+// Events arrive in bursts (one radar cycle emits graph, incident, and
+// notification events); refetches inside this window are coalesced.
+const RADAR_REFRESH_DELAY_MS = 250
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Something went wrong"
 }
@@ -50,7 +54,8 @@ export default function Home() {
   const [radarError, setRadarError] = useState<string | null>(null)
   const [selectedIncident, setSelectedIncident] = useState<IncidentGraphResponse | null>(null)
   const [selectedRadarEntityId, setSelectedRadarEntityId] = useState<string | null>(null)
-  const [exposureId, setExposureId] = useState<string | null>(null)
+  // Read at fetch time (not captured in closures) so a just-recorded exposure is used.
+  const exposureId = useRef<string | null>(null)
   const [exposureImpacts, setExposureImpacts] = useState<IncidentImpact[]>([])
   const [exposureStatus, setExposureStatus] = useState<{ kind: "ok" | "error"; message: string } | null>(null)
   const [exposureBusy, setExposureBusy] = useState(false)
@@ -73,53 +78,86 @@ export default function Home() {
     }
   }, [])
 
+  // Latest radar / incident request; a response for an older one is dropped.
+  const radarToken = useRef(0)
+  const incidentToken = useRef(0)
+  const radarTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const pendingIncidentId = useRef<string | null>(null)
+  const requestedIncidentId = useRef<string | null>(null)
+
   const refreshRadar = useCallback(async () => {
+    const token = ++radarToken.current
     try {
-      setRadarGraph(await getRadarGraph())
+      const graph = await getRadarGraph()
+      if (token !== radarToken.current) return
+      setRadarGraph(graph)
       setRadarError(null)
     } catch (error) {
+      if (token !== radarToken.current) return
       setRadarError(errorMessage(error))
     }
   }, [])
 
   useEffect(() => {
     void refreshRadar()
+    return () => {
+      if (radarTimer.current !== null) clearTimeout(radarTimer.current)
+      radarTimer.current = null
+    }
   }, [refreshRadar])
 
-  useRadarEvents({
-    onGraphUpdated: () => void refreshRadar(),
-    onIncident: (event) => {
-      void refreshRadar()
-      if (selectedIncident?.incident.incident_id === event.resource_id) void focusIncident(event.resource_id)
-    },
-    onReconnect: () => {
-      void refreshRadar()
-      if (selectedIncident) void focusIncident(selectedIncident.incident.incident_id)
-    },
-  })
-
   const focusIncident = useCallback(async (incidentId: string) => {
+    const token = ++incidentToken.current
+    requestedIncidentId.current = incidentId
     try {
-      setSelectedIncident(await getIncidentGraph(incidentId))
-      if (exposureId) {
-        const impact = await getExposureImpact(exposureId)
+      const incidentGraph = await getIncidentGraph(incidentId)
+      if (token !== incidentToken.current) return
+      setSelectedIncident(incidentGraph)
+      if (exposureId.current) {
+        const impact = await getExposureImpact(exposureId.current)
+        if (token !== incidentToken.current) return
         setExposureImpacts(impact.impacts.filter((item) => item.incident_id === incidentId))
       } else {
         setExposureImpacts([])
       }
       setRadarError(null)
     } catch (error) {
+      if (token !== incidentToken.current) return
       setRadarError(errorMessage(error))
     }
-  }, [exposureId])
+  }, [])
+
+  /** Coalesce event-driven refetches: one graph (and selected incident) fetch per burst. */
+  const scheduleRadarRefresh = useCallback((incidentId: string | null = null) => {
+    if (incidentId !== null) pendingIncidentId.current = incidentId
+    if (radarTimer.current !== null) return
+    radarTimer.current = setTimeout(() => {
+      radarTimer.current = null
+      const pending = pendingIncidentId.current
+      pendingIncidentId.current = null
+      void refreshRadar()
+      // Skip if the user has since selected a different incident.
+      if (pending !== null && pending === requestedIncidentId.current) void focusIncident(pending)
+    }, RADAR_REFRESH_DELAY_MS)
+  }, [focusIncident, refreshRadar])
+
+  useRadarEvents({
+    onGraphUpdated: () => scheduleRadarRefresh(),
+    onIncident: (event) => {
+      scheduleRadarRefresh(requestedIncidentId.current === event.resource_id ? event.resource_id : null)
+    },
+    onReconnect: () => scheduleRadarRefresh(requestedIncidentId.current),
+  })
 
   async function addExposure(request: ExposureCreateRequest) {
     setExposureBusy(true)
     setExposureStatus(null)
     try {
       const exposure = await createExposure(request)
-      setExposureId(exposure.exposure_id)
+      exposureId.current = exposure.exposure_id
       setExposureImpacts([])
+      // Show the new exposure's impact on the incident already on screen.
+      if (requestedIncidentId.current) void focusIncident(requestedIncidentId.current)
       setExposureStatus({ kind: "ok", message: `Exposure recorded: ${exposure.amount} ${exposure.numeraire}` })
     } catch (error) {
       setExposureStatus({ kind: "error", message: errorMessage(error) })

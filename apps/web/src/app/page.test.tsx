@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom/vitest"
 
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest"
 
 import { analysisResponse, catalogResponse } from "../test-fixtures"
@@ -185,8 +185,8 @@ describe("Home", () => {
 
   it("reports a radar outage as DEGRADED", async () => {
     const base = stubApi()
-    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => (
-      url === "/api/graph" ? Response.json({ error: "Risk service unavailable" }, { status: 502 }) : base(url, init as never)
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => (
+      url === "/api/graph" ? Response.json({ error: "Risk service unavailable" }, { status: 502 }) : base(url)
     )))
     render(<Home />)
 
@@ -196,14 +196,83 @@ describe("Home", () => {
 
   it("announces a failed exposure as an alert, not as a success status", async () => {
     const base = stubApi()
-    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => (
-      url === "/api/exposures" ? Response.json({ error: "The risk service rejected this exposure" }, { status: 422 }) : base(url, init as never)
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => (
+      url === "/api/exposures" ? Response.json({ error: "The risk service rejected this exposure" }, { status: 422 }) : base(url)
     )))
     render(<Home />)
 
     fireEvent.click(await screen.findByRole("button", { name: "Add exposure" }))
     expect(await screen.findByRole("alert")).toHaveTextContent("The risk service rejected this exposure")
     expect(screen.queryByText("Exposure recorded", { exact: false })).not.toBeInTheDocument()
+  })
+
+  it("coalesces a burst of radar events into a single graph refetch", async () => {
+    const sources: { emit: (type: string, payload: unknown) => void }[] = []
+    vi.stubGlobal("EventSource", class {
+      listeners = new Map<string, (event: MessageEvent) => void>()
+      constructor() { sources.push(this) }
+      addEventListener(type: string, listener: (event: MessageEvent) => void) { this.listeners.set(type, listener) }
+      close() {}
+      emit(type: string, payload: unknown) { this.listeners.get(type)?.(new MessageEvent(type, { data: JSON.stringify(payload) })) }
+    })
+    const fetchMock = stubApi()
+    const graphCalls = () => fetchMock.mock.calls.filter(([url]) => url === "/api/graph").length
+    render(<Home />)
+    await screen.findByRole("heading", { name: "Morpho radar graph" })
+    expect(graphCalls()).toBe(1)
+
+    act(() => {
+      for (const source of sources) {
+        source.emit("graph.updated", { sequence: 1, type: "graph.updated", resource_id: "graph", summary: {} })
+        source.emit("incident.opened", { sequence: 2, type: "incident.opened", resource_id: "incident:a", summary: {} })
+        source.emit("graph.updated", { sequence: 3, type: "graph.updated", resource_id: "graph", summary: {} })
+        source.emit("incident.updated", { sequence: 4, type: "incident.updated", resource_id: "incident:a", summary: {} })
+      }
+    })
+
+    await waitFor(() => expect(graphCalls()).toBe(2))
+    await new Promise((resolve) => setTimeout(resolve, 600))
+    expect(graphCalls()).toBe(2)
+  })
+
+  it("keeps the most recently selected incident when an older response arrives late", async () => {
+    const incidentFor = (id: string, label: string) => ({
+      incident_id: id, source_entity_id: "vault:1:catalog", severity: "CRITICAL", status: "OPEN",
+      trigger_metrics: {}, rule_version: "v1", first_observed_at: "2026-10-10T12:00:00Z",
+      last_observed_at: "2026-10-10T12:00:00Z", resolved_at: null, reasons: [label],
+    })
+    const graphWithIncidents = {
+      ...radarGraph,
+      entities: [radarGraph.entities[0], { ...radarGraph.entities[1], entity_id: "vault:1:peer" }],
+      active_incidents: [incidentFor("incident:a", "Alpha"), { ...incidentFor("incident:b", "Beta"), source_entity_id: "vault:1:peer" }],
+    }
+    let releaseA: (() => void) | undefined
+    const base = stubApi()
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url === "/api/graph") return Response.json(graphWithIncidents)
+      if (url.startsWith("/api/graph?incident_graph_id=")) {
+        const id = decodeURIComponent(url.split("=")[1])
+        const body = {
+          schema_version: "1.0.0", incident: graphWithIncidents.active_incidents.find((item) => item.incident_id === id),
+          entities: [], relationships: [], similarities: [], exposures: [], impacts: [], generated_at: "2026-10-10T12:00:00Z",
+        }
+        if (id === "incident:a") await new Promise<void>((resolve) => { releaseA = resolve })
+        return Response.json(body)
+      }
+      return base(url)
+    }))
+    render(<Home />)
+    const rail = await screen.findByRole("list", { name: "Active incidents" })
+    const button = (name: string) => within(rail).getByRole("button", { name })
+
+    fireEvent.click(button("Belem Sentinel USDC CRITICAL"))
+    fireEvent.click(button("Institutional USDC Peer CRITICAL"))
+    await waitFor(() => expect(button("Institutional USDC Peer CRITICAL")).toHaveAttribute("aria-pressed", "true"))
+    await waitFor(() => expect(releaseA).toBeDefined())
+    await act(async () => releaseA?.())
+
+    expect(button("Institutional USDC Peer CRITICAL")).toHaveAttribute("aria-pressed", "true")
+    expect(button("Belem Sentinel USDC CRITICAL")).toHaveAttribute("aria-pressed", "false")
   })
 })
 

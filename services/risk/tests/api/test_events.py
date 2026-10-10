@@ -52,3 +52,29 @@ def test_endpoint_rejects_invalid_last_event_id():
 
     assert response.status_code == 400
     assert "not-a-sequence" not in response.text
+
+
+@pytest.mark.anyio
+async def test_last_event_id_from_a_previous_process_replays_the_new_stream():
+    # After a restart the sequence starts again at 1; a client reconnecting with
+    # its old, higher Last-Event-ID must not miss the new process's events.
+    broker = RadarEventBroker(capacity=10, heartbeat_seconds=60, poll_seconds=0)
+    broker.publish("graph.updated", "graph", {})
+    broker.publish("incident.opened", "incident-1", {})
+    stream = broker.stream(last_sequence=57)
+
+    first = await asyncio.wait_for(anext(stream), timeout=1)
+    await stream.aclose()
+
+    assert first.startswith("id: 1\n")
+
+
+def test_events_after_returns_only_newer_events_from_a_full_buffer():
+    broker = RadarEventBroker(capacity=3)
+    for index in range(7):
+        broker.publish("graph.updated", "graph", {"index": index})
+
+    assert [event.sequence for event in broker.events_after(0)] == [5, 6, 7]
+    assert [event.sequence for event in broker.events_after(5)] == [6, 7]
+    assert broker.events_after(7) == ()
+    assert broker.events_after(100) == ()

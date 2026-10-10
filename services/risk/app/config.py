@@ -1,6 +1,6 @@
-from dataclasses import dataclass
-from datetime import timedelta
 import os
+from dataclasses import dataclass, field
+from datetime import timedelta
 
 
 @dataclass(frozen=True, slots=True)
@@ -17,7 +17,7 @@ class CachePolicy:
 
 @dataclass(frozen=True, slots=True)
 class Settings:
-    ethereum_rpc_url: str
+    ethereum_rpc_url: str = field(repr=False)
 
     def __post_init__(self) -> None:
         if not self.ethereum_rpc_url.strip():
@@ -29,3 +29,6 @@ class Settings:
         if not rpc_url:
             raise ValueError("ETHEREUM_RPC_URL must be configured")
         return cls(ethereum_rpc_url=rpc_url)
+
+    def __repr__(self) -> str:
+        return "Settings(ethereum_rpc_url=<redacted>)"

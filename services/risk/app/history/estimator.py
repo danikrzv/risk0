@@ -1,6 +1,6 @@
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Protocol
 
@@ -18,6 +18,7 @@ from app.history.normalization import (
     NormalizedSeries,
     Observation,
     normalize_hourly,
+    normalize_period,
 )
 from app.infrastructure.freshness import Freshness
 
@@ -69,17 +70,22 @@ class HistoricalProbabilityService:
         *,
         now: datetime,
     ) -> EmpiricalProbabilityEvidence:
-        cached = self._cache.get(feed, now)
+        normalized_start, normalized_end = normalize_period(start, end)
+        cached = self._cache.get(feed, normalized_start, normalized_end, now)
         if cached is not None and cached.freshness is Freshness.FRESH:
-            return self._estimator.estimate(cached.series, event)
+            return self._estimator.estimate_with_evidence(cached.series, event)
 
         try:
-            observations = self._client.get_chainlink_observations(feed, start, end)
+            observations = self._client.get_chainlink_observations(
+                feed,
+                normalized_start,
+                normalized_end,
+            )
         except UnsupportedFeedError:
             return _unavailable_period(
                 feed,
-                start,
-                end,
+                normalized_start,
+                normalized_end,
                 now,
                 event,
                 f"unsupported Chainlink feed: {feed}",
@@ -87,21 +93,31 @@ class HistoricalProbabilityService:
         except EthereumProviderError:
             if cached is not None:
                 stale_series = replace(cached.series, freshness=cached.freshness)
-                return self._estimator.estimate(stale_series, event)
+                return self._estimator.estimate_with_evidence(stale_series, event)
             return _unavailable_period(
                 feed,
-                start,
-                end,
+                normalized_start,
+                normalized_end,
                 now,
                 event,
                 "Ethereum provider history is unavailable",
             )
 
+        observations = tuple(
+            observation
+            for observation in observations
+            if normalized_start
+            <= observation.timestamp.astimezone(UTC)
+            <= normalized_end
+        )
         if not observations:
+            if cached is not None:
+                stale_series = replace(cached.series, freshness=cached.freshness)
+                return self._estimator.estimate_with_evidence(stale_series, event)
             return _unavailable_period(
                 feed,
-                start,
-                end,
+                normalized_start,
+                normalized_end,
                 now,
                 event,
                 "Ethereum provider returned no history",
@@ -109,20 +125,30 @@ class HistoricalProbabilityService:
         normalized = normalize_hourly(
             observations,
             maximum_gap=timedelta(hours=6),
+            start=normalized_start,
+            end=normalized_end,
         )
         series = replace(
             normalized,
-            start=start,
-            end=end,
-            source=f"chainlink:{feed}",
             retrieved_at=now,
         )
+        if cached is not None and _materially_partial(series):
+            stale_series = replace(cached.series, freshness=cached.freshness)
+            return self._estimator.estimate_with_evidence(stale_series, event)
         self._cache.set(feed, series, fetched_at=now)
-        return self._estimator.estimate(series, event)
+        return self._estimator.estimate_with_evidence(series, event)
 
 
 class RollingWindowEstimator:
     def estimate(
+        self,
+        series: NormalizedSeries,
+        event: EventPredicate,
+        horizon_days: int = 30,
+    ) -> ProbabilityEstimate:
+        return self.estimate_with_evidence(series, event, horizon_days).probability
+
+    def estimate_with_evidence(
         self,
         series: NormalizedSeries,
         event: EventPredicate,
@@ -290,6 +316,8 @@ def _unavailable_period(
             getattr(event, "description", getattr(event, "__name__", "event"))
         ),
     )
+
+
 def _wilson_interval(events: int, windows: int) -> tuple[Decimal, Decimal]:
     proportion = Decimal(events) / Decimal(windows)
     z_score = Decimal("1.96")
@@ -303,3 +331,9 @@ def _wilson_interval(events: int, windows: int) -> tuple[Decimal, Decimal]:
     )
     margin = z_score * variance.sqrt() / denominator
     return max(Decimal(0), center - margin), min(Decimal(1), center + margin)
+
+
+def _materially_partial(series: NormalizedSeries) -> bool:
+    expected = int((series.end - series.start) / HOUR) + 1
+    observed = sum(not item.is_forward_filled for item in series.observations)
+    return Decimal(expected - observed) / Decimal(expected) > MISSING_CONFIDENCE_THRESHOLD

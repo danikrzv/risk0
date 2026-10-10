@@ -195,3 +195,41 @@ def test_similarity_requires_a_vault_and_incident_filter_rejects_unknown_id(
     assert similarities.json()["similarities"] == []
     assert market.status_code == 422
     assert incident_filter.status_code == 404
+
+
+def test_fixture_radar_replay_opens_propagates_and_resolves_incident(
+    client, radar_context, monkeypatch
+):
+    from app.fixture_mode import seed_fixture_radar
+
+    monkeypatch.setenv("RISK0_DATA_MODE", "fixture")
+    seed_fixture_radar(radar_context)
+    seed_fixture_radar(radar_context)
+    created = client.post("/v1/fixtures/radar/oracle-incident/open")
+
+    graph = client.get("/v1/graph").json()
+    assert created.status_code == 201
+    incident_id = created.json()["incident_id"]
+    incident_graph = client.get(
+        f"/v1/graph/incidents/{incident_id}"
+    ).json()
+    assert len(graph["entities"]) == 8
+    assert graph["active_incidents"][0]["status"] == "OPEN"
+    assert any(impact["revealed"] for impact in incident_graph["impacts"])
+
+    exposure = client.post(
+        "/v1/exposures",
+        json={"entity_id": "vault:1:0x1111111111111111111111111111111111111111", "mode": "lender", "amount": "100000", "numeraire": "USDC"},
+    ).json()
+    client.post("/v1/fixtures/radar/oracle-incident/open")
+    exposure_impact = client.get(f"/v1/exposures/{exposure['exposure_id']}/impact").json()
+    assert exposure_impact["impacts"][0]["estimated_affected_amount"] == "60000.00"
+
+    resolved = client.post("/v1/fixtures/radar/oracle-incident/resolve")
+    assert resolved.status_code == 200
+    assert resolved.json()["status"] == "RESOLVED"
+    assert client.get("/v1/graph").json()["active_incidents"] == []
+
+
+def test_fixture_radar_controls_are_not_available_in_live_mode(client):
+    assert client.post("/v1/fixtures/radar/oracle-incident/open").status_code == 404

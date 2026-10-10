@@ -5,6 +5,7 @@ import type {
   ExposureCreateRequest,
   ExposureImpactResponse,
   HealthStatus,
+  IncidentGraphResponse,
   ManualExposure,
   Notification,
   NotificationResponse,
@@ -80,6 +81,11 @@ export function getRadarGraph(filters: RadarGraphFilters = {}): Promise<RadarGra
   if (filters.incidentId !== undefined) query.set("incident_id", filters.incidentId)
   const suffix = query.size > 0 ? `?${query.toString()}` : ""
   return request<RadarGraphResponse>(`/api/graph${suffix}`, { method: "GET" })
+}
+
+export function getIncidentGraph(incidentId: string): Promise<IncidentGraphResponse> {
+  const query = new URLSearchParams({ incident_graph_id: incidentId })
+  return request<IncidentGraphResponse>(`/api/graph?${query.toString()}`, { method: "GET" })
 }
 
 export function getNotifications(

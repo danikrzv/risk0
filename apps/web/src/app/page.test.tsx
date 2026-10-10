@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom/vitest"
 
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react"
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest"
 
 import { analysisResponse, catalogResponse } from "../test-fixtures"
@@ -13,17 +13,31 @@ beforeAll(() => {
     disconnect() {}
   }
   vi.stubGlobal("ResizeObserver", ResizeObserverStub)
+  vi.stubGlobal("EventSource", class { addEventListener() {} close() {} })
 })
 
 afterEach(() => {
   cleanup()
   vi.unstubAllGlobals()
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} })
+  vi.stubGlobal("EventSource", class { addEventListener() {} close() {} })
 })
+
+const radarGraph = {
+  schema_version: "1.0.0",
+  entities: [
+    { entity_id: "vault:1:catalog", entity_type: "vault", chain_id: 1, address_or_key: "catalog", label: "Belem Sentinel USDC", source: "fixture:radar", catalog: true, visible: true, metadata: { health_status: "HEALTHY" } },
+    { entity_id: "vault:1:peer", entity_type: "vault", chain_id: 1, address_or_key: "peer", label: "Institutional USDC Peer", source: "fixture:radar", catalog: false, visible: true, metadata: { health_status: "HEALTHY" } },
+  ],
+  relationships: [], similarities: [], active_incidents: [], generated_at: "2026-10-10T12:00:00Z",
+}
 
 function stubApi(analysis: Response | (() => Promise<Response>) = Response.json(analysisResponse)) {
   const fetchMock = vi.fn(async (url: string) => {
     if (url === "/api/catalog") return Response.json(catalogResponse)
+    if (url === "/api/graph") return Response.json(radarGraph)
+    if (url.startsWith("/api/notifications")) return Response.json({ schema_version: "1.0.0", notifications: [], next_cursor: null, generated_at: "2026-10-10T12:00:00Z" })
+    if (url === "/api/exposures") return Response.json({ exposure_id: "exposure:test", entity_id: "vault:1:catalog", mode: "lender", amount: "100000", numeraire: "USDC", collateral_amount: null, debt_amount: null, ltv: null, created_at: "2026-10-10T12:01:00Z" }, { status: 201 })
     if (url === "/api/analysis") return typeof analysis === "function" ? analysis() : analysis
     throw new Error(`unexpected ${url}`)
   })
@@ -36,6 +50,19 @@ describe("Home", () => {
     stubApi()
     render(<Home />)
     expect(screen.getByRole("heading", { name: "Risk0" })).toBeInTheDocument()
+  })
+
+  it("renders the healthy radar and records a manual exposure", async () => {
+    const fetchMock = stubApi()
+    render(<Home />)
+
+    expect(await screen.findByRole("heading", { name: "Morpho radar graph" })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: /Belem Sentinel USDC HEALTHY/ })).toBeInTheDocument()
+    expect(screen.getByText("No active incidents.")).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Add exposure" }))
+
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => url === "/api/exposures")).toBe(true))
+    expect(screen.getByRole("status")).toHaveTextContent("Exposure recorded")
   })
 
   it("runs the select → inputs → scenarios → result flow", async () => {

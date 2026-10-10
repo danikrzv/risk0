@@ -32,6 +32,17 @@ const radarGraphResponse = {
   generated_at: "2026-10-10T10:00:00Z",
 }
 
+const incidentGraphResponse = {
+  schema_version: "1.0.0",
+  incident: { incident_id: "incident:oracle/1" },
+  entities: [],
+  relationships: [],
+  similarities: [],
+  exposures: [],
+  impacts: [],
+  generated_at: "2026-10-10T10:00:00Z",
+}
+
 const notificationResponse = {
   schema_version: "1.0.0",
   notifications: [],
@@ -209,6 +220,18 @@ describe("POST /api/analysis", () => {
 })
 
 describe("GET /api/graph", () => {
+  it("proxies an encoded incident graph identifier", async () => {
+    const fetchMock = vi.fn(async () => Response.json(incidentGraphResponse))
+    vi.stubGlobal("fetch", fetchMock)
+
+    const response = await getGraph(new Request("http://localhost/api/graph?incident_graph_id=incident%3Aoracle%2F1"))
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual(incidentGraphResponse)
+    const [url] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toBe(`${UPSTREAM}/v1/graph/incidents/incident%3Aoracle%2F1`)
+  })
+
   it("proxies graph filters with no-store and a bounded timeout", async () => {
     const fetchMock = vi.fn(async () => Response.json(radarGraphResponse))
     vi.stubGlobal("fetch", fetchMock)

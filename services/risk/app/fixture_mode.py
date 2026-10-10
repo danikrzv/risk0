@@ -61,6 +61,9 @@ MORPHO_BASE_URL = "https://morpho.fixture.invalid"
 DATA_MODE_ENV = "RISK0_DATA_MODE"
 LIVE = "live"
 FIXTURE = "fixture"
+FIXTURE_RADAR_CATALOG_VAULT = "vault:1:0x1111111111111111111111111111111111111111"
+FIXTURE_RADAR_ORACLE = "oracle:1:0x4444444444444444444444444444444444444444"
+FIXTURE_RADAR_RULE = "fixture-oracle-v1"
 
 # Recorded fixture snapshot block (tests/fixtures/morpho/*.json "last_indexed_block").
 SNAPSHOT_BLOCK = 26161049
@@ -343,6 +346,143 @@ def build_fixture_analysis_service():
         incidents=NoIncidents(),
         clock=clock,
     )
+
+
+def seed_fixture_radar(context) -> None:
+    """Seed a deterministic healthy topology for UI and E2E demos."""
+    from app.radar.contracts import (
+        HealthState,
+        RadarEntity,
+        RadarRelationship,
+        SimilarityRecord,
+        StateSnapshot,
+    )
+
+    observed_at = datetime(2026, 10, 10, 12, tzinfo=UTC)
+    chain = "chain:1:ethereum"
+    protocol = "protocol:1:morpho"
+    catalog_vault = FIXTURE_RADAR_CATALOG_VAULT
+    visible_neighbor = "vault:1:0x2222222222222222222222222222222222222222"
+    hidden_neighbor = "vault:1:0x3333333333333333333333333333333333333333"
+    market = "market:1:0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    oracle = FIXTURE_RADAR_ORACLE
+    asset = "asset:1:0x5555555555555555555555555555555555555555"
+    if context.topology.get_entity(catalog_vault) is not None:
+        return
+    entities = (
+        RadarEntity(entity_id=chain, entity_type="chain", chain_id=1, address_or_key="ethereum", label="Ethereum", source="fixture:radar"),
+        RadarEntity(entity_id=protocol, entity_type="protocol", chain_id=1, address_or_key="morpho", label="Morpho", source="fixture:radar"),
+        RadarEntity(entity_id=catalog_vault, entity_type="vault", chain_id=1, address_or_key=catalog_vault.rsplit(":", 1)[1], label="Belem Sentinel USDC", source="fixture:radar", catalog=True, metadata={"curator": "belem"}),
+        RadarEntity(entity_id=visible_neighbor, entity_type="vault", chain_id=1, address_or_key=visible_neighbor.rsplit(":", 1)[1], label="Institutional USDC Peer", source="fixture:radar", visible=True, metadata={"curator": "peer"}),
+        RadarEntity(entity_id=hidden_neighbor, entity_type="vault", chain_id=1, address_or_key=hidden_neighbor.rsplit(":", 1)[1], label="Hidden 48% Neighbor", source="fixture:radar", visible=False, metadata={"curator": "peer"}),
+        RadarEntity(entity_id=market, entity_type="market", chain_id=1, address_or_key=market.rsplit(":", 1)[1], label="WETH / USDC 86%", source="fixture:radar", metadata={"lltv": Decimal("0.86")}),
+        RadarEntity(entity_id=oracle, entity_type="oracle", chain_id=1, address_or_key=oracle.rsplit(":", 1)[1], label="WETH / USDC Oracle", source="fixture:radar"),
+        RadarEntity(entity_id=asset, entity_type="asset", chain_id=1, address_or_key=asset.rsplit(":", 1)[1], label="USDC", source="fixture:radar"),
+    )
+    relationships = (
+        RadarRelationship(source_entity_id=catalog_vault, target_entity_id=market, relationship_type="allocated_to", weight=Decimal("0.60")),
+        RadarRelationship(source_entity_id=visible_neighbor, target_entity_id=market, relationship_type="allocated_to", weight=Decimal("0.45")),
+        RadarRelationship(source_entity_id=hidden_neighbor, target_entity_id=market, relationship_type="allocated_to", weight=Decimal("0.48")),
+        RadarRelationship(source_entity_id=market, target_entity_id=oracle, relationship_type="uses_oracle"),
+        RadarRelationship(source_entity_id=market, target_entity_id=asset, relationship_type="lends"),
+        RadarRelationship(source_entity_id=market, target_entity_id=protocol, relationship_type="deployed_on"),
+        RadarRelationship(source_entity_id=protocol, target_entity_id=chain, relationship_type="deployed_on"),
+    )
+    context.topology.upsert_entities(entities, seen_at=observed_at)
+    context.topology.upsert_relationships(relationships, seen_at=observed_at)
+    context.topology.replace_similarities(
+        catalog_vault,
+        (
+            SimilarityRecord(catalog_entity_id=catalog_vault, candidate_entity_id=visible_neighbor, score=Decimal("0.72"), components={"shared_markets": Decimal("0.35"), "asset_overlap": Decimal("0.20"), "same_chain": Decimal("0.05"), "lltv_proximity": Decimal("0.08"), "oracle_overlap": Decimal("0.04")}, stored=True, normally_visible=True, computed_at=observed_at),
+            SimilarityRecord(catalog_entity_id=catalog_vault, candidate_entity_id=hidden_neighbor, score=Decimal("0.48"), components={"shared_markets": Decimal("0.25"), "asset_overlap": Decimal("0.15"), "same_chain": Decimal("0.05"), "lltv_proximity": Decimal("0.03")}, stored=True, normally_visible=False, computed_at=observed_at),
+        ),
+    )
+    for entity in entities:
+        context.states.append_snapshot(
+            StateSnapshot(
+                snapshot_id=f"{entity.entity_id}|fixture|{observed_at.isoformat()}",
+                entity_id=entity.entity_id,
+                state_type=entity.entity_type,
+                observed_at=observed_at,
+                retrieved_at=observed_at,
+                source="fixture:radar",
+                source_identity="fixture:radar",
+                freshness="fresh",
+                metrics={"status": "HEALTHY"},
+            )
+        )
+        context.states.set_health(
+            HealthState(
+                entity_id=entity.entity_id,
+                status="HEALTHY",
+                score=Decimal("1"),
+                reasons=("fixture measurements normal",),
+                missing_fields=(),
+                evaluated_at=observed_at,
+                rule_version="fixture-health-v1",
+            )
+        )
+
+
+def open_fixture_radar_incident(context, broker, now: datetime | None = None):
+    from app.radar.analysis import ExposureImpactEstimator, PropagationEngine
+    from app.radar.contracts import Incident, IncidentSeverity, IncidentStatus, Notification
+
+    seed_fixture_radar(context)
+    observed_at = now or datetime.now(UTC)
+    active = context.incidents.active(source_entity_id=FIXTURE_RADAR_ORACLE)
+    if active:
+        incident = active[0]
+    else:
+        incident = Incident(
+            incident_id=f"incident:fixture:oracle-deviation:{int(observed_at.timestamp())}",
+            source_entity_id=FIXTURE_RADAR_ORACLE,
+            severity=IncidentSeverity.CRITICAL,
+            status=IncidentStatus.OPEN,
+            trigger_metrics={"deviation": Decimal("0.08")},
+            rule_version=FIXTURE_RADAR_RULE,
+            first_observed_at=observed_at,
+            last_observed_at=observed_at,
+            reasons=("oracle deviated 8% from peer consensus",),
+        )
+        incident = context.incidents.upsert_active(incident).incident
+        notification = Notification(
+            notification_id=f"notification:{incident.incident_id}",
+            incident_id=incident.incident_id,
+            severity=incident.severity,
+            title="Critical oracle deviation",
+            message="WETH / USDC oracle deviated 8% from peer consensus.",
+            created_at=observed_at,
+        )
+        if context.incidents.add_notification(notification):
+            broker.publish("notification.created", notification.notification_id, {"incident_id": incident.incident_id, "severity": incident.severity.value})
+        broker.publish("incident.opened", incident.incident_id, {"source_entity_id": incident.source_entity_id, "severity": incident.severity.value})
+
+    relationships = context.topology.relationships()
+    impacts = PropagationEngine().propagate(
+        incident,
+        context.topology.entities(),
+        relationships,
+        context.topology.similarities(),
+    )
+    context.incidents.replace_impacts(incident.incident_id, impacts)
+    estimator = ExposureImpactEstimator()
+    for exposure in context.exposures.list_exposures():
+        result = estimator.estimate(exposure, incident, impacts, relationships)
+        context.exposures.replace_impacts(exposure.exposure_id, result.impacts)
+    broker.publish("graph.updated", "graph", {"fixture": True, "incident_id": incident.incident_id})
+    return incident
+
+
+def resolve_fixture_radar_incident(context, broker, now: datetime | None = None):
+    active = context.incidents.active(source_entity_id=FIXTURE_RADAR_ORACLE)
+    if not active:
+        return None
+    resolved = context.incidents.resolve(active[0].incident_id, now or datetime.now(UTC))
+    if resolved is not None:
+        broker.publish("incident.resolved", resolved.incident_id, {"source_entity_id": resolved.source_entity_id})
+        broker.publish("graph.updated", "graph", {"fixture": True, "incident_id": resolved.incident_id})
+    return resolved
 
 
 def _catalog_path() -> Path:

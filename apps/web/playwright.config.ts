@@ -13,6 +13,7 @@ const RISK_PORT = Number(process.env.RISK0_E2E_RISK_PORT ?? 8710)
 const WEB_PORT = Number(process.env.RISK0_E2E_WEB_PORT ?? 3710)
 const RISK_URL = `http://127.0.0.1:${RISK_PORT}`
 const WEB_URL = `http://127.0.0.1:${WEB_PORT}`
+const RADAR_DB_PATH = `/tmp/risk0-e2e-radar-${process.pid}-${Date.now()}.sqlite3`
 
 export default defineConfig({
   testDir: "./e2e",
@@ -37,6 +38,8 @@ export default defineConfig({
       url: `${RISK_URL}/v1/health`,
       env: {
         RISK0_DATA_MODE: "fixture",
+        RISK0_RADAR_DB_PATH: RADAR_DB_PATH,
+        RISK0_RADAR_SEED_FIXTURES: "1",
         // Fixture mode never reads it; blank it so no live credential is in scope.
         ETHEREUM_RPC_URL: "",
       },

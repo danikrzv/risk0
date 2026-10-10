@@ -6,6 +6,7 @@ import {
   createExposure,
   getCatalog,
   getExposureImpact,
+  getIncidentGraph,
   getNotifications,
   getRadarEventsUrl,
   getRadarGraph,
@@ -149,5 +150,17 @@ describe("browser API client", () => {
       notification_id: "notification-1",
     })
     expect(fetchMock.mock.calls[1]?.[0]).toBe("/api/exposures?exposure_id=exposure-1")
+  })
+
+  it("loads a resolved incident graph through the same-origin graph proxy", async () => {
+    const incidentGraph = { schema_version: "1.0.0", incident: { incident_id: "incident-1" }, entities: [], relationships: [], similarities: [], exposures: [], impacts: [], generated_at: "2026-10-10T10:00:00Z" }
+    const fetchMock = vi.fn(async () => Response.json(incidentGraph))
+    vi.stubGlobal("fetch", fetchMock)
+
+    await expect(getIncidentGraph("incident:oracle/1")).resolves.toEqual(incidentGraph)
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/graph?incident_graph_id=incident%3Aoracle%2F1",
+      expect.objectContaining({ method: "GET" }),
+    )
   })
 })

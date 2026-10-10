@@ -213,6 +213,214 @@ p {
   margin-bottom: 0;
 }
 
+.terminal-actions {
+  position: relative;
+  z-index: 20;
+  display: flex;
+  justify-content: flex-end;
+  margin-top: -2.6rem;
+}
+
+.terminal-actions > section > button {
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-surface-raised);
+  color: var(--color-text);
+}
+
+#notification-history {
+  position: absolute;
+  right: 0;
+  width: min(28rem, calc(100vw - 2rem));
+  max-height: 30rem;
+  overflow: auto;
+  padding: 1rem;
+  border: 1px solid var(--color-border-strong);
+  background: #070c13f7;
+  box-shadow: 0 1rem 3rem #000a;
+}
+
+#notification-history ul,
+.incident-rail ul,
+.radar-nodes,
+.radar-relationships,
+.radar-legend {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+#notification-history li {
+  padding: 0.75rem 0;
+  border-top: 1px solid var(--color-border);
+}
+
+[aria-label="Live notifications"] {
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
+  z-index: 100;
+  display: grid;
+  gap: 0.75rem;
+}
+
+[aria-label="Live notifications"] article {
+  width: min(24rem, calc(100vw - 2rem));
+  padding: 1rem;
+  border: 1px solid var(--color-stale);
+  background: #11100af2;
+  box-shadow: 0 1rem 3rem #000c;
+}
+
+[aria-label="Live notifications"] article[data-severity="CRITICAL"] {
+  border-color: var(--color-danger);
+  background: #17090df2;
+}
+
+.radar-layout {
+  display: grid;
+  grid-template-columns: minmax(15rem, 0.7fr) minmax(32rem, 2.2fr) minmax(16rem, 0.8fr);
+  gap: 0.75rem;
+  align-items: start;
+}
+
+.radar-layout > .panel {
+  margin-top: 1.25rem;
+}
+
+.exposure-rail form,
+.exposure-rail .field {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.exposure-rail form {
+  gap: 0.85rem;
+}
+
+.exposure-rail fieldset {
+  display: flex;
+  gap: 0.8rem;
+  margin: 0;
+  padding: 0.65rem;
+  border: 1px solid var(--color-border);
+}
+
+.exposure-rail input,
+.exposure-rail select {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.exposure-rail input[type="radio"] {
+  width: auto;
+}
+
+.exposure-rail__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.exposure-status {
+  color: var(--color-safe);
+}
+
+.radar-graph__header,
+.radar-impact-summary {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: flex-start;
+}
+
+.radar-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  font-size: 0.62rem;
+}
+
+.radar-legend li {
+  padding: 0.25rem 0.45rem;
+  border: 1px solid currentColor;
+}
+
+[data-health-status="HEALTHY"] { color: var(--color-safe); }
+[data-health-status="WARNING"] { color: var(--color-stale); }
+[data-health-status="CRITICAL"] { color: var(--color-danger); }
+[data-health-status="UNKNOWN"] { color: var(--color-unavailable); }
+
+.radar-graph__canvas {
+  min-height: 31rem;
+  padding: 1rem;
+  border: 1px solid var(--color-border);
+  background-image: linear-gradient(#101c2928 1px, transparent 1px), linear-gradient(90deg, #101c2928 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+.radar-nodes {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+  gap: 0.75rem;
+}
+
+.radar-node {
+  width: 100%;
+  min-height: 6rem;
+  display: grid;
+  gap: 0.45rem;
+  padding: 0.75rem;
+  text-align: left;
+  border: 1px solid currentColor;
+  background: #08101aee;
+  color: inherit;
+}
+
+.radar-node strong { color: var(--color-text); }
+.radar-node small { color: var(--color-muted); }
+.radar-node[data-incident-path="true"] { box-shadow: 0 0 0 2px var(--color-danger), 0 0 1.2rem #f0656544; }
+.radar-node[data-revealed="true"]::after { content: "REVEALED BY INCIDENT"; color: var(--color-danger); font-size: 0.58rem; }
+
+.radar-relationships {
+  display: grid;
+  gap: 0.35rem;
+  margin-top: 1rem;
+  color: var(--color-muted);
+  font-size: 0.7rem;
+}
+
+.radar-relationships li[data-incident-path="true"] {
+  color: var(--color-danger);
+}
+
+.radar-impact-summary {
+  padding-top: 0.75rem;
+  color: var(--color-danger);
+}
+
+.incident-rail li + li { margin-top: 0.5rem; }
+.incident-rail button {
+  width: 100%;
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.7rem;
+  text-align: left;
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+.incident-rail button[data-severity="CRITICAL"] { border-left: 3px solid var(--color-danger); }
+.incident-rail button[data-severity="WARNING"] { border-left: 3px solid var(--color-stale); }
+.incident-rail button[aria-pressed="true"] { background: var(--color-danger-surface); }
+.incident-rail small { color: var(--color-muted); line-height: 1.45; }
+.incident-rail__empty { color: var(--color-safe); }
+
+.position-analysis-module {
+  margin-top: 2.5rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--color-border-strong);
+}
+
 .panel {
   margin: 1.5rem 0 0;
   padding: 1.25rem;
@@ -718,5 +926,23 @@ fieldset.panel legend,
 
   .graph__canvas {
     height: 20rem;
+  }
+
+  .terminal-actions {
+    margin-top: 1rem;
+  }
+
+  .radar-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (min-width: 48.01rem) and (max-width: 75rem) {
+  .radar-layout {
+    grid-template-columns: minmax(15rem, 0.7fr) minmax(28rem, 1.8fr);
+  }
+
+  .incident-rail {
+    grid-column: 1 / -1;
   }
 }

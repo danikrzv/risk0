@@ -10,6 +10,7 @@ from app.adapters.rpc_registry import RpcRegistry
 from app.api.analysis import router as analysis_router
 from app.api.catalog import router as catalog_router
 from app.api.events import get_event_broker, router as events_router
+from app.api.fixtures import router as fixtures_router
 from app.api.radar import get_radar_context, router as radar_router
 from app.catalog.repository import CatalogRepository
 from app.fixture_mode import FIXTURE, data_mode, fixture_morpho_client
@@ -79,7 +80,11 @@ def build_radar_scheduler() -> RadarScheduler:
 async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     # Fail fast on a mistyped RISK0_DATA_MODE rather than serving a healthy
     # /v1/health while every catalog and analysis request fails.
-    data_mode()
+    mode = data_mode()
+    if mode == FIXTURE and os.environ.get("RISK0_RADAR_SEED_FIXTURES") == "1":
+        from app.fixture_mode import seed_fixture_radar
+
+        seed_fixture_radar(get_radar_context())
     scheduler = build_radar_scheduler() if radar_enabled() else None
     application.state.radar_scheduler = scheduler
     if scheduler is not None:
@@ -96,6 +101,7 @@ app.include_router(catalog_router)
 app.include_router(analysis_router)
 app.include_router(radar_router)
 app.include_router(events_router)
+app.include_router(fixtures_router)
 
 
 @app.get("/v1/health")

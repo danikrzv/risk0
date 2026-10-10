@@ -18,7 +18,12 @@ Hard triggers come from the scenarios (borrower liquidation, live oracle breach,
 lender withdrawal shortfall) and from `live_triggers` the orchestrator observed
 in current data regardless of the selected scenarios (live oracle breach,
 protocol emergency). A hard trigger is a deterministic consequence of current
-data or of a selected stress, so it does not need a probability.
+data or of a selected stress, so it does not need a probability. A live trigger
+(`LiveTrigger`) names the graph node that breached (reported as
+`<kind>:<node_id>`, e.g. `live:oracle_failure:oracle:1:0x...`), which becomes the
+dominant dependency when no scenario trigger is dominant, and carries the
+confidence of the live data it rests on; the EXIT confidence is the lowest of
+the triggering scenarios, the live data, and the exit estimate.
 
 The expected loss is incomplete when a scenario with a non-zero impact has no
 central probability: an unknown probability is never treated as zero.
@@ -26,7 +31,10 @@ central probability: an unknown probability is never treated as zero.
 No double counting: `impact` already excludes the liquidity shortfall (it is
 reported but is not a realized loss), and a scenario id selected more than once
 (for example at two severities) contributes once, with its largest expected
-loss, because the selections describe the same event.
+loss, because the selections describe the same event. Each selection's expected
+loss pairs its own impact with its own probability (the orchestrator estimates a
+probability per (scenario id, severity)), so a mild severity's higher
+probability is never applied to a severe impact.
 """
 
 from collections.abc import Iterable
@@ -58,6 +66,19 @@ PROTOCOL_EMERGENCY = "live:protocol_emergency"
 
 
 @dataclass(frozen=True, slots=True)
+class LiveTrigger:
+    """A hard trigger observed in current data, independent of the selected scenarios."""
+
+    kind: str
+    node_id: str | None = None
+    confidence: ConfidenceLevel = ConfidenceLevel.HIGH
+
+    @property
+    def label(self) -> str:
+        return f"{self.kind}:{self.node_id}" if self.node_id else self.kind
+
+
+@dataclass(frozen=True, slots=True)
 class _Contribution:
     scenario: ScenarioResult
     central: Decimal | None
@@ -70,10 +91,13 @@ def make_recommendation(
     exit_estimate: ExitEstimate,
     data_quality: DataQuality,
     *,
-    live_triggers: Iterable[str] = (),
+    live_triggers: Iterable[str | LiveTrigger] = (),
     numeraire: str = "",
 ) -> Recommendation:
     unit = f" {numeraire}" if numeraire else ""
+    live = tuple(
+        item if isinstance(item, LiveTrigger) else LiveTrigger(item) for item in live_triggers
+    )
     exit_cost = exit_estimate.total_cost
     contributions = _deduplicated(scenarios)
     known = [item for item in contributions if item.central is not None]
@@ -106,7 +130,7 @@ def make_recommendation(
             ),
         )
 
-    triggers = _triggers(scenarios, live_triggers)
+    triggers = _triggers(scenarios, live)
     unknown_probability = tuple(
         item.scenario.scenario_id
         for item in contributions
@@ -115,6 +139,8 @@ def make_recommendation(
     loss_low = None if unknown_probability else _quantize(_bound(known, "low"))
     loss_high = None if unknown_probability else _quantize(_bound(known, "high"))
     dominant = _dominant(contributions, triggered=bool(triggers))
+    if dominant is None and triggers:
+        dominant = next((item.node_id for item in live if item.node_id), None)
     conflicts = data_quality.conflicts
     comparison = (
         f"expected 30-day staying loss {expected_loss}{unit}"
@@ -127,6 +153,7 @@ def make_recommendation(
         confidence = _lowest(
             [
                 *(item.scenario.confidence for item in contributions if item.scenario.hard_triggers),
+                *(item.confidence for item in live),
                 _exit_confidence(exit_estimate),
             ]
         )
@@ -237,13 +264,15 @@ def _impact_incomplete(scenario: ScenarioResult) -> bool:
     return flag is False
 
 
-def _triggers(scenarios: Iterable[ScenarioResult], live: Iterable[str]) -> tuple[str, ...]:
+def _triggers(
+    scenarios: Iterable[ScenarioResult], live: Iterable[LiveTrigger]
+) -> tuple[str, ...]:
     found = [
         f"{scenario.scenario_id}:{trigger}"
         for scenario in scenarios
         for trigger in scenario.hard_triggers
     ]
-    found.extend(live)
+    found.extend(item.label for item in live)
     return tuple(dict.fromkeys(found))
 
 

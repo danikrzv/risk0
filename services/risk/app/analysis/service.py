@@ -22,8 +22,10 @@ no network. Outcomes:
 Provider exception text is never forwarded: logs record only the exception type.
 
 Critical sources (absent or expired -> UNAVAILABLE): the entity snapshot, vault
-allocations (vault entries), every live oracle observation that was supplied,
-and the exit estimate. A quote older than 30 s or more than 20 blocks from the
+allocations (vault entries), a live observation of every oracle in the graph
+(the entry's market oracle and each resolved allocated market's oracle: no
+provider, a provider error, or no observation all leave it missing), and the
+exit estimate. A quote older than 30 s or more than 20 blocks from the
 snapshot is refreshed once; if it is still expired the exit estimate is expired.
 
 Probabilities (`HybridProbabilityProvider`):
@@ -36,9 +38,22 @@ Probabilities (`HybridProbabilityProvider`):
 - oracle failure and liquidity collapse: UNAVAILABLE. Hourly history cannot
   resolve the 30-minute staleness threshold, and no comparison-market or pool
   depth history is available. Live oracle breaches still act as hard triggers.
+
+Probabilities are estimated per selection, i.e. per (scenario id, severity), and
+each selection is propagated with its own estimate, so a scenario selected at
+two severities never pairs one severity's probability with the other's impact.
+
+Live oracle health (`ChainlinkOracleHealth`): see that class. Spec § 13 says an
+oracle "stale for 30 minutes" is a hard trigger; Chainlink feeds update on a
+heartbeat (ETH/USD 1 h, USDC/USD and EUR/USD 24 h), so a literal 30-minute age
+would fire on healthy feeds. Risk0 interprets it as *older than the feed's
+heartbeat plus 30 minutes*: the observation's `age_seconds` is the staleness
+beyond the heartbeat, which the engine and the live-trigger check compare with
+the unchanged 1800 s threshold.
 """
 
 import logging
+import threading
 from collections import deque
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -61,6 +76,7 @@ from app.analysis.recommendation import (
     CONFIDENCE_ORDER,
     LIVE_ORACLE_FAILURE,
     PROTOCOL_EMERGENCY,
+    LiveTrigger,
     make_recommendation,
 )
 from app.analysis.scenario_engine import ScenarioEngine
@@ -120,8 +136,30 @@ WETH_ADDRESS = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
 ETH_SYMBOLS = frozenset({"weth", "eth"})
 DEFAULT_STABLECOIN_FEEDS: Mapping[str, tuple[str, ...]] = {"USDC": ("USDC/USD",)}
 DEFAULT_COLLATERAL_FEEDS: Mapping[str, tuple[str, ...]] = {"WETH": ("ETH/USD",)}
+# Asset -> Chainlink feed for live oracle health: the same mapping as price
+# history. EURCV is deliberately absent (EUR/USD prices the euro, not EURCV).
+DEFAULT_ORACLE_FEEDS: Mapping[str, str] = {"WETH": "ETH/USD", "ETH": "ETH/USD", "USDC": "USDC/USD"}
+# Heartbeats from Chainlink's Ethereum mainnet feed configuration
+# (data.chain.link): the longest interval between answers of a healthy feed.
+ETH_USD_HEARTBEAT_SECONDS = 3600
+USDC_USD_HEARTBEAT_SECONDS = 86400
+EUR_USD_HEARTBEAT_SECONDS = 86400
+CHAINLINK_HEARTBEATS: Mapping[str, int] = {
+    "ETH/USD": ETH_USD_HEARTBEAT_SECONDS,
+    "USDC/USD": USDC_USD_HEARTBEAT_SECONDS,
+    "EUR/USD": EUR_USD_HEARTBEAT_SECONDS,
+}
+# Longer than every heartbeat plus the 30-minute staleness allowance.
+CHAINLINK_LOOKBACK = timedelta(hours=26)
+# Chainlink reads are memoized this long, so one analysis (and concurrent ones)
+# reads each feed once; ages are still computed against the request time.
+CHAINLINK_MEMO_TTL = timedelta(seconds=60)
+# Spec § 9: risk evidence refreshes daily.
+DEFISCAN_TTL = timedelta(days=1)
+DEFISCAN_FAILURE_TTL = timedelta(minutes=5)
 
 SNAPSHOT_SOURCE = "Morpho entity snapshot"
+ORACLE_SOURCE = "live oracle"
 ALLOCATIONS_SOURCE = "Morpho vault allocations"
 EXIT_SOURCE = "exit estimate"
 
@@ -290,29 +328,34 @@ class AnalysisService:
                     (ALLOCATIONS_SOURCE, Freshness(snapshots.allocations.freshness.value))
                 )
 
-        oracles = self._observe_oracles(snapshots, now)
-        for address, observation in oracles.items():
-            label = f"live oracle {address}"
+        addresses, oracles = self._observe_oracles(snapshots, now)
+        for address in addresses:
+            label = f"{ORACLE_SOURCE} {address}"
             critical.append(label)
-            sources.append((label, Freshness(observation.freshness.value)))
+            observation = oracles.get(address)
+            if observation is not None:
+                sources.append((label, Freshness(observation.freshness.value)))
 
         graph = self._graph(position, entry, snapshots, oracles, now)
         conflicts: list[DataConflict] = []
-        probabilities: dict[str, ProbabilityEstimate] = {}
-        for selection in request.scenarios:
-            # The engine takes one probability per scenario id; when an id is
-            # selected at several severities the highest estimate is kept.
-            key = selection.scenario_id.value
-            assessment = self._assess(selection, graph, position, now)
-            current = probabilities.get(key)
-            if current is None or _higher(assessment.estimate, current):
-                probabilities[key] = assessment.estimate
-            conflicts.extend(assessment.conflicts)
-        for key, probability in probabilities.items():
-            sources.append((f"probability {key}", Freshness(probability.freshness.value)))
-
+        scenarios_out = []
         try:
-            scenarios = self._engine.run(position, graph, request.scenarios, probabilities)
+            for selection in request.scenarios:
+                # The engine keys probabilities by scenario id, so each selection
+                # is propagated on its own with the estimate for its severity.
+                key = selection.scenario_id.value
+                assessment = self._assess(selection, graph, position, now)
+                conflicts.extend(assessment.conflicts)
+                sources.append(
+                    (
+                        f"probability {key}@{selection.severity}",
+                        Freshness(assessment.estimate.freshness.value),
+                    )
+                )
+                scenarios_out.extend(
+                    self._engine.run(position, graph, (selection,), {key: assessment.estimate})
+                )
+            scenarios = tuple(scenarios_out)
         except (ValueError, ScenarioSeverityError) as error:
             logger.warning("scenario propagation failed: %s", type(error).__name__)
             raise AnalysisProviderError(
@@ -426,25 +469,33 @@ class AnalysisService:
 
     def _observe_oracles(
         self, snapshots: _Snapshots, now: datetime
-    ) -> dict[str, DataEnvelope[OracleObservation]]:
-        if self._oracles is None:
-            return {}
+    ) -> tuple[tuple[str, ...], dict[str, DataEnvelope[OracleObservation]]]:
+        """Every graph oracle address (all critical) and the live observations obtained."""
         markets = [snapshots.market] if snapshots.market is not None else []
-        markets.extend(snapshots.allocation_markets.values())
+        markets.extend(snapshots.allocation_markets[key] for key in sorted(snapshots.allocation_markets))
+        addresses: list[str] = []
         observed: dict[str, DataEnvelope[OracleObservation]] = {}
         for envelope in markets:
             market = envelope.value
             key = market.oracle_address.lower()
-            if key in observed:
+            if key in addresses:
+                continue
+            addresses.append(key)
+            if self._oracles is None:
                 continue
             try:
                 observation = self._oracles.observe(market, now=now)
             except Exception as error:  # provider boundary: never leak provider text
                 logger.warning("oracle health unavailable: %s", type(error).__name__)
                 continue
-            if observation is not None:
-                observed[key] = observation
-        return observed
+            if observation is None:
+                logger.info("no live oracle observation for a graph oracle")
+                continue
+            if observation.value.oracle_address.lower() != key:
+                logger.warning("oracle observation does not match the requested oracle")
+                continue
+            observed[key] = observation
+        return tuple(addresses), observed
 
     def _graph(
         self,
@@ -653,9 +704,10 @@ class AnalysisService:
 
     def _live_triggers(
         self, oracles: Mapping[str, DataEnvelope[OracleObservation]]
-    ) -> tuple[str, ...]:
-        triggers: list[str] = []
-        for envelope in oracles.values():
+    ) -> tuple[LiveTrigger, ...]:
+        triggers: list[LiveTrigger] = []
+        for address in sorted(oracles):
+            envelope = oracles[address]
             if envelope.freshness is FreshnessStatus.EXPIRED:
                 continue  # reported as missing critical data instead
             observation = envelope.value
@@ -668,10 +720,18 @@ class AnalysisService:
                 and abs(observation.deviation) >= ORACLE_DEVIATION_THRESHOLD
             )
             if stale or deviated:
-                triggers.append(LIVE_ORACLE_FAILURE)
+                triggers.append(
+                    LiveTrigger(
+                        LIVE_ORACLE_FAILURE,
+                        node_id(RiskNodeType.ORACLE, address),
+                        _freshness_confidence(envelope.freshness),
+                    )
+                )
         try:
             if self._incidents.active_incidents(MORPHO_PROTOCOL):
-                triggers.append(PROTOCOL_EMERGENCY)
+                triggers.append(
+                    LiveTrigger(PROTOCOL_EMERGENCY, node_id(RiskNodeType.PROTOCOL, MORPHO_PROTOCOL))
+                )
         except Exception as error:  # provider boundary
             logger.warning("incident feed unavailable: %s", type(error).__name__)
         return tuple(dict.fromkeys(triggers))
@@ -931,10 +991,12 @@ def unavailable_estimate(now: datetime, reason: str) -> ProbabilityEstimate:
 # Helpers
 
 
-def _higher(candidate: ProbabilityEstimate, current: ProbabilityEstimate) -> bool:
-    if candidate.central is None or current.central is None:
-        return candidate.central is None and current.central is not None
-    return candidate.central > current.central
+def _freshness_confidence(freshness: FreshnessStatus) -> ConfidenceLevel:
+    if freshness is FreshnessStatus.FRESH:
+        return ConfidenceLevel.HIGH
+    if freshness is FreshnessStatus.STALE_USABLE:
+        return ConfidenceLevel.MEDIUM
+    return ConfidenceLevel.UNAVAILABLE
 
 
 def _lower_confidence(level: ConfidenceLevel) -> ConfidenceLevel:
@@ -1091,37 +1153,172 @@ class EthereumGas:
         return self._client.get_gas_price()
 
 
-class ChainlinkPrices:
-    """Latest Chainlink answer within a recent window, for gas and stablecoin valuation."""
+class ChainlinkLatest:
+    """Latest Chainlink answer per feed over a recent lookback, memoized briefly.
 
-    FEEDS: Mapping[str, str] = {"weth": "ETH/USD", "eth": "ETH/USD", "usdc": "USDC/USD"}
+    `EthereumClient.get_chainlink_observations` scans the lookback's logs, so the
+    latest observation is memoized for `ttl`; prices and oracle health share one
+    reader and read each feed once per analysis. An empty lookback returns None.
+    """
 
     def __init__(
         self,
         client,
         *,
-        window: timedelta = timedelta(hours=6),
+        lookback: timedelta = CHAINLINK_LOOKBACK,
+        ttl: timedelta = CHAINLINK_MEMO_TTL,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._client = client
-        self._window = window
-        self._clock = clock
+        self._lookback = lookback
+        self._ttl = ttl
+        self.clock = clock
+        self._memo: dict[str, tuple[datetime, Observation | None]] = {}
+        self._lock = threading.Lock()
+
+    def latest(self, feed: str) -> Observation | None:
+        now = self.clock()
+        with self._lock:
+            cached = self._memo.get(feed)
+            if cached is not None and now - cached[0] < self._ttl:
+                return cached[1]
+        observations = self._client.get_chainlink_observations(feed, now - self._lookback, now)
+        latest = observations[-1] if observations else None
+        with self._lock:
+            self._memo[feed] = (now, latest)
+        return latest
+
+
+class ChainlinkPrices:
+    """Latest Chainlink answer, for gas and stablecoin valuation."""
+
+    FEEDS: Mapping[str, str] = {"weth": "ETH/USD", "eth": "ETH/USD", "usdc": "USDC/USD"}
+
+    def __init__(self, reader: ChainlinkLatest) -> None:
+        self.reader = reader
 
     def price_usd(self, symbol: str) -> Decimal | None:
         feed = self.FEEDS.get(symbol.casefold())
         if feed is None:
             return None
-        end = self._clock()
-        observations = self._client.get_chainlink_observations(feed, end - self._window, end)
-        return observations[-1].value if observations else None
+        latest = self.reader.latest(feed)
+        return latest.value if latest is not None else None
+
+
+class ChainlinkOracleHealth:
+    """`OracleHealthProvider` over the Chainlink feeds behind a Morpho market's assets.
+
+    A market oracle is observed only when both its collateral and loan assets map
+    to a supported feed (`DEFAULT_ORACLE_FEEDS`, heartbeat in
+    `CHAINLINK_HEARTBEATS`); otherwise, or when a feed has no answer in the
+    lookback, it returns None and the oracle is missing critical data.
+
+    - `age_seconds` is the staleness *beyond the feed's heartbeat*:
+      max(0, now - latest answer time - heartbeat), the largest over the
+      market's feeds. The engine's unchanged 1800 s threshold therefore fires
+      when a feed is older than its heartbeat plus 30 minutes (spec § 13
+      interpretation; see the module docstring).
+    - `deviation` is |feed price - reference| / reference, the largest over the
+      market's feeds, with the Morpho snapshot's `price_usd` of the asset as the
+      reference. Without any reference it is None and only staleness is
+      evaluated.
+    Provider errors propagate; the service records only their type.
+    """
+
+    def __init__(
+        self,
+        reader: ChainlinkLatest,
+        *,
+        asset_feeds: Mapping[str, str] = DEFAULT_ORACLE_FEEDS,
+        heartbeats: Mapping[str, int] = CHAINLINK_HEARTBEATS,
+    ) -> None:
+        self.reader = reader
+        self._feeds = {key.casefold(): value for key, value in asset_feeds.items()}
+        self._heartbeats = dict(heartbeats)
+
+    def observe(
+        self, market: MarketSnapshot, *, now: datetime
+    ) -> DataEnvelope[OracleObservation] | None:
+        pairs: list[tuple[AssetInfo, str]] = []
+        for asset in (market.collateral_asset, market.loan_asset):
+            feed = self._feeds.get(asset.symbol.casefold())
+            if feed is None or feed not in self._heartbeats:
+                return None
+            pairs.append((asset, feed))
+        ages: list[Decimal] = []
+        deviations: list[Decimal] = []
+        used: list[str] = []
+        for asset, feed in pairs:
+            if feed not in used:
+                used.append(feed)
+                latest = self.reader.latest(feed)
+                if latest is None:
+                    return None
+                age = Decimal(max(0, int((now - latest.timestamp).total_seconds())))
+                ages.append(max(ZERO, age - Decimal(self._heartbeats[feed])))
+            else:
+                latest = self.reader.latest(feed)  # memoized
+                if latest is None:
+                    return None
+            reference = asset.price_usd
+            if reference is not None and reference.is_finite() and reference > ZERO:
+                with localcontext() as context:
+                    context.prec = 60
+                    deviations.append(abs(latest.value - reference) / reference)
+        return DataEnvelope[OracleObservation](
+            value=OracleObservation(
+                oracle_address=market.oracle_address,
+                age_seconds=max(ages),
+                deviation=max(deviations) if deviations else None,
+            ),
+            source=(
+                f"chainlink:{'+'.join(used)} (age_seconds is staleness beyond the feed "
+                "heartbeat; deviation versus the Morpho price)"
+            ),
+            fetched_at=now,
+            freshness=FreshnessStatus.FRESH,
+        )
 
 
 class FileAndDefiScanEvidence:
-    """Task 8 evidence: the version-controlled DeFiSafety snapshot plus a live DeFiScan review."""
+    """Task 8 evidence: the version-controlled DeFiSafety snapshot plus a live DeFiScan review.
 
-    def __init__(self, defisafety_path: Path, defiscan=None) -> None:
+    DeFiScan reviews are cached in process per protocol slug for a day (spec § 9:
+    risk evidence refreshes daily); a failed fetch is retried after five minutes.
+    The bundle's own `retrieved_at` is kept, so scoring still sees its true age.
+    An in-process cache is used because `EvidenceBundle` is a nested dataclass
+    with no serializer for `SQLiteCache`.
+    """
+
+    def __init__(
+        self,
+        defisafety_path: Path,
+        defiscan=None,
+        *,
+        clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+    ) -> None:
         self._path = defisafety_path
         self._defiscan = defiscan
+        self._clock = clock
+        self._reviews: dict[str, tuple[datetime, object]] = {}
+        self._lock = threading.Lock()
+
+    def _review(self, protocol: str):
+        """The cached review, a fresh one, or None after a (cached) failure."""
+        with self._lock:
+            cached = self._reviews.get(protocol)
+        if cached is not None and self._clock() < cached[0]:
+            return cached[1]
+        try:
+            review = self._defiscan.get_review(protocol)
+            expires = self._clock() + DEFISCAN_TTL
+        except Exception as error:  # provider boundary: never leak provider text
+            logger.warning("defiscan unavailable: %s", type(error).__name__)
+            review = None
+            expires = self._clock() + DEFISCAN_FAILURE_TTL
+        with self._lock:
+            self._reviews[protocol] = (expires, review)
+        return review
 
     def evidence(self, protocol: str, *, now: datetime) -> CombinedEvidence:
         from app.adapters.defiscan import DEFISCAN_METHODOLOGY_URL
@@ -1130,10 +1327,10 @@ class FileAndDefiScanEvidence:
 
         bundles = [load_defisafety_evidence(self._path, protocol)]
         if self._defiscan is not None:
-            try:
-                bundles.append(self._defiscan.get_review(protocol))
-            except Exception as error:  # provider boundary: never leak provider text
-                logger.warning("defiscan unavailable: %s", type(error).__name__)
+            review = self._review(protocol)
+            if review is not None:
+                bundles.append(review)
+            else:
                 bundles.append(
                     EvidenceBundle.unavailable(
                         protocol=protocol,

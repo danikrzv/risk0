@@ -356,3 +356,37 @@ def test_exit_explanation_mentions_unavailable_full_exit_only_when_not_withdrawa
     assert result.decision is EXIT
     mentioned = "full exit is currently unavailable" in result.explanation
     assert mentioned is (not withdrawable)
+
+
+# Live triggers name their node and carry their data confidence
+
+
+def test_live_oracle_trigger_names_the_oracle_and_is_the_dominant_dependency():
+    from app.analysis.recommendation import LiveTrigger
+
+    result = make_recommendation(
+        (scenario("0"),),
+        exit_estimate(),
+        quality(),
+        live_triggers=(LiveTrigger("live:oracle_failure", ORACLE, ConfidenceLevel.MEDIUM),),
+    )
+
+    assert result.decision is EXIT
+    assert result.triggers == (f"live:oracle_failure:{ORACLE}",)
+    assert result.dominant_dependency == ORACLE
+    assert result.confidence is ConfidenceLevel.MEDIUM  # lowest of live data and exit (HIGH)
+    assert ORACLE in result.explanation
+
+
+def test_scenario_trigger_stays_dominant_over_a_live_trigger():
+    from app.analysis.recommendation import LiveTrigger
+
+    result = make_recommendation(
+        (scenario("100", triggers=("liquidation",)),),
+        exit_estimate(),
+        quality(),
+        live_triggers=(LiveTrigger("live:oracle_failure", ORACLE, ConfidenceLevel.HIGH),),
+    )
+
+    assert result.triggers == ("collateral-shock:liquidation", f"live:oracle_failure:{ORACLE}")
+    assert result.dominant_dependency == ASSET

@@ -10,6 +10,8 @@ from app.adapters.morpho import DEFAULT_BASE_URL, MorphoClient
 from app.analysis.service import (
     AnalysisError,
     AnalysisService,
+    ChainlinkLatest,
+    ChainlinkOracleHealth,
     ChainlinkPrices,
     EthereumGas,
     FileAndDefiScanEvidence,
@@ -28,9 +30,14 @@ logger = logging.getLogger("risk0.analysis")
 router = APIRouter(prefix="/v1")
 
 
+UNAVAILABLE_DETAIL = "The risk analysis is temporarily unavailable."
+
+
 def build_default_analysis_service() -> AnalysisService:
-    """Live wiring. Without ETHEREUM_RPC_URL the Ethereum-backed providers are absent,
-    so quotes, gas, and history become UNAVAILABLE instead of failing the request."""
+    """Live wiring. Without ETHEREUM_RPC_URL the Ethereum-backed providers are absent:
+    quotes, gas, and history become UNAVAILABLE, and with no live oracle provider
+    every graph oracle is missing critical data, so the recommendation is
+    UNAVAILABLE (never STAY) instead of failing the request."""
     from app.adapters.defiscan import DefiScanClient
     from app.config import Settings
 
@@ -53,7 +60,7 @@ def build_default_analysis_service() -> AnalysisService:
         logger.warning("ETHEREUM_RPC_URL is not configured; Ethereum-backed data is unavailable")
         settings = None
 
-    quotes = gas = prices = history = None
+    quotes = gas = prices = history = oracles = None
     if settings is not None:
         from app.adapters.ethereum import EthereumClient
         from app.adapters.uniswap import UniswapClient
@@ -63,7 +70,9 @@ def build_default_analysis_service() -> AnalysisService:
         ethereum = EthereumClient(settings)
         quotes = UniswapQuotes(UniswapClient(settings, cache=cache), UniswapClient(settings))
         gas = EthereumGas(ethereum)
-        prices = ChainlinkPrices(ethereum)
+        chainlink = ChainlinkLatest(ethereum)
+        prices = ChainlinkPrices(chainlink)
+        oracles = ChainlinkOracleHealth(chainlink)
         history = HistoricalProbabilityService(ethereum, NormalizedHistoryCache(cache))
 
     return AnalysisService(
@@ -73,25 +82,38 @@ def build_default_analysis_service() -> AnalysisService:
         quotes=quotes,
         gas=gas,
         prices=prices,
+        oracles=oracles,
     )
 
 
 @lru_cache(maxsize=1)
-def get_analysis_service() -> AnalysisService:
+def get_default_service() -> AnalysisService:
     return build_default_analysis_service()
+
+
+def get_analysis_service() -> AnalysisService | None:
+    """The shared service, or None when it cannot be built (bad catalog path,
+    unwritable cache directory). The failure is not cached, so a repaired
+    environment recovers on the next request without a restart; only the
+    exception type is logged."""
+    try:
+        return get_default_service()
+    except Exception as error:
+        logger.error("analysis service construction failed: %s", type(error).__name__)
+        return None
 
 
 @router.post("/analysis", response_model=AnalysisResponse)
 def analyze(
     request: AnalysisRequest,
-    service: AnalysisService = Depends(get_analysis_service),
+    service: AnalysisService | None = Depends(get_analysis_service),
 ) -> AnalysisResponse | JSONResponse:
+    if service is None:
+        return JSONResponse(status_code=503, content={"detail": UNAVAILABLE_DETAIL})
     try:
         return service.analyze(request)
     except AnalysisError as error:
         return JSONResponse(status_code=error.status_code, content={"detail": error.public_message})
     except Exception as error:  # never return a stack trace, URL, or provider body
         logger.error("analysis failed: %s", type(error).__name__)
-        return JSONResponse(
-            status_code=503, content={"detail": "The risk analysis is temporarily unavailable."}
-        )
+        return JSONResponse(status_code=503, content={"detail": UNAVAILABLE_DETAIL})

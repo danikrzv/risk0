@@ -71,7 +71,11 @@ class FakeProbabilities:
         self.centrals = centrals
 
     def assess(self, selection, graph, position, *, now):
-        central = self.centrals.get(selection.scenario_id.value)
+        # A "<scenario-id>@<severity>" key takes precedence over the bare scenario id,
+        # so tests can give each severity its own probability, as the empirical
+        # provider does.
+        key = selection.scenario_id.value
+        central = self.centrals.get(f"{key}@{selection.severity}", self.centrals.get(key))
         if central is None:
             return ProbabilityAssessment(
                 estimate=ProbabilityEstimate(
@@ -209,16 +213,23 @@ class RecordedAllocationsOnly:
         return envelope.model_copy(update={"value": rows})
 
 
+HEALTHY_ORACLES = object()
+
+
 def build_service(
     morpho,
     clock,
     *,
     probabilities=None,
     quotes=None,
-    oracles=None,
+    oracles=HEALTHY_ORACLES,
     incidents=None,
     catalog_path=CATALOG_PATH,
+    prices=None,
 ):
+    """Defaults to healthy live oracle data; pass `oracles=None` for no oracle provider."""
+    if oracles is HEALTHY_ORACLES:
+        oracles = FakeOracles(clock)
     return AnalysisService(
         CatalogRepository(catalog_path),
         morpho,
@@ -228,7 +239,7 @@ def build_service(
         ),
         quotes=quotes if quotes is not None else FakeQuotes(clock),
         gas=FakeGas(),
-        prices=FakePrices(),
+        prices=prices if prices is not None else FakePrices(),
         oracles=oracles,
         incidents=incidents or FakeIncidents(),
         clock=clock,
@@ -450,8 +461,13 @@ def test_live_oracle_breach_exits_even_without_an_oracle_scenario(api, morpho_cl
     response = post(client, borrower_request("0.05"))
 
     body = response.json()
-    assert body["recommendation"]["decision"] == EXIT
-    assert "live:oracle_failure" in body["recommendation"]["triggers"]
+    recommendation = body["recommendation"]
+    assert recommendation["decision"] == EXIT
+    (trigger,) = recommendation["triggers"]
+    oracle = next(node for node in body["graph"]["nodes"] if node["node_type"] == "oracle")
+    # The live trigger names the breached oracle, which is the dominant dependency.
+    assert trigger == f"live:oracle_failure:{oracle['node_id']}"
+    assert recommendation["dominant_dependency"] == oracle["node_id"]
 
 
 def test_expired_live_oracle_data_is_unavailable(api, morpho_client, clock):
@@ -474,7 +490,16 @@ def test_protocol_emergency_exits(api, morpho_client, clock):
     body = post(api(service), borrower_request("0.05")).json()
 
     assert body["recommendation"]["decision"] == EXIT
-    assert "live:protocol_emergency" in body["recommendation"]["triggers"]
+    assert body["recommendation"]["triggers"] == ["live:protocol_emergency:protocol:1:morpho"]
+    assert body["recommendation"]["dominant_dependency"] == "protocol:1:morpho"
+
+
+def test_live_oracle_breach_folds_the_live_data_confidence_in(api, morpho_client, clock):
+    oracles = FakeOracles(clock, deviation="0.2", freshness=FreshnessStatus.STALE_USABLE)
+    body = post(api(build_service(morpho_client, clock, oracles=oracles)), borrower_request("0.05")).json()
+
+    assert body["recommendation"]["decision"] == EXIT
+    assert body["recommendation"]["confidence"] == "medium"
 
 
 def test_mild_borrower_shock_stays_when_expected_loss_is_below_exit_cost(api, morpho_client, clock):
@@ -545,7 +570,16 @@ def test_quote_at_twenty_block_lag_needs_no_refresh(morpho_client, clock):
 def test_expected_loss_is_central_probability_times_impact_without_double_counting(
     morpho_client, clock
 ):
-    service = build_service(morpho_client, clock)
+    # Each severity has its own probability (the milder shock is the likelier one),
+    # so pairing a probability with the wrong severity's impact changes the result.
+    probabilities = FakeProbabilities(
+        {
+            "collateral-shock@0.05": "0.001",
+            "collateral-shock@0.04": "0.01",
+            "protocol-impairment": "0.0004",
+        }
+    )
+    service = build_service(morpho_client, clock, probabilities=probabilities)
     payload = borrower_request(
         scenarios=[
             {"scenario_id": "collateral-shock", "severity": "0.05"},
@@ -556,13 +590,47 @@ def test_expected_loss_is_central_probability_times_impact_without_double_counti
 
     response = analyze(service, payload)
 
-    shock = max(
-        (r for r in response.scenario_results if r.scenario_id == "collateral-shock"),
-        key=lambda r: r.impact,
-    )
-    protocol = next(r for r in response.scenario_results if r.scenario_id == "protocol-impairment")
-    expected = shock.impact * Decimal("0.001") + protocol.impact * Decimal("0.0004")
+    five, four, protocol = response.scenario_results
+    assert five.probability.central == Decimal("0.001")
+    assert four.probability.central == Decimal("0.01")
+    assert five.impact > four.impact > 0
+    shock = max(five.impact * Decimal("0.001"), four.impact * Decimal("0.01"))
+    expected = shock + protocol.impact * Decimal("0.0004")
     assert response.recommendation.expected_loss == expected.quantize(Decimal("1E-18"))
+
+
+SEVERITY_PROBABILITIES = FakeProbabilities(
+    {
+        "collateral-shock@0.05": "0.10",
+        "collateral-shock@0.50": "0.001",
+        "protocol-impairment": "0.0004",
+    }
+)
+TWO_SEVERITIES = [
+    {"scenario_id": "collateral-shock", "severity": "0.05"},
+    {"scenario_id": "collateral-shock", "severity": "0.50"},
+]
+
+
+@pytest.mark.parametrize("mode", ["lender", "borrower"])
+def test_each_severity_is_paired_with_its_own_probability(morpho_client, clock, mode):
+    if mode == "lender":
+        morpho = RecordedAllocationsOnly(morpho_client)
+        payload = lender_vault_request(scenarios=TWO_SEVERITIES)
+    else:
+        morpho = morpho_client
+        payload = borrower_request(scenarios=TWO_SEVERITIES)
+    service = build_service(morpho, clock, probabilities=SEVERITY_PROBABILITIES)
+
+    response = analyze(service, payload)
+
+    mild, severe = response.scenario_results
+    assert mild.probability.central == Decimal("0.10")
+    assert severe.probability.central == Decimal("0.001")
+    expected = max(mild.impact * Decimal("0.10"), severe.impact * Decimal("0.001"))
+    assert response.recommendation.expected_loss == expected.quantize(Decimal("1E-18"))
+    # The mild probability is never applied to the severe impact.
+    assert response.recommendation.expected_loss < severe.impact * Decimal("0.10")
 
 
 # Conflicting probability sources
@@ -803,3 +871,329 @@ def test_depeg_event_fires_at_or_below_the_threshold():
     event = DepegEvent(Decimal("0.10"))
     assert event(window("1", "0.95", "0.90"))
     assert not event(window("1", "0.95", "0.9001"))
+
+
+# Live oracle data is critical (spec § 13 hard trigger, § 15 missing -> UNAVAILABLE)
+
+
+class RaisingOracles:
+    def observe(self, market, *, now):
+        raise RuntimeError("oracle provider said https://rpc.example.invalid/v2/fake-rpc-credential")
+
+
+class NoObservation:
+    def observe(self, market, *, now):
+        return None
+
+
+@pytest.mark.parametrize(
+    "oracles", [None, RaisingOracles(), NoObservation()], ids=["no-provider", "error", "none"]
+)
+@pytest.mark.parametrize("mode", ["lender", "borrower"])
+def test_missing_live_oracle_data_is_unavailable(api, morpho_client, clock, caplog, oracles, mode):
+    if mode == "lender":
+        service = build_service(RecordedAllocationsOnly(morpho_client), clock, oracles=oracles)
+        payload = lender_vault_request()
+    else:
+        service = build_service(morpho_client, clock, oracles=oracles)
+        payload = borrower_request("0.05")
+
+    with caplog.at_level(logging.DEBUG):
+        response = post(api(service), payload)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert_contract(body)
+    assert body["recommendation"]["decision"] == UNAVAILABLE
+    assert "live oracle" in body["recommendation"]["explanation"]
+    for leaked in ("rpc.example.invalid", "fake-rpc-credential"):
+        assert leaked not in response.text
+        assert leaked not in service_logs(caplog)
+
+
+class FakeChainlink:
+    """`EthereumClient.get_chainlink_observations` over configured feed histories."""
+
+    def __init__(self, histories=None, *, fail=False):
+        self.histories = histories or {}
+        self.fail = fail
+        self.calls: list[str] = []
+
+    def get_chainlink_observations(self, feed, start, end):
+        self.calls.append(feed)
+        if self.fail:
+            from app.adapters.ethereum import EthereumProviderError
+
+            raise EthereumProviderError("request to https://rpc.example.invalid/v2/fake-rpc-credential failed")
+        if feed not in self.histories:
+            from app.adapters.ethereum import UnsupportedFeedError
+
+            raise UnsupportedFeedError(f"unsupported Chainlink feed: {feed}")
+        return tuple(item for item in self.histories[feed] if start <= item.timestamp <= end)
+
+
+def weth_usdc_market(morpho_client):
+    entry = next(
+        item for item in CatalogRepository(CATALOG_PATH).list_entries() if item.entity_id == "weth-usdc-860"
+    )
+    return morpho_client.get_market(entry.address_or_market_id).value
+
+
+def feed_point(clock, value, *, age_seconds):
+    return Observation(
+        timestamp=clock() - timedelta(seconds=age_seconds),
+        value=Decimal(value),
+        block_number=SNAPSHOT_BLOCK,
+        log_index=0,
+        source="chainlink:fixture",
+    )
+
+
+def chainlink_service(morpho, clock, client, **kwargs):
+    from app.analysis.service import ChainlinkLatest, ChainlinkOracleHealth, ChainlinkPrices
+
+    reader = ChainlinkLatest(client, clock=clock)
+    return build_service(
+        morpho,
+        clock,
+        oracles=ChainlinkOracleHealth(reader),
+        prices=ChainlinkPrices(reader),
+        **kwargs,
+    )
+
+
+def healthy_histories(market, clock, *, eth_age=600, eth_value=None):
+    return {
+        "ETH/USD": (
+            feed_point(clock, eth_value or market.collateral_asset.price_usd, age_seconds=eth_age),
+        ),
+        "USDC/USD": (feed_point(clock, market.loan_asset.price_usd, age_seconds=3 * 3600),),
+    }
+
+
+def test_chainlink_oracle_health_with_healthy_feeds_does_not_trigger(morpho_client, clock):
+    market = weth_usdc_market(morpho_client)
+    client = FakeChainlink(healthy_histories(market, clock))
+
+    response = analyze(chainlink_service(morpho_client, clock, client), borrower_request("0.05"))
+
+    assert response.recommendation.decision is RecommendationDecision.STAY
+    assert response.recommendation.triggers == ()
+    oracle = next(node for node in response.graph.nodes if node.node_type.value == "oracle")
+    assert oracle.metrics["age_seconds"] == Decimal(0)  # within the heartbeat
+    assert oracle.metrics["deviation"] == Decimal(0)
+
+
+def test_chainlink_oracle_health_reports_staleness_beyond_the_heartbeat(morpho_client, clock):
+    from app.analysis.service import ChainlinkLatest, ChainlinkOracleHealth
+
+    market = weth_usdc_market(morpho_client)
+    client = FakeChainlink(healthy_histories(market, clock, eth_age=3600 + 1799))
+
+    envelope = ChainlinkOracleHealth(ChainlinkLatest(client, clock=clock)).observe(market, now=clock())
+
+    assert envelope is not None
+    # ETH/USD heartbeat is 3600 s: 1799 s beyond it; USDC/USD is inside its 86400 s heartbeat.
+    assert envelope.value.age_seconds == Decimal(1799)
+    assert envelope.value.oracle_address == market.oracle_address
+    assert "beyond" in envelope.source
+
+
+@pytest.mark.parametrize(
+    ("eth_age", "decision"),
+    [(3600 + 1799, RecommendationDecision.STAY), (3600 + 1800, RecommendationDecision.EXIT)],
+    ids=["heartbeat+29m59s", "heartbeat+30m"],
+)
+def test_chainlink_feed_stale_for_thirty_minutes_beyond_its_heartbeat_exits(
+    morpho_client, clock, eth_age, decision
+):
+    market = weth_usdc_market(morpho_client)
+    client = FakeChainlink(healthy_histories(market, clock, eth_age=eth_age))
+
+    response = analyze(chainlink_service(morpho_client, clock, client), borrower_request("0.05"))
+
+    assert response.recommendation.decision is decision
+    if decision is RecommendationDecision.EXIT:
+        oracle = node_of(response.graph, "oracle")
+        assert response.recommendation.triggers == (f"live:oracle_failure:{oracle}",)
+        assert response.recommendation.dominant_dependency == oracle
+
+
+@pytest.mark.parametrize(
+    ("factor", "decision"),
+    [("1.049", RecommendationDecision.STAY), ("1.05", RecommendationDecision.EXIT)],
+    ids=["4.9%", "5%"],
+)
+def test_chainlink_feed_deviating_five_percent_from_the_reference_exits(
+    morpho_client, clock, factor, decision
+):
+    market = weth_usdc_market(morpho_client)
+    eth_value = market.collateral_asset.price_usd * Decimal(factor)
+    client = FakeChainlink(healthy_histories(market, clock, eth_value=eth_value))
+
+    response = analyze(chainlink_service(morpho_client, clock, client), borrower_request("0.05"))
+
+    assert response.recommendation.decision is decision
+
+
+def test_chainlink_provider_error_is_unavailable_and_sanitized(morpho_client, clock, caplog):
+    client = FakeChainlink(fail=True)
+
+    with caplog.at_level(logging.DEBUG):
+        response = analyze(chainlink_service(morpho_client, clock, client), borrower_request("0.05"))
+
+    assert response.recommendation.decision is RecommendationDecision.UNAVAILABLE
+    assert "live oracle" in response.recommendation.explanation
+    assert "rpc.example.invalid" not in service_logs(caplog)
+    assert "fake-rpc-credential" not in response.model_dump_json()
+
+
+def test_chainlink_feed_without_updates_in_the_lookback_is_unavailable(morpho_client, clock):
+    market = weth_usdc_market(morpho_client)
+    histories = healthy_histories(market, clock)
+    histories["ETH/USD"] = ()
+
+    response = analyze(
+        chainlink_service(morpho_client, clock, FakeChainlink(histories)), borrower_request("0.05")
+    )
+
+    assert response.recommendation.decision is RecommendationDecision.UNAVAILABLE
+
+
+def test_oracle_without_a_supported_chainlink_feed_is_unavailable(morpho_client, clock):
+    # The recorded MEV vault allocation is the wstETH/WETH market: wstETH has no feed.
+    market = weth_usdc_market(morpho_client)
+    client = FakeChainlink(healthy_histories(market, clock))
+
+    response = analyze(
+        chainlink_service(RecordedAllocationsOnly(morpho_client), clock, client),
+        lender_vault_request(),
+    )
+
+    assert response.recommendation.decision is RecommendationDecision.UNAVAILABLE
+    assert "live oracle" in response.recommendation.explanation
+    assert "wstETH" not in client.calls
+
+
+def test_chainlink_lookups_are_memoized_across_prices_and_oracle_health(morpho_client, clock):
+    market = weth_usdc_market(morpho_client)
+    client = FakeChainlink(healthy_histories(market, clock))
+    service = chainlink_service(morpho_client, clock, client)
+
+    analyze(service, borrower_request("0.05"))
+    analyze(service, borrower_request("0.05"))
+
+    assert sorted(client.calls) == ["ETH/USD", "USDC/USD"]
+
+
+def node_of(graph, node_type):
+    return next(node.node_id for node in graph.nodes if node.node_type.value == node_type)
+
+
+# Wiring and construction failures
+
+
+def test_default_wiring_with_an_rpc_url_uses_chainlink_oracle_health(monkeypatch, tmp_path):
+    from app.analysis.service import ChainlinkOracleHealth
+    from app.api.analysis import build_default_analysis_service
+
+    monkeypatch.setenv("ETHEREUM_RPC_URL", "https://rpc.example.invalid/v2/fake-rpc-credential")
+    monkeypatch.setenv("RISK0_CACHE_PATH", str(tmp_path / "cache.sqlite3"))
+
+    service = build_default_analysis_service()
+
+    assert isinstance(service._oracles, ChainlinkOracleHealth)
+    assert service._oracles.reader is service._prices.reader
+
+
+def test_default_wiring_without_rpc_url_has_no_oracle_provider(monkeypatch, tmp_path):
+    from app.api.analysis import build_default_analysis_service
+
+    monkeypatch.delenv("ETHEREUM_RPC_URL", raising=False)
+    monkeypatch.setenv("RISK0_CACHE_PATH", str(tmp_path / "cache.sqlite3"))
+
+    service = build_default_analysis_service()
+
+    # No oracle provider: every graph oracle is missing critical data -> UNAVAILABLE.
+    assert service._oracles is None
+
+
+def test_service_construction_failure_returns_a_sanitized_503(monkeypatch, caplog):
+    import app.api.analysis as module
+
+    def broken():
+        raise PermissionError("cannot open /secret/cache/risk0.sqlite3 via https://rpc.example.invalid")
+
+    monkeypatch.setattr(module, "build_default_analysis_service", broken)
+    module.get_default_service.cache_clear()
+    client = TestClient(app, raise_server_exceptions=False)
+
+    with caplog.at_level(logging.DEBUG):
+        response = post(client, borrower_request())
+    module.get_default_service.cache_clear()
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "The risk analysis is temporarily unavailable."}
+    for leaked in ("/secret", "rpc.example.invalid", "sqlite3", "Traceback"):
+        assert leaked not in response.text
+        assert leaked not in service_logs(caplog)
+
+
+# Protocol evidence cache
+
+
+def test_defiscan_review_is_cached_for_a_day(clock):
+    from app.analysis.service import FileAndDefiScanEvidence
+    from app.evidence.models import EvidenceBundle, EvidenceSource
+
+    class CountingDefiScan:
+        calls = 0
+
+        def get_review(self, slug):
+            CountingDefiScan.calls += 1
+            return EvidenceBundle.unavailable(
+                protocol=slug,
+                source=EvidenceSource.DEFISCAN,
+                source_url="https://www.defiscan.info/data/morpho/compiled-review.json",
+                methodology_url="https://www.defiscan.info/about",
+                retrieved_at=clock(),
+                reason="fixture",
+            )
+
+    path = ROOT / "data" / "evidence" / "defisafety.ethereum.json"
+    evidence = FileAndDefiScanEvidence(path, CountingDefiScan(), clock=clock)
+
+    evidence.evidence("morpho", now=clock())
+    evidence.evidence("morpho", now=clock())
+    assert CountingDefiScan.calls == 1
+
+    clock.advance(timedelta(hours=24, seconds=1))
+    evidence.evidence("morpho", now=clock())
+    assert CountingDefiScan.calls == 2
+
+
+# Lender withdrawal trigger at the 20% threshold (spec § 13), through the service
+
+
+@pytest.mark.parametrize(("ratio", "triggered"), [("0.19", True), ("0.21", False)])
+def test_lender_stressed_withdrawable_liquidity_threshold(morpho_client, clock, ratio, triggered):
+    morpho = RecordedAllocationsOnly(morpho_client)
+    service = build_service(morpho, clock)
+    severity = Decimal("0.50")
+    scenarios = [{"scenario_id": "liquidity-collapse", "severity": str(severity)}]
+    probe = analyze(service, lender_vault_request(amount="1", scenarios=scenarios))
+    vault = next(node for node in probe.graph.nodes if node.node_type.value == "vault")
+    stressed = vault.metrics["available_liquidity"] * (1 - severity)
+    amount = (stressed / Decimal(ratio)).quantize(Decimal("1E-6"))
+
+    response = analyze(service, lender_vault_request(amount=str(amount), scenarios=scenarios))
+
+    (result,) = response.scenario_results
+    assert result.stressed_values["stressed_available_liquidity"] == stressed
+    if triggered:
+        assert result.hard_triggers == ("withdrawal_shortfall",)
+        assert response.recommendation.decision is RecommendationDecision.EXIT
+        assert response.recommendation.triggers == ("liquidity-collapse:withdrawal_shortfall",)
+    else:
+        assert result.hard_triggers == ()
+        assert response.recommendation.triggers == ()

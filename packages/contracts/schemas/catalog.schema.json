@@ -1,20 +1,25 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://risk0.local/schemas/catalog.schema.json",
+  "$id": "https://risk0.local/schemas/v1/catalog.schema.json",
   "title": "CatalogResponse",
   "type": "object",
   "additionalProperties": false,
-  "required": ["entries"],
+  "required": ["schema_version", "entries", "generated_at"],
   "properties": {
+    "schema_version": { "const": "1.0.0" },
     "entries": {
       "type": "array",
-      "items": { "$ref": "#/$defs/CatalogEntry" }
-    }
+      "items": { "$ref": "#/$defs/HydratedCatalogEntry" }
+    },
+    "generated_at": { "type": "string", "format": "date-time" }
   },
   "$defs": {
+    "DecimalString": {
+      "type": "string",
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[Ee][+-]?\\d+)?$"
+    },
     "CatalogEntry": {
       "type": "object",
-      "additionalProperties": false,
       "required": [
         "entity_id",
         "chain_id",
@@ -53,6 +58,108 @@
             { "type": "string", "pattern": "^(?:0(?:\\.\\d+)?|1(?:\\.0+)?)$" },
             { "type": "null" }
           ]
+        }
+      }
+    },
+    "CatalogDocument": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entries"],
+      "properties": {
+        "entries": {
+          "type": "array",
+          "items": {
+            "allOf": [{ "$ref": "#/$defs/CatalogEntry" }],
+            "unevaluatedProperties": false
+          }
+        }
+      }
+    },
+    "CatalogMetrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "asset_symbol",
+        "collateral_symbol",
+        "total_assets",
+        "total_assets_usd",
+        "liquidity_assets",
+        "liquidity_usd",
+        "utilization"
+      ],
+      "properties": {
+        "asset_symbol": { "type": "string", "minLength": 1 },
+        "collateral_symbol": {
+          "oneOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+        },
+        "total_assets": { "$ref": "#/$defs/DecimalString" },
+        "total_assets_usd": {
+          "oneOf": [{ "$ref": "#/$defs/DecimalString" }, { "type": "null" }]
+        },
+        "liquidity_assets": { "$ref": "#/$defs/DecimalString" },
+        "liquidity_usd": {
+          "oneOf": [{ "$ref": "#/$defs/DecimalString" }, { "type": "null" }]
+        },
+        "utilization": {
+          "oneOf": [{ "$ref": "#/$defs/DecimalString" }, { "type": "null" }]
+        }
+      }
+    },
+    "HydratedCatalogEntry": {
+      "allOf": [{ "$ref": "#/$defs/CatalogEntry" }],
+      "type": "object",
+      "unevaluatedProperties": false,
+      "required": [
+        "analysis_available",
+        "availability",
+        "metrics",
+        "source",
+        "fetched_at",
+        "freshness",
+        "age_seconds",
+        "block_number",
+        "warnings"
+      ],
+      "properties": {
+        "analysis_available": { "type": "boolean" },
+        "availability": {
+          "enum": [
+            "available",
+            "catalog_inactive",
+            "not_found",
+            "delisted",
+            "data_conflict",
+            "critical_data_missing",
+            "provider_unavailable"
+          ]
+        },
+        "metrics": {
+          "oneOf": [{ "$ref": "#/$defs/CatalogMetrics" }, { "type": "null" }]
+        },
+        "source": {
+          "oneOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+        },
+        "fetched_at": {
+          "oneOf": [
+            { "type": "string", "format": "date-time" },
+            { "type": "null" }
+          ]
+        },
+        "freshness": {
+          "oneOf": [
+            { "enum": ["fresh", "stale_usable", "expired"] },
+            { "type": "null" }
+          ]
+        },
+        "age_seconds": {
+          "oneOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }]
+        },
+        "block_number": {
+          "oneOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }]
+        },
+        "warnings": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
         }
       }
     }

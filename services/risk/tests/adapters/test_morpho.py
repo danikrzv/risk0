@@ -1,3 +1,4 @@
+import copy
 from datetime import timedelta
 from decimal import Decimal
 
@@ -12,6 +13,8 @@ WETH_USDC = "0x94b823e6bd8ea533b4e33fbc307faea0b307301bc48763acc4d4aa4def7636cd"
 MEV_CAPITAL_WETH = "0x9a8bC3B04b7f3D87cfC09ba407dCED575f2d61D8"
 BELEM_RWA_EURCV = "0xD6d4b804014EF27836dBe9f8f6Bf6c71251548Ec"
 INDEXED_BLOCK = 26161049
+V1_ALLOCATIONS_PATH = f"/v0/vaults-v1/1:{MEV_CAPITAL_WETH}/allocations"
+V2_ALLOCATIONS_PATH = f"/v0/vaults-v2/1:{BELEM_RWA_EURCV}/allocations"
 
 
 def test_market_converts_integer_units_with_token_decimals(morpho_client):
@@ -96,7 +99,7 @@ def test_vault_v2_snapshot_reports_liquidity_and_idle_assets(morpho_client):
         (BELEM_RWA_EURCV, "v2", 8),
     ],
 )
-def test_allocation_weights_sum_to_one_within_one_base_unit(
+def test_allocation_weights_use_provider_total_without_self_normalizing(
     morpho_client, address, version, expected_markets
 ):
     envelope = morpho_client.get_allocations(address, version)
@@ -105,9 +108,11 @@ def test_allocation_weights_sum_to_one_within_one_base_unit(
     assert len(allocations) == expected_markets
     assert all(isinstance(item.weight, Decimal) for item in allocations)
     assert all(Decimal(0) <= item.weight <= Decimal(1) for item in allocations)
-    assert abs(sum(item.weight for item in allocations) - Decimal(1)) <= Decimal(
-        "1e-18"
-    )
+    total_weight = sum(item.weight for item in allocations)
+    if version == "v2":
+        assert abs(total_weight - Decimal(1)) <= Decimal("1e-24")
+    else:
+        assert Decimal("0.999") < total_weight < Decimal(1)
     assert envelope.block_number == INDEXED_BLOCK
     assert envelope.source.endswith(f"/1:{address}/allocations")
 
@@ -165,6 +170,43 @@ def test_provider_failure_returns_stale_cache_with_original_metadata(
     assert stale.block_number == first.block_number
     assert stale.source == first.source
     assert stale.value == first.value
+
+
+def test_provider_failure_after_24_hour_retention_raises_unavailable(
+    morpho_client, morpho_api, clock
+):
+    from app.adapters.morpho import MorphoUnavailableError
+
+    morpho_client.get_market(WETH_USDC)
+    clock.advance(timedelta(hours=24))
+    morpho_api.mode = "down"
+
+    with pytest.raises(MorphoUnavailableError):
+        morpho_client.get_market(WETH_USDC)
+
+
+def test_malformed_numeric_payload_returns_sanitized_stale_cache(
+    morpho_client, morpho_api, clock
+):
+    first = morpho_client.get_market(WETH_USDC)
+    clock.advance(timedelta(minutes=5))
+    morpho_api.market_graphql(WETH_USDC)["state"]["supplyAssetsUsd"] = "NaN"
+
+    stale = morpho_client.get_market(WETH_USDC)
+
+    assert stale.freshness == "stale_usable"
+    assert stale.value == first.value
+
+
+def test_malformed_numeric_payload_without_cache_raises_unavailable(
+    morpho_client, morpho_api
+):
+    from app.adapters.morpho import MorphoUnavailableError
+
+    morpho_api.market_graphql(WETH_USDC)["state"]["supplyAssetsUsd"] = "not-decimal"
+
+    with pytest.raises(MorphoUnavailableError):
+        morpho_client.get_market(WETH_USDC)
 
 
 def test_provider_failure_without_cache_raises_unavailable(morpho_client, morpho_api):
@@ -238,6 +280,62 @@ def test_conflicting_lltv_between_rest_and_graphql_is_rejected(
 
     with pytest.raises(MorphoUnavailableError, match="lltv"):
         morpho_client.get_market(WETH_USDC)
+
+
+@pytest.mark.parametrize("mutation", ["missing", "duplicate"])
+def test_v1_allocations_reject_incomplete_or_duplicate_markets(
+    morpho_client, morpho_api, mutation
+):
+    from app.adapters.morpho import MorphoUnavailableError
+
+    allocations = morpho_api.rest[V1_ALLOCATIONS_PATH]["data"]["allocations"]
+    if mutation == "missing":
+        allocations.pop(0)
+    else:
+        allocations.append(copy.deepcopy(allocations[0]))
+
+    with pytest.raises(MorphoUnavailableError):
+        morpho_client.get_allocations(MEV_CAPITAL_WETH, "v1")
+
+
+@pytest.mark.parametrize("mutation", ["missing", "duplicate", "partial"])
+def test_v2_allocations_reject_incomplete_duplicate_or_partial_caps(
+    morpho_client, morpho_api, mutation
+):
+    from app.adapters.morpho import MorphoUnavailableError
+
+    caps = morpho_api.rest[V2_ALLOCATIONS_PATH]["data"]["allocations"][0]["caps"]
+    market_caps = [cap for cap in caps if cap["cap_type"] == "market_v1"]
+    if mutation == "missing":
+        caps.remove(market_caps[-1])
+    elif mutation == "duplicate":
+        caps.append(copy.deepcopy(market_caps[0]))
+    else:
+        market_caps[-1]["expected_supply_assets"] = str(
+            int(market_caps[-1]["expected_supply_assets"]) - 2
+        )
+
+    with pytest.raises(MorphoUnavailableError):
+        morpho_client.get_allocations(BELEM_RWA_EURCV, "v2")
+
+
+def test_v2_allocation_total_allows_one_base_unit_rounding(
+    morpho_client, morpho_api
+):
+    caps = morpho_api.rest[V2_ALLOCATIONS_PATH]["data"]["allocations"][0]["caps"]
+    market_cap = next(
+        cap
+        for cap in caps
+        if cap["cap_type"] == "market_v1"
+        and int(cap["expected_supply_assets"]) > 1
+    )
+    market_cap["expected_supply_assets"] = str(
+        int(market_cap["expected_supply_assets"]) - 1
+    )
+
+    allocations = morpho_client.get_allocations(BELEM_RWA_EURCV, "v2").value
+
+    assert len(allocations) == 8
 
 
 def test_source_urls_never_include_credentials(morpho_api, cache, clock):

@@ -151,10 +151,12 @@ def test_analysis_request_schema_requires_at_least_one_scenario():
         Draft202012Validator(load_schema("analysis-request.schema.json")).validate(payload)
 
 
-def test_catalog_schema_requires_provenance_and_validates_catalog():
+def test_catalog_schema_requires_provenance_and_validates_catalog_definition():
     schema = load_schema("catalog.schema.json")
     catalog = json.loads((ROOT / "data" / "catalog" / "ethereum.json").read_text())
-    validator = Draft202012Validator(schema)
+    validator = Draft202012Validator(
+        {"$ref": "#/$defs/CatalogDocument", "$defs": schema["$defs"]}
+    )
     validator.validate(catalog)
 
     for field in ("provenance", "provenance_label"):

@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from app.contracts.models import CatalogEntry, CatalogResponse
+from app.contracts.models import CatalogDocument, CatalogEntry
 
 
 class CatalogRepository:
@@ -8,5 +8,5 @@ class CatalogRepository:
         self._path = path
 
     def list_entries(self) -> tuple[CatalogEntry, ...]:
-        catalog = CatalogResponse.model_validate_json(self._path.read_text())
+        catalog = CatalogDocument.model_validate_json(self._path.read_text())
         return catalog.entries

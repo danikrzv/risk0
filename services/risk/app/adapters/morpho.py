@@ -2,7 +2,7 @@ import json
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal, localcontext
+from decimal import Decimal, DecimalException, localcontext
 from typing import Any, TypeVar
 from urllib.parse import urlsplit, urlunsplit
 
@@ -147,7 +147,15 @@ class MorphoClient:
             raise MorphoDataConflictError(
                 f"Morpho data conflict for {key}: {error}"
             ) from error
-        except (_ProviderError, KeyError, TypeError, ValueError, ValidationError) as error:
+        except (
+            _ProviderError,
+            DecimalException,
+            KeyError,
+            OverflowError,
+            TypeError,
+            ValueError,
+            ValidationError,
+        ) as error:
             if cached is not None and cached.freshness is not Freshness.EXPIRED:
                 return _restore(envelope_type, cached.payload, cached.freshness)
             raise MorphoUnavailableError(
@@ -277,7 +285,14 @@ class MorphoClient:
                 ),
                 share_price=_units(state["share_price_ray"], RAY_DECIMALS),
                 total_assets_usd=_optional_decimal(total_assets_usd),
-                liquidity_usd=_optional_decimal(liquidity_usd),
+                liquidity_usd=(
+                    _optional_decimal(liquidity_usd)
+                    if liquidity_usd is not None
+                    else _derived_usd(
+                        _units(state["withdrawable_assets"], decimals),
+                        asset.price_usd,
+                    )
+                ),
                 listed=metadata.get("listed"),
                 sources=(
                     self._url(config_path),
@@ -304,24 +319,24 @@ class MorphoClient:
         decimals = int(config["asset"]["decimals"])
 
         if version == "v2":
-            rows = _v2_allocation_rows(payload["allocations"], decimals)
+            rows, provider_total_raw = _v2_allocation_rows(
+                payload["allocations"], decimals
+            )
         else:
-            rows = [
-                (
-                    item["market_id"],
-                    None,
-                    _units(item["supply_assets"], decimals),
-                    _optional_units(item.get("supply_cap"), decimals),
-                    (item.get("pending") or {}).get("removal") is not None,
-                )
-                for item in payload["allocations"]
-            ]
+            state = self._get(f"{config_path}/state")
+            _require_identity(state, "address", address)
+            rows = _v1_allocation_rows(payload["allocations"], decimals)
+            provider_total_raw = _nonnegative_integer(state["total_assets"])
 
-        total = sum((row[2] for row in rows), Decimal(0))
+        selected_total_raw = sum((row[5] for row in rows), 0)
+        if version == "v1" and selected_total_raw > provider_total_raw + 1:
+            raise _DataConflictError("V1 allocations exceed vault total_assets")
+
+        total = _units(provider_total_raw, decimals)
         allocations = []
         with localcontext() as context:
             context.prec = 60
-            for market_id, adapter, assets, cap, pending_removal in rows:
+            for market_id, adapter, assets, cap, pending_removal, _ in rows:
                 allocations.append(
                     AllocationSnapshot(
                         vault_address=payload["vault_address"],
@@ -397,43 +412,119 @@ class MorphoClient:
 
 def _v2_allocation_rows(
     adapters: list[dict[str, Any]], decimals: int
-) -> list[tuple[str | None, str | None, Decimal, Decimal | None, bool]]:
+) -> tuple[
+    list[tuple[str | None, str | None, Decimal, Decimal | None, bool, int]], int
+]:
     rows = []
+    cap_ids: set[str] = set()
+    adapter_addresses: set[str] = set()
+    provider_total_raw = 0
     for adapter in adapters:
         address = adapter["adapter_address"]
+        address_key = address.lower()
+        if address_key in adapter_addresses:
+            raise _DataConflictError(f"duplicate V2 adapter {address}")
+        adapter_addresses.add(address_key)
         pending_removal = (adapter.get("pending") or {}).get("removal") is not None
         caps = adapter.get("caps") or ()
+        if not isinstance(caps, list):
+            raise _ProviderError(f"adapter {address} caps must be a list")
+        for cap in caps:
+            cap_id = str(cap["cap_id"]).lower()
+            if cap_id in cap_ids:
+                raise _DataConflictError(f"duplicate V2 cap {cap_id}")
+            cap_ids.add(cap_id)
+        adapter_caps = [cap for cap in caps if cap.get("cap_type") == "adapter"]
+        if len(adapter_caps) != 1:
+            raise _DataConflictError(
+                f"adapter {address} must have exactly one adapter-level cap"
+            )
+        adapter_cap = adapter_caps[0]
+        adapter_assets_raw = _nonnegative_integer(
+            adapter_cap.get("real_assets")
+            if adapter_cap.get("real_assets") is not None
+            else adapter_cap["allocated_assets"]
+        )
+        provider_total_raw += adapter_assets_raw
         if adapter.get("adapter_kind") == "morpho_market_v1_v2":
-            for cap in caps:
-                if cap.get("cap_type") != "market_v1":
-                    continue
-                assets = cap.get("expected_supply_assets") or cap["allocated_assets"]
+            market_caps = [cap for cap in caps if cap.get("cap_type") == "market_v1"]
+            market_ids: set[str] = set()
+            selected_raw = 0
+            for cap in market_caps:
+                market_id = str(cap["market_id"])
+                market_key = market_id.lower()
+                if market_key in market_ids:
+                    raise _DataConflictError(f"duplicate V2 market cap {market_id}")
+                market_ids.add(market_key)
+                assets_raw = _nonnegative_integer(
+                    cap.get("expected_supply_assets")
+                    if cap.get("expected_supply_assets") is not None
+                    else cap["allocated_assets"]
+                )
+                selected_raw += assets_raw
                 rows.append(
                     (
-                        cap["market_id"],
+                        market_id,
                         address,
-                        _units(assets, decimals),
+                        _units(assets_raw, decimals),
                         _optional_units(cap.get("absolute_cap"), decimals),
                         pending_removal,
+                        assets_raw,
                     )
+                )
+            if abs(selected_raw - adapter_assets_raw) > 1:
+                raise _DataConflictError(
+                    f"V2 market caps for adapter {address} are incomplete"
                 )
             continue
         # Unknown adapter kinds stay visible as adapter-level exposure.
-        adapter_cap = next(
-            (cap for cap in caps if cap.get("cap_type") == "adapter"), None
-        )
-        if adapter_cap is None:
-            raise _ProviderError(f"adapter {address} has no adapter-level cap")
-        assets = adapter_cap.get("real_assets") or adapter_cap["allocated_assets"]
         rows.append(
             (
                 None,
                 address,
-                _units(assets, decimals),
+                _units(adapter_assets_raw, decimals),
                 _optional_units(adapter_cap.get("absolute_cap"), decimals),
                 pending_removal,
+                adapter_assets_raw,
             )
         )
+    selected_total_raw = sum((row[5] for row in rows), 0)
+    if abs(selected_total_raw - provider_total_raw) > 1:
+        raise _DataConflictError(
+            "selected V2 allocations do not match adapter-level provider totals"
+        )
+    return rows, provider_total_raw
+
+
+def _v1_allocation_rows(
+    allocations: list[dict[str, Any]], decimals: int
+) -> list[tuple[str, None, Decimal, Decimal | None, bool, int]]:
+    market_ids: set[str] = set()
+    queue_indices: set[int] = set()
+    rows = []
+    for item in allocations:
+        market_id = str(item["market_id"])
+        market_key = market_id.lower()
+        if market_key in market_ids:
+            raise _DataConflictError(f"duplicate V1 market allocation {market_id}")
+        market_ids.add(market_key)
+        queue_index = int(item["withdraw_queue_index"])
+        if queue_index in queue_indices:
+            raise _DataConflictError(f"duplicate V1 withdraw queue index {queue_index}")
+        queue_indices.add(queue_index)
+        assets_raw = _nonnegative_integer(item["supply_assets"])
+        rows.append(
+            (
+                market_id,
+                None,
+                _units(assets_raw, decimals),
+                _optional_units(item.get("supply_cap"), decimals),
+                (item.get("pending") or {}).get("removal") is not None,
+                assets_raw,
+            )
+        )
+    if queue_indices != set(range(len(allocations))):
+        raise _DataConflictError("V1 withdraw queue is incomplete")
     return rows
 
 
@@ -473,9 +564,7 @@ def _asset(
 
 
 def _units(raw: object, decimals: int) -> Decimal:
-    integer = int(str(raw))
-    if integer < 0:
-        raise ValueError("token amounts must be non-negative")
+    integer = _nonnegative_integer(raw)
     # String construction is exact regardless of the active decimal precision.
     return Decimal(f"{integer}E-{decimals}")
 
@@ -487,11 +576,30 @@ def _optional_units(raw: object | None, decimals: int) -> Decimal | None:
 def _optional_decimal(value: object | None) -> Decimal | None:
     if value is None:
         return None
-    if isinstance(value, Decimal):
-        return value
-    if isinstance(value, (int, str)) and not isinstance(value, bool):
-        return Decimal(value)
-    raise _ProviderError(f"unexpected numeric value type {type(value).__name__}")
+    if not isinstance(value, (Decimal, int, str)) or isinstance(value, bool):
+        raise _ProviderError(f"unexpected numeric value type {type(value).__name__}")
+    try:
+        decimal_value = value if isinstance(value, Decimal) else Decimal(value)
+    except DecimalException as error:
+        raise _ProviderError("invalid decimal value") from error
+    if not decimal_value.is_finite() or decimal_value < 0:
+        raise _ProviderError("decimal values must be finite and non-negative")
+    return decimal_value
+
+
+def _nonnegative_integer(raw: object) -> int:
+    integer = int(str(raw))
+    if integer < 0:
+        raise ValueError("token amounts must be non-negative")
+    return integer
+
+
+def _derived_usd(amount: Decimal, price: Decimal | None) -> Decimal | None:
+    if price is None:
+        return None
+    with localcontext() as context:
+        context.prec = 60
+        return amount * price
 
 
 def _decode(content: bytes) -> dict[str, Any]:

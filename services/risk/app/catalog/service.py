@@ -1,8 +1,5 @@
 from collections.abc import Callable
 from datetime import UTC, datetime
-from enum import StrEnum
-
-from pydantic import Field
 
 from app.adapters.morpho import (
     MorphoClient,
@@ -12,49 +9,15 @@ from app.adapters.morpho import (
 )
 from app.catalog.repository import CatalogRepository
 from app.contracts.models import (
+    CatalogAvailability,
     CatalogEntityType,
     CatalogEntry,
-    ContractModel,
-    DecimalValue,
+    CatalogMetrics,
+    CatalogResponse,
     FreshnessStatus,
+    HydratedCatalogEntry,
 )
 from app.domain.snapshots import DataEnvelope, MarketSnapshot, VaultSnapshot
-
-
-class CatalogAvailability(StrEnum):
-    AVAILABLE = "available"
-    CATALOG_INACTIVE = "catalog_inactive"
-    NOT_FOUND = "not_found"
-    DELISTED = "delisted"
-    DATA_CONFLICT = "data_conflict"
-    PROVIDER_UNAVAILABLE = "provider_unavailable"
-
-
-class CatalogMetrics(ContractModel):
-    asset_symbol: str
-    collateral_symbol: str | None
-    total_assets: DecimalValue
-    total_assets_usd: DecimalValue | None
-    liquidity_assets: DecimalValue
-    liquidity_usd: DecimalValue | None
-    utilization: DecimalValue | None
-
-
-class HydratedCatalogEntry(CatalogEntry):
-    analysis_available: bool
-    availability: CatalogAvailability
-    metrics: CatalogMetrics | None
-    source: str | None
-    fetched_at: datetime | None
-    freshness: FreshnessStatus | None
-    age_seconds: int | None = Field(default=None, ge=0)
-    block_number: int | None = Field(default=None, ge=0)
-    warnings: tuple[str, ...] = ()
-
-
-class HydratedCatalogResponse(ContractModel):
-    entries: tuple[HydratedCatalogEntry, ...]
-    generated_at: datetime
 
 
 class CatalogService:
@@ -69,8 +32,8 @@ class CatalogService:
         self._morpho = morpho
         self._clock = clock
 
-    def list_hydrated(self) -> HydratedCatalogResponse:
-        return HydratedCatalogResponse(
+    def list_hydrated(self) -> CatalogResponse:
+        return CatalogResponse(
             entries=tuple(
                 self._hydrate(entry) for entry in self._repository.list_entries()
             ),
@@ -116,6 +79,15 @@ class CatalogService:
         elif snapshot.listed is False:
             availability = CatalogAvailability.DELISTED
             warnings.append("Morpho no longer lists this entity; analysis is disabled.")
+        else:
+            critical_missing = _critical_missing(snapshot)
+            if critical_missing:
+                availability = CatalogAvailability.CRITICAL_DATA_MISSING
+                warnings.append(
+                    "Critical Morpho fields are missing; analysis is disabled: "
+                    + ", ".join(critical_missing)
+                    + "."
+                )
 
         age_seconds = max(
             0, int((self._clock() - envelope.fetched_at).total_seconds())
@@ -172,6 +144,27 @@ def _metrics(snapshot: MarketSnapshot | VaultSnapshot) -> CatalogMetrics:
         liquidity_usd=snapshot.liquidity_usd,
         utilization=None,
     )
+
+
+def _critical_missing(snapshot: MarketSnapshot | VaultSnapshot) -> tuple[str, ...]:
+    if isinstance(snapshot, MarketSnapshot):
+        fields = (
+            ("loan_asset.price_usd", snapshot.loan_asset.price_usd),
+            ("collateral_asset.price_usd", snapshot.collateral_asset.price_usd),
+            ("total_supply_usd", snapshot.total_supply_usd),
+            ("total_borrow_usd", snapshot.total_borrow_usd),
+            ("liquidity_usd", snapshot.liquidity_usd),
+            ("utilization", snapshot.utilization),
+            ("listed", snapshot.listed),
+        )
+    else:
+        fields = (
+            ("asset.price_usd", snapshot.asset.price_usd),
+            ("total_assets_usd", snapshot.total_assets_usd),
+            ("liquidity_usd", snapshot.liquidity_usd),
+            ("listed", snapshot.listed),
+        )
+    return tuple(name for name, value in fields if value is None)
 
 
 def _unavailable(

@@ -2,7 +2,7 @@
   "_meta": {
     "recorded_at": "2026-10-10T09:10:52+00:00",
     "source": "https://api.morpho.org",
-    "sanitization": "Public, unauthenticated Morpho API responses. GraphQL extensions and V2 cap_data blobs removed. No credentials, RPC URLs, or user positions."
+    "sanitization": "Public, unauthenticated Morpho API responses. GraphQL extensions removed; public V2 cap_data blobs retained. No credentials, RPC URLs, or user positions."
   },
   "rest": {
     "/v0/vaults-v1/1:0x9a8bC3B04b7f3D87cfC09ba407dCED575f2d61D8/allocations": {

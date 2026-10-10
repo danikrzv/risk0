@@ -6,7 +6,8 @@ from fastapi import APIRouter, Depends
 
 from app.adapters.morpho import DEFAULT_BASE_URL, MorphoClient
 from app.catalog.repository import CatalogRepository
-from app.catalog.service import CatalogService, HydratedCatalogResponse
+from app.catalog.service import CatalogService
+from app.contracts.models import CatalogResponse
 from app.infrastructure.cache import SQLiteCache
 
 
@@ -36,5 +37,5 @@ def get_catalog_service() -> CatalogService:
 @router.get("/catalog")
 def list_catalog(
     service: CatalogService = Depends(get_catalog_service),
-) -> HydratedCatalogResponse:
+) -> CatalogResponse:
     return service.list_hydrated()

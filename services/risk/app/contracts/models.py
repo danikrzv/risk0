@@ -104,6 +104,16 @@ class RecommendationDecision(StrEnum):
     UNAVAILABLE = "UNAVAILABLE"
 
 
+class CatalogAvailability(StrEnum):
+    AVAILABLE = "available"
+    CATALOG_INACTIVE = "catalog_inactive"
+    NOT_FOUND = "not_found"
+    DELISTED = "delisted"
+    DATA_CONFLICT = "data_conflict"
+    CRITICAL_DATA_MISSING = "critical_data_missing"
+    PROVIDER_UNAVAILABLE = "provider_unavailable"
+
+
 class CatalogEntry(ContractModel):
     entity_id: NonEmptyString
     chain_id: int = Field(ge=1, le=1)
@@ -127,8 +137,36 @@ class CatalogEntry(ContractModel):
         return modes
 
 
-class CatalogResponse(ContractModel):
+class CatalogDocument(ContractModel):
     entries: tuple[CatalogEntry, ...]
+
+
+class CatalogMetrics(ContractModel):
+    asset_symbol: NonEmptyString
+    collateral_symbol: NonEmptyString | None
+    total_assets: DecimalValue
+    total_assets_usd: DecimalValue | None
+    liquidity_assets: DecimalValue
+    liquidity_usd: DecimalValue | None
+    utilization: DecimalValue | None
+
+
+class HydratedCatalogEntry(CatalogEntry):
+    analysis_available: bool
+    availability: CatalogAvailability
+    metrics: CatalogMetrics | None
+    source: NonEmptyString | None
+    fetched_at: datetime | None
+    freshness: FreshnessStatus | None
+    age_seconds: int | None = Field(default=None, ge=0)
+    block_number: int | None = Field(default=None, ge=0)
+    warnings: tuple[NonEmptyString, ...] = ()
+
+
+class CatalogResponse(ContractModel):
+    schema_version: Literal["1.0.0"] = "1.0.0"
+    entries: tuple[HydratedCatalogEntry, ...]
+    generated_at: datetime
 
 
 class PositionInput(ContractModel):

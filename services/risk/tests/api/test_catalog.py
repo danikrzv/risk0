@@ -4,6 +4,8 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import ValidationError
 
 from app.main import app
 from tests.conftest import MORPHO_BASE_URL
@@ -11,6 +13,9 @@ from tests.conftest import MORPHO_BASE_URL
 
 ROOT = Path(__file__).resolve().parents[4]
 CATALOG_PATH = ROOT / "data" / "catalog" / "ethereum.json"
+CATALOG_SCHEMA_PATH = (
+    ROOT / "packages" / "contracts" / "schemas" / "catalog.schema.json"
+)
 ENTITY_IDS = [
     "belem-rwa-eurcv",
     "mev-capital-weth",
@@ -58,6 +63,9 @@ def write_catalog(tmp_path, mutate):
 
 def test_catalog_hydrates_all_entries_with_fresh_live_data(api, clock):
     response = api(api.default).get("/v1/catalog")
+    payload = response.json()
+    Draft202012Validator(json.loads(CATALOG_SCHEMA_PATH.read_text())).validate(payload)
+    assert payload["schema_version"] == "1.0.0"
     entries = entries_by_id(response)
 
     assert list(entries) == ENTITY_IDS
@@ -86,6 +94,54 @@ def test_catalog_hydrates_all_entries_with_fresh_live_data(api, clock):
         "1857.124314225046976544"
     )
     assert entries["mev-capital-weth"]["metrics"]["utilization"] is None
+
+
+def test_catalog_schema_rejects_undeclared_hydration_fields(api):
+    payload = api(api.default).get("/v1/catalog").json()
+    payload["entries"][0]["undeclared"] = True
+
+    with pytest.raises(ValidationError):
+        Draft202012Validator(json.loads(CATALOG_SCHEMA_PATH.read_text())).validate(
+            payload
+        )
+
+
+@pytest.mark.parametrize(
+    ("entity_id", "mutate", "missing_field"),
+    [
+        (
+            "weth-usdc-860",
+            lambda api: api.market_graphql(WETH_USDC)["loanAsset"].update(
+                {"price": None}
+            ),
+            "loan_asset.price_usd",
+        ),
+        (
+            "weth-usdc-860",
+            lambda api: api.market_graphql(WETH_USDC)["state"].pop(
+                "liquidityAssetsUsd"
+            ),
+            "liquidity_usd",
+        ),
+        (
+            "mev-capital-weth",
+            lambda api: api.vault_graphql(
+                "v1", "0x9a8bC3B04b7f3D87cfC09ba407dCED575f2d61D8"
+            ).update({"listed": None}),
+            "listed",
+        ),
+    ],
+)
+def test_partial_provider_payload_disables_analysis(
+    api, morpho_api, entity_id, mutate, missing_field
+):
+    mutate(morpho_api)
+
+    entry = entries_by_id(api(api.default).get("/v1/catalog"))[entity_id]
+
+    assert entry["analysis_available"] is False
+    assert entry["availability"] == "critical_data_missing"
+    assert any(missing_field in warning for warning in entry["warnings"])
 
 
 def test_provider_failure_with_cache_returns_stale_values_and_age(
@@ -123,6 +179,24 @@ def test_provider_failure_without_cache_never_fabricates_metrics(api, morpho_api
         assert entry["block_number"] is None
         assert entry["warnings"]
         assert entry["provenance_label"]
+
+
+def test_provider_failure_after_24_hours_does_not_use_expired_cache(
+    api, morpho_api, clock
+):
+    service = api.default
+    service.list_hydrated()
+    clock.advance(timedelta(hours=24))
+    morpho_api.mode = "down"
+
+    entries = entries_by_id(api(service).get("/v1/catalog"))
+
+    assert all(entry["analysis_available"] is False for entry in entries.values())
+    assert all(
+        entry["availability"] == "provider_unavailable"
+        for entry in entries.values()
+    )
+    assert all(entry["freshness"] is None for entry in entries.values())
 
 
 def test_inactive_entry_remains_identifiable_but_analysis_disabled(

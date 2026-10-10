@@ -297,3 +297,35 @@ def test_exposure_target_and_mode_fields_are_validated(
 
     assert response.status_code == expected, response.text
 
+
+def test_incident_graph_reads_health_and_exposure_impacts_once(
+    client, radar_context, monkeypatch
+):
+    seed_graph(radar_context)
+    active = incident("incident-market", source_entity_id=MARKET)
+    radar_context.incidents.upsert_active(active)
+    for _ in range(3):
+        radar_context.exposures.create(
+            ExposureCreateRequest(entity_id=VAULT, mode="lender", amount=Decimal("1"), numeraire="USDC"),
+            created_at=NOW,
+        )
+    calls = {"health": 0, "exposure_impacts": 0}
+    latest_health_all = radar_context.states.latest_health_all
+    exposure_impacts = radar_context.exposures.impacts
+
+    def counted_health():
+        calls["health"] += 1
+        return latest_health_all()
+
+    def counted_impacts(exposure_id):
+        calls["exposure_impacts"] += 1
+        return exposure_impacts(exposure_id)
+
+    monkeypatch.setattr(radar_context.states, "latest_health_all", counted_health)
+    monkeypatch.setattr(radar_context.exposures, "impacts", counted_impacts)
+
+    response = client.get(f"/v1/graph/incidents/{active.incident_id}")
+
+    assert response.status_code == 200
+    assert calls["health"] == 1
+    assert calls["exposure_impacts"] <= 1

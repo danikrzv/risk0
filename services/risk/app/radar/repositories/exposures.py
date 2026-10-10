@@ -76,6 +76,22 @@ class ExposureRepository:
             ).fetchall()
         return tuple(_exposure(row) for row in rows)
 
+    def list_exposures_for_incident(
+        self, incident_id: str
+    ) -> tuple[ManualExposure, ...]:
+        """Exposures with at least one stored impact of `incident_id`, in one query."""
+        with self._db.transaction() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM manual_exposures WHERE exposure_id IN (
+                    SELECT exposure_id FROM exposure_impacts WHERE incident_id = ?
+                )
+                ORDER BY created_at, exposure_id
+                """,
+                (incident_id,),
+            ).fetchall()
+        return tuple(_exposure(row) for row in rows)
+
     def replace_impacts(
         self, exposure_id: str, impacts: Iterable[IncidentImpact]
     ) -> int:

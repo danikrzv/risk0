@@ -137,8 +137,9 @@ def incident_graph(
     for impact in impacts:
         entity_ids.update(impact.path)
         entity_ids.add(impact.target_entity_id)
+    latest_health = context.states.latest_health_all()
     entities = tuple(
-        _entity_with_health(entity, context.states.latest_health_all())
+        _entity_with_health(entity, latest_health)
         for entity in context.topology.entities(entity_ids=tuple(entity_ids))
     )
     relationships = tuple(
@@ -153,19 +154,7 @@ def incident_graph(
         if similarity.catalog_entity_id in entity_ids
         and similarity.candidate_entity_id in entity_ids
     )
-    exposure_ids = {
-        exposure.exposure_id
-        for exposure in context.exposures.list_exposures()
-        if any(
-            impact.incident_id == incident_id
-            for impact in context.exposures.impacts(exposure.exposure_id)
-        )
-    }
-    exposures = tuple(
-        exposure
-        for exposure in context.exposures.list_exposures()
-        if exposure.exposure_id in exposure_ids
-    )
+    exposures = context.exposures.list_exposures_for_incident(incident_id)
     return IncidentGraphResponse(
         incident=incident,
         entities=entities,

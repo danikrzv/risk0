@@ -38,6 +38,19 @@ function change(label: string, value: string) {
 }
 
 describe("ExposureRail", () => {
+  it("offers only markets as borrower targets, which the risk service requires", () => {
+    const onSubmit = vi.fn()
+    render(<ExposureRail entities={entities} onSubmit={onSubmit} />)
+
+    fireEvent.click(screen.getByRole("radio", { name: "Borrower exposure" }))
+
+    const options = Array.from(screen.getByLabelText("Exposure target").querySelectorAll("option"))
+    expect(options.map((option) => option.getAttribute("value"))).toEqual(["market:1:weth-usdc"])
+    expect(screen.getByLabelText("Exposure target")).toHaveValue("market:1:weth-usdc")
+    fireEvent.click(screen.getByRole("button", { name: "Add exposure" }))
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ entity_id: "market:1:weth-usdc", mode: "borrower" }))
+  })
+
   it("starts with a sensible lender preset and submits a contract request", () => {
     const onSubmit = vi.fn()
     render(<ExposureRail entities={entities} onSubmit={onSubmit} />)
@@ -73,7 +86,7 @@ describe("ExposureRail", () => {
     fireEvent.click(screen.getByRole("button", { name: "Add exposure" }))
 
     expect(onSubmit).toHaveBeenCalledWith({
-      entity_id: "vault:1:catalog",
+      entity_id: "market:1:weth-usdc",
       mode: "borrower",
       amount: "75000",
       numeraire: "USDC",

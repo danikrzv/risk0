@@ -1,7 +1,7 @@
 "use client"
 
 import type { ExposureCreateRequest, PositionMode, RadarEntity } from "@risk0/contracts"
-import { FormEvent, useEffect, useState } from "react"
+import { FormEvent, useEffect, useMemo, useState } from "react"
 
 import { compareDecimal, isPositiveDecimal, normalizeDecimal, percentToRatio } from "../lib/format"
 
@@ -24,9 +24,16 @@ export function ExposureRail({
   onSubmit: (request: ExposureCreateRequest) => void | Promise<void>
   busy?: boolean
 }) {
-  const targets = entities.filter((entity) => entity.entity_type === "vault" || entity.entity_type === "market")
-  const [entityId, setEntityId] = useState(targets[0]?.entity_id ?? "")
   const [mode, setMode] = useState<PositionMode>("lender")
+  // The risk service accepts lenders on vaults or markets, but borrowers only on markets.
+  const targets = useMemo(
+    () =>
+      entities.filter(
+        (entity) => entity.entity_type === "market" || (mode === "lender" && entity.entity_type === "vault"),
+      ),
+    [entities, mode],
+  )
+  const [entityId, setEntityId] = useState(targets[0]?.entity_id ?? "")
   const [amount, setAmount] = useState(lenderPreset.amount)
   const [numeraire, setNumeraire] = useState(lenderPreset.numeraire)
   const [collateral, setCollateral] = useState(borrowerPreset.collateral)

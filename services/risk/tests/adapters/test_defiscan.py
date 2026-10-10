@@ -1,4 +1,5 @@
 import io
+import json
 import urllib.error
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -14,12 +15,15 @@ from app.adapters.defiscan import (
     urllib_fetch,
 )
 from app.evidence.models import (
+    CombinedEvidence,
     EvidenceDimension,
     EvidenceFormatError,
     EvidenceNotFoundError,
     EvidenceSource,
     EvidenceStatus,
 )
+from app.evidence.scoring import score_evidence
+from app.infrastructure.freshness import Freshness
 
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "evidence"
@@ -173,6 +177,61 @@ def test_review_normalizes_only_dimensions_defiscan_covers():
         assert factor.source_url == REVIEW_URL
         assert factor.observed_at == datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
         assert factor.rule
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
+        ("functions",),
+        ("admins",),
+        ("admins", 0, "functions"),
+        ("contracts",),
+        ("dependencies",),
+        ("dependencyEntityGroups",),
+        ("audits",),
+    ),
+)
+def test_review_rejects_malformed_mixed_nested_members(path):
+    review = json.loads(fixture_bytes("defiscan-review.json"))
+    members = review
+    for part in path:
+        members = members[part]
+    members.append("malformed provider member")
+    client, _ = make_client(
+        {
+            INDEX_URL: fixture_bytes("defiscan-index.json"),
+            REVIEW_URL: json.dumps(review).encode(),
+        }
+    )
+
+    with pytest.raises(EvidenceFormatError):
+        client.get_review("sample-protocol")
+
+
+def test_old_compiled_at_prevents_recently_modified_review_appearing_fresh():
+    review = json.loads(fixture_bytes("defiscan-review.json"))
+    review["compiledAt"] = "2025-09-01T12:00:00.000Z"
+    review["lastModified"] = "2026-10-09T12:00:00.000Z"
+    client, _ = make_client(
+        {
+            INDEX_URL: fixture_bytes("defiscan-index.json"),
+            REVIEW_URL: json.dumps(review).encode(),
+        }
+    )
+
+    bundle = client.get_review("sample-protocol")
+    score = score_evidence(
+        CombinedEvidence(
+            protocol="sample-protocol",
+            bundles=(bundle,),
+            evaluated_at=RETRIEVED_AT,
+        )
+    )
+
+    compiled_at = datetime(2025, 9, 1, 12, 0, tzinfo=UTC)
+    assert bundle.source_updated_at == compiled_at
+    assert {factor.observed_at for factor in bundle.factors} == {compiled_at}
+    assert score.attributions[0].freshness is Freshness.EXPIRED
 
 
 def test_missing_protocol_coverage_returns_explicit_unavailable_bundle():

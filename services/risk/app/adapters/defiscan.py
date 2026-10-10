@@ -128,7 +128,9 @@ class DefiScanClient:
         if review.get("project") != slug:
             raise EvidenceFormatError(f"DeFiScan review does not describe {slug!r}")
 
-        updated_at = _optional_time(review, "lastModified")
+        _validate_provider_lists(review)
+        timestamps = _timestamps(review)
+        updated_at = _evidence_updated_at(timestamps)
         return EvidenceBundle(
             protocol=slug,
             source=EvidenceSource.DEFISCAN,
@@ -138,7 +140,7 @@ class DefiScanClient:
             retrieved_at=retrieved_at,
             source_updated_at=updated_at,
             factors=_factors(review, review_url, updated_at),
-            observations=_observations(review),
+            observations=_observations(review, timestamps),
         )
 
     def _get_json(self, url: str) -> Mapping[str, object]:
@@ -291,12 +293,13 @@ def _audits_factor(review: Mapping[str, object]) -> tuple[Decimal, str] | None:
     return value, f"min(60, 15 x {len(audits)} audits) + {verification_note}"
 
 
-def _observations(review: Mapping[str, object]) -> tuple[EvidenceObservation, ...]:
+def _observations(
+    review: Mapping[str, object], timestamps: Mapping[str, datetime]
+) -> tuple[EvidenceObservation, ...]:
     items: list[EvidenceObservation] = []
     for key in ("publishedAt", "lastModified", "compiledAt"):
-        observed = _optional_time(review, key)
-        if observed is not None:
-            items.append(EvidenceObservation("timestamp", key, str(review[key]), observed))
+        if key in timestamps:
+            items.append(EvidenceObservation("timestamp", key, str(review[key]), timestamps[key]))
 
     for admin in _objects(review.get("admins")):
         items.append(
@@ -372,10 +375,43 @@ def _has_delay(function: Mapping[str, object]) -> bool:
     )
 
 
-def _objects(value: object) -> list[Mapping[str, object]]:
-    if not isinstance(value, list):
+def _validate_provider_lists(review: Mapping[str, object]) -> None:
+    functions = _objects(review.get("functions"), "functions")
+    admins = _objects(review.get("admins"), "admins")
+    for field in ("contracts", "dependencies", "dependencyEntityGroups", "audits", "activity"):
+        _objects(review.get(field), field)
+    for function in functions:
+        _objects(function.get("mitigations"), "functions[].mitigations")
+    for admin in admins:
+        for function in _objects(admin.get("functions"), "admins[].functions"):
+            _objects(function.get("mitigations"), "admins[].functions[].mitigations")
+
+
+def _objects(value: object, field: str = "list") -> list[Mapping[str, object]]:
+    if value is None:
         return []
-    return [item for item in value if isinstance(item, dict)]
+    if not isinstance(value, list):
+        raise EvidenceFormatError(f"{field} must be a list")
+    if any(not isinstance(item, dict) for item in value):
+        raise EvidenceFormatError(f"{field} members must be objects")
+    return value
+
+
+def _timestamps(review: Mapping[str, object]) -> dict[str, datetime]:
+    return {
+        key: observed
+        for key in ("publishedAt", "lastModified", "compiledAt")
+        if (observed := _optional_time(review, key)) is not None
+    }
+
+
+def _evidence_updated_at(timestamps: Mapping[str, datetime]) -> datetime | None:
+    relevant = [
+        timestamps[key]
+        for key in ("lastModified", "compiledAt")
+        if key in timestamps
+    ]
+    return min(relevant) if relevant else None
 
 
 def _optional_time(payload: Mapping[str, object], key: str) -> datetime | None:

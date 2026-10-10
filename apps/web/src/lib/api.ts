@@ -8,6 +8,7 @@ import type {
   IncidentGraphResponse,
   ManualExposure,
   Notification,
+  NotificationReadAllResponse,
   NotificationResponse,
   RadarEntityType,
   RadarGraphResponse,
@@ -111,11 +112,6 @@ export function markNotificationRead(notificationId: string): Promise<Notificati
   })
 }
 
-/** Upstream `POST /v1/notifications/read-all` summary (not yet in the generated contracts). */
-export interface NotificationReadAllResponse {
-  schema_version: "1.0.0"
-  updated: number
-}
 
 export function markAllNotificationsRead(): Promise<NotificationReadAllResponse> {
   return request<NotificationReadAllResponse>("/api/notifications/read-all", { method: "POST" })

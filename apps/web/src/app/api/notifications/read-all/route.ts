@@ -1,7 +1,7 @@
 // Server-side proxy that marks every notification read. The request body is
 // ignored, and only a re-built, validated summary is returned to the browser.
 
-import type { NotificationReadAllResponse } from "../../../../lib/api"
+import type { NotificationReadAllResponse } from "@risk0/contracts"
 import { upstreamErrorFailure, upstreamStatusFailure } from "../../../../lib/upstream-errors"
 
 const UPSTREAM_TIMEOUT_MS = 15_000

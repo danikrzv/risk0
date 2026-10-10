@@ -3,11 +3,10 @@
 import { useCallback, useState } from "react"
 
 /** Render limit for long lists: the first `pageSize` items, growing on request. */
-export function useListLimit(pageSize: number): [number, () => void, () => void] {
+export function useListLimit(pageSize: number): [number, () => void] {
   const [limit, setLimit] = useState(pageSize)
   const showMore = useCallback(() => setLimit((current) => current + pageSize), [pageSize])
-  const reset = useCallback(() => setLimit(pageSize), [pageSize])
-  return [limit, showMore, reset]
+  return [limit, showMore]
 }
 
 /** "Showing N of M" plus a button that reveals the next page of a capped list. */

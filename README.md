@@ -1,8 +1,8 @@
 # Risk0
 
-Risk0 is an Ethereum mainnet prototype for exploring the risk of a hypothetical
-Morpho lender or borrower position. You pick a curated vault or market, describe
-a position, and Risk0:
+Risk0 is a multi-chain Morpho risk radar and an Ethereum-mainnet decision-support
+prototype. It continuously maps vault, market, asset, oracle, protocol, and chain
+dependencies while retaining the original lender/borrower analysis flow. Risk0:
 
 1. builds the position's dependency graph (vault → allocated markets → assets,
    oracles, protocol, chain);
@@ -12,9 +12,9 @@ a position, and Risk0:
 5. returns an explainable `STAY`, `EXIT`, or `UNAVAILABLE` recommendation.
 
 **Scope: read-only and non-advisory.** Risk0 never asks for a wallet, private
-key, signature, or approval, and never sends a transaction. Positions are
-hypothetical and are not stored. Results are a model's output for a fixed
-30-day horizon, not investment advice.
+key, signature, or approval, and never sends a transaction. Manual exposures are
+hypothetical records stored only in the local radar database. Results are a
+model's output for a fixed 30-day horizon, not investment advice.
 
 ## Prerequisites
 
@@ -47,13 +47,17 @@ it into docs, issues, or pull requests.
 | `MORPHO_API_URL` | risk service | Morpho public API (default `https://api.morpho.org`). |
 | `RISK_API_URL` | web (server side only) | Where the Next.js proxy routes reach the risk service (default `http://localhost:8000`). |
 | `RISK0_DATA_MODE` | risk service | `live` (default) or `fixture`. |
+| `RISK0_RADAR_ENABLED` | risk service | Enables the continuous five-minute monitoring and hourly discovery loops. |
+| `RISK0_RADAR_DB_PATH` | risk service | Optional separate SQLite path for radar topology, history, incidents, notifications, and manual exposures. |
+| `RISK0_RADAR_SEED_FIXTURES` | risk service | Fixture/demo only: seeds the deterministic healthy radar topology. |
+| `RISK0_CATALOG_PATH` | risk service | Optional override for the version-controlled catalog JSON. |
 
 ## Running
 
 ### Fixture mode (deterministic, no network)
 
 ```bash
-RISK0_DATA_MODE=fixture uv run --project services/risk \
+RISK0_DATA_MODE=fixture RISK0_RADAR_SEED_FIXTURES=1 uv run --project services/risk \
   uvicorn app.main:app --app-dir services/risk --port 8000
 RISK_API_URL=http://localhost:8000 pnpm --filter @risk0/web dev
 ```
@@ -94,6 +98,16 @@ oracle health, quotes, gas, and price history are missing, so analyses are
 `services/risk/.cache/risk0.sqlite3` (git-ignored). Set `RISK0_CACHE_PATH` to
 move it.
 
+The continuous Morpho radar is opt-in. Set `RISK0_RADAR_ENABLED=true` to run
+its fast monitoring loop every 300 seconds and its slow discovery/similarity
+loop every 3,600 seconds inside the FastAPI lifespan. Overlapping runs are
+skipped and recorded rather than executed concurrently. Radar tables share the
+cache database by default; set `RISK0_RADAR_DB_PATH` to keep them in a separate
+SQLite file. Migrations run idempotently at service startup. Raw snapshots and
+superseded health history are retained for 30 days; hourly aggregates are kept
+for 365 days; incident records are retained. Fixture and test runs leave the
+scheduler disabled unless explicitly enabled.
+
 ### Docker
 
 ```bash
@@ -126,7 +140,8 @@ RISK0_DATA_MODE=live uv run --project services/risk \
   Schemas in `packages/contracts/schemas`.
 - **End-to-end** (Playwright 1.56.1, headless Chromium): `apps/web/playwright.config.ts`
   starts the risk service in fixture mode on port 8710 and builds and starts
-  Next on port 3710. It then runs three golden flows: a Belem RWA EURCV lender
+  Next on port 3710. It then runs five golden flows: a healthy radar with manual
+  exposure, resolved oracle propagation revealing a hidden neighbor, a Belem RWA EURCV lender
   `STAY`, a wstETH/WETH borrower liquidated by a 15% shock (`EXIT`), and the
   degraded WBTC/USDC market (`UNAVAILABLE`, never styled as safe). Headless runs
   use Playwright's `chromium-headless-shell` build. On a new machine, run
@@ -140,21 +155,24 @@ RISK0_DATA_MODE=live uv run --project services/risk \
 ## Architecture
 
 ```text
-browser ──► Next.js (apps/web) ──/api/catalog, /api/analysis──► FastAPI risk service (services/risk)
+browser ──► Next.js (apps/web) ──/api/* proxies + SSE──► FastAPI risk service (services/risk)
             server-side proxy routes read RISK_API_URL           ├─ adapters: Morpho API, Ethereum RPC (Chainlink), Uniswap QuoterV2, DeFiScan
-                                                                 ├─ SQLite cache (snapshots 24 h, quotes 15 s, history 365 d, < 100 MB)
+                                                                 ├─ SQLite cache + radar topology/history/incidents/exposures
+                                                                 ├─ discovery → health → incidents → reverse propagation
                                                                  ├─ graph builder → scenario engine → exit cost → recommendation
                                                                  └─ contracts: packages/contracts/schemas (JSON Schema → TS types)
 ```
 
-- `apps/web`: Next.js App Router UI. It handles catalog selection, position
-  form and presets, scenario controls, the `@xyflow/react` dependency graph,
-  the recommendation card, and freshness and provenance display. Only its
+- `apps/web`: Next.js App Router Institutional Terminal. It displays the radar
+  graph, manual exposures, active incidents, transient toasts, persistent
+  notification history, and the existing position/scenario analysis. Only its
   server-side proxy routes read `RISK_API_URL`. Upstream errors and bodies are
   never forwarded.
-- `services/risk`: FastAPI service. `GET /v1/health`, `GET /v1/catalog`
-  (hydrated catalog), and `POST /v1/analysis`. It owns every external adapter,
-  caching, graph construction, probabilities, and the hybrid rule.
+- `services/risk`: FastAPI service. In addition to catalog and analysis, it
+  exposes `/v1/graph`, incident subgraphs, entity history, similarities,
+  notifications, manual exposures, and `/v1/events` SSE. It owns every external
+  adapter, scheduler, cache, health rule, propagation algorithm, probability
+  estimator, and hybrid recommendation rule.
 - `packages/contracts`: versioned JSON Schemas for the service boundary and the
   TypeScript types generated from them.
 - `data/`: version-controlled catalog (`catalog/ethereum.json`), Chainlink feed
@@ -190,6 +208,15 @@ version-controlled entries.
 
 ## Model limitations
 
+- **Local MVP persistence.** Radar data is held in SQLite and the scheduler runs
+  in the API process. This is appropriate for one local instance, not a
+  horizontally scaled production deployment. There is no broker, distributed
+  lock, managed backup, authentication, or external notification channel yet.
+- **Graph visibility is policy, not coverage.** At most ten neighbors above 60%
+  similarity are normally shown per catalog vault. Neighbors above 33% remain
+  processed and hidden until an incident path reveals them. A hidden node is not
+  ignored by the backend.
+
 - **Two kinds of probability.** Stablecoin depeg and collateral shock use
   *empirical* rolling 30-day windows over hourly Chainlink history. Protocol
   impairment is *model-estimated* from protocol evidence with a demonstration
@@ -224,3 +251,4 @@ version-controlled entries.
 - Design spec: `docs/superpowers/specs/2026-10-07-risk0-mvp-design.md`
 - Implementation plan: `docs/superpowers/plans/2026-10-07-risk0-mvp.md`
 - Demo script: `docs/demo-script.md`
+- Algorithms and formulas: `docs/risk0-algorithms.tex`

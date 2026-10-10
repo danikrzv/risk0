@@ -1,10 +1,10 @@
 # Risk0 Demo Script
 
-A reproducible 10-minute walkthrough. It follows **select → graph → scenario →
-impact → exit cost → recommendation** three times: a lender `STAY`, a borrower
-`EXIT`, and a degraded-data `UNAVAILABLE`. Use fixture mode so every number
-is the same on every run. The same three flows are pinned by the Playwright
-tests in `apps/web/e2e/`.
+A reproducible 12-minute walkthrough. It begins with the Institutional Terminal
+radar, a manual exposure, and an oracle propagation replay, then follows
+**select → graph → scenario → impact → exit cost → recommendation** for a lender
+`STAY`, borrower `EXIT`, and degraded-data `UNAVAILABLE`. Fixture mode keeps
+every number deterministic. All five flows are pinned by Playwright tests.
 
 ## Before the demo
 
@@ -17,7 +17,7 @@ tests in `apps/web/e2e/`.
    ```bash
    pnpm install
    uv sync --project services/risk
-   pnpm --filter @risk0/web exec playwright test   # 3 golden flows pass
+   pnpm --filter @risk0/web exec playwright test   # 5 golden flows pass
    ```
 
 3. Start both services in fixture mode, either with Docker:
@@ -29,7 +29,7 @@ tests in `apps/web/e2e/`.
    or without it:
 
    ```bash
-   RISK0_DATA_MODE=fixture uv run --project services/risk \
+   RISK0_DATA_MODE=fixture RISK0_RADAR_SEED_FIXTURES=1 uv run --project services/risk \
      uvicorn app.main:app --app-dir services/risk --port 8000
    RISK_API_URL=http://localhost:8000 pnpm --filter @risk0/web dev
    ```
@@ -37,8 +37,29 @@ tests in `apps/web/e2e/`.
 4. Open <http://localhost:3000>.
 
 Opening line: "Risk0 is read-only and non-advisory. There is no wallet and
-nothing is signed. We model a *hypothetical* position on a curated Morpho entry
-and compare its 30-day expected loss with the cost of exiting now."
+nothing is signed. We continuously map Morpho dependencies, record only manual
+hypothetical exposures locally, and compare 30-day expected loss with exit cost."
+
+## Flow 0: radar health and oracle propagation
+
+1. **Topology.** Point out the catalog vault, the visible 72%-similar neighbor,
+   the shared market, oracle, asset, Morpho, and Ethereum nodes. The healthy
+   48%-similar neighbor is intentionally hidden while still processed in the
+   backend. The four-state legend keeps `UNKNOWN` distinct from `HEALTHY`.
+2. **Exposure.** In the left rail, keep the lender preset at **100000 USDC** and
+   click **Add exposure**. Explain that it is a local hypothetical record used
+   to translate propagation into an affected amount.
+3. **Notification.** The top-right critical toast disappears after a few
+   seconds, while the notification remains in the notification box. Open it and
+   choose **View incident**.
+4. **Propagation.** The resolved WETH/USDC oracle incident is loaded from
+   history. The affected path is highlighted and **Hidden 48% Neighbor** becomes
+   visible with a revealed marker. The impact summary shows **153,000** across
+   affected vault paths. No incident appears in the active rail because the
+   fixture incident has recovered.
+5. **Operations.** State that live monitoring runs every five minutes and
+   discovery/similarity every hour when `RISK0_RADAR_ENABLED=true`; overlapping
+   cycles are skipped. Raw state is retained 30 days, hourly aggregates one year.
 
 ## Flow 1: Belem RWA EURCV lender → STAY
 
@@ -132,4 +153,5 @@ decision. See *Model limitations* in the README.
 - Every number on screen carries its source, retrieval time, and freshness.
 - Empirical and model-estimated probabilities are labelled separately.
 - Unknown data is never treated as zero risk. It gives `UNAVAILABLE`.
-- Read-only and non-advisory. Positions are hypothetical and never stored.
+- Read-only and non-advisory. Manual exposures are hypothetical and stored only
+  in the local SQLite radar database.

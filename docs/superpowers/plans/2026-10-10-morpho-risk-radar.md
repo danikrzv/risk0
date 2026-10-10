@@ -205,7 +205,7 @@ Run: `uv run --project services/risk pytest services/risk/tests/radar/discovery 
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add services/risk/app/config.py services/risk/app/adapters services/risk/app/radar/discovery services/risk/app/radar/collectors services/risk/tests
@@ -335,31 +335,31 @@ git commit -m "feat: propagate radar incidents to exposures"
 - Produces `RadarScheduler.start()`, `stop()`, `run_fast_once()`, and `run_slow_once()`.
 - Fast interval is 300 seconds; slow interval is 3600 seconds; the lock is per loop and skipped cycles are persisted.
 
-- [ ] **Step 1: Write failing vertical-cycle service test**
+- [x] **Step 1: Write failing vertical-cycle service test**
 
 Use the monitoring fixture to assert snapshot persistence, health update, one incident, one propagated exposure impact, one notification, and deterministic rerun without duplication.
 
-- [ ] **Step 2: Write failing scheduler tests**
+- [x] **Step 2: Write failing scheduler tests**
 
 Pin interval registration, start/stop lifecycle, non-overlap skip, persisted skipped run, partial-chain completion, and one collector exception not terminating future cycles.
 
-- [ ] **Step 3: Run tests and verify failure**
+- [x] **Step 3: Run tests and verify failure**
 
 Run: `uv run --project services/risk pytest services/risk/tests/radar/test_service.py services/risk/tests/radar/test_scheduler.py -v`
 
 Expected: FAIL because service and scheduler do not exist.
 
-- [ ] **Step 4: Implement orchestration and lifecycle wiring**
+- [x] **Step 4: Implement orchestration and lifecycle wiring**
 
 Keep scheduling behind FastAPI lifespan and disabled in fixture tests unless explicitly started. The lead resolves imports and lifecycle changes in `main.py` after Agent A's branch is reviewed.
 
-- [ ] **Step 5: Run all Python tests**
+- [x] **Step 5: Run all Python tests**
 
 Run: `uv run --project services/risk pytest services/risk/tests -m "not live" -v`
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add services/risk/app/radar services/risk/app/main.py services/risk/tests/radar
@@ -387,29 +387,29 @@ git commit -m "feat: orchestrate continuous radar cycles"
 - SSE publishes `graph.updated`, `incident.opened`, `incident.updated`, `incident.resolved`, and `notification.created` with resource IDs and sequence numbers.
 - Graph filters are chain, entity type, health status, visibility, and incident ID.
 
-- [ ] **Step 1: Write failing FastAPI read/write endpoint tests**
+- [x] **Step 1: Write failing FastAPI read/write endpoint tests**
 
 Pin filters, pagination, invalid IDs, exposure validation, notification read idempotence, source redaction, and empty-database responses.
 
-- [ ] **Step 2: Write failing SSE tests**
+- [x] **Step 2: Write failing SSE tests**
 
 Pin event shape, monotonic sequence, heartbeat, reconnect with `Last-Event-ID`, and no full graph payload.
 
-- [ ] **Step 3: Implement API routers and register them**
+- [x] **Step 3: Implement API routers and register them**
 
 Map repository/domain failures to public-safe 4xx/5xx responses without provider bodies.
 
-- [ ] **Step 4: Write and implement Next.js proxy/API-client tests**
+- [x] **Step 4: Write and implement Next.js proxy/API-client tests**
 
 Follow existing catalog/analysis proxy behavior: server-side URL only, bounded timeout, generic upstream errors, and typed response validation.
 
-- [ ] **Step 5: Run API, contract, and web client tests**
+- [x] **Step 5: Run API, contract, and web client tests**
 
 Run: `uv run --project services/risk pytest services/risk/tests/api -v && pnpm --filter @risk0/contracts test && pnpm --filter @risk0/web test -- routes.test.ts api.test.ts`
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add services/risk/app/api services/risk/app/main.py services/risk/tests/api apps/web/src/app/api apps/web/src/lib

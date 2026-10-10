@@ -1,4 +1,17 @@
-import type { AnalysisRequest, AnalysisResponse, CatalogResponse } from "@risk0/contracts"
+import type {
+  AnalysisRequest,
+  AnalysisResponse,
+  CatalogResponse,
+  ExposureCreateRequest,
+  ExposureImpactResponse,
+  HealthStatus,
+  IncidentGraphResponse,
+  ManualExposure,
+  Notification,
+  NotificationResponse,
+  RadarEntityType,
+  RadarGraphResponse,
+} from "@risk0/contracts"
 
 // Browser-safe client: only same-origin proxy routes are called, so the risk
 // service URL and any provider credentials stay on the server.
@@ -49,4 +62,65 @@ export function runAnalysis(analysis: AnalysisRequest): Promise<AnalysisResponse
     headers: { "content-type": "application/json" },
     body: JSON.stringify(analysis),
   })
+}
+
+export interface RadarGraphFilters {
+  chainId?: number
+  entityType?: RadarEntityType
+  status?: HealthStatus
+  visible?: boolean
+  incidentId?: string
+}
+
+export function getRadarGraph(filters: RadarGraphFilters = {}): Promise<RadarGraphResponse> {
+  const query = new URLSearchParams()
+  if (filters.chainId !== undefined) query.set("chain_id", String(filters.chainId))
+  if (filters.entityType !== undefined) query.set("entity_type", filters.entityType)
+  if (filters.status !== undefined) query.set("status", filters.status)
+  if (filters.visible !== undefined) query.set("visible", String(filters.visible))
+  if (filters.incidentId !== undefined) query.set("incident_id", filters.incidentId)
+  const suffix = query.size > 0 ? `?${query.toString()}` : ""
+  return request<RadarGraphResponse>(`/api/graph${suffix}`, { method: "GET" })
+}
+
+export function getIncidentGraph(incidentId: string): Promise<IncidentGraphResponse> {
+  const query = new URLSearchParams({ incident_graph_id: incidentId })
+  return request<IncidentGraphResponse>(`/api/graph?${query.toString()}`, { method: "GET" })
+}
+
+export function getNotifications(
+  cursor?: string,
+  options: { limit?: number; unreadOnly?: boolean } = {},
+): Promise<NotificationResponse> {
+  const query = new URLSearchParams()
+  if (cursor !== undefined) query.set("cursor", cursor)
+  if (options.limit !== undefined) query.set("limit", String(options.limit))
+  if (options.unreadOnly !== undefined) query.set("unread_only", String(options.unreadOnly))
+  const suffix = query.size === 0 ? "" : `?${query.toString()}`
+  return request<NotificationResponse>(`/api/notifications${suffix}`, { method: "GET" })
+}
+
+export function markNotificationRead(notificationId: string): Promise<Notification> {
+  return request<Notification>("/api/notifications", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ notification_id: notificationId }),
+  })
+}
+
+export function createExposure(exposure: ExposureCreateRequest): Promise<ManualExposure> {
+  return request<ManualExposure>("/api/exposures", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(exposure),
+  })
+}
+
+export function getExposureImpact(exposureId: string): Promise<ExposureImpactResponse> {
+  const query = new URLSearchParams({ exposure_id: exposureId })
+  return request<ExposureImpactResponse>(`/api/exposures?${query.toString()}`, { method: "GET" })
+}
+
+export function getRadarEventsUrl(lastEventId: number | null = null): string {
+  return lastEventId === null ? "/api/events" : `/api/events?last_event_id=${lastEventId}`
 }

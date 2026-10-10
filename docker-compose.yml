@@ -17,6 +17,7 @@ services:
         required: false
     environment:
       RISK0_DATA_MODE: ${RISK0_DATA_MODE:-live}
+      RISK0_RADAR_SEED_FIXTURES: ${RISK0_RADAR_SEED_FIXTURES:-0}
       RISK0_CACHE_PATH: /var/cache/risk0/risk0.sqlite3
     volumes:
       - risk0-cache:/var/cache/risk0

@@ -1,24 +1,122 @@
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 
+from app.adapters.morpho import DEFAULT_BASE_URL, MorphoClient
+from app.adapters.rpc_registry import RpcRegistry
 from app.api.analysis import router as analysis_router
 from app.api.catalog import router as catalog_router
-from app.fixture_mode import data_mode
+from app.api.events import get_event_broker, router as events_router
+from app.api.fixtures import router as fixtures_router
+from app.api.radar import get_radar_context, router as radar_router
+from app.catalog.repository import CatalogRepository
+from app.fixture_mode import FIXTURE, data_mode, fixture_morpho_client
+from app.infrastructure.cache import SQLiteCache
+from app.radar.collectors import ChainStateCollector, MorphoStateCollector
+from app.radar.discovery import MorphoDiscovery
+from app.radar.repositories import (
+    RadarDatabase,
+    SchedulerRunRepository,
+)
+from app.radar.scheduler import RadarScheduler
+from app.radar.service import RadarService
+
+
+SERVICE_ROOT = Path(__file__).resolve().parents[1]
+REPOSITORY_ROOT = SERVICE_ROOT.parents[1]
+RADAR_ENABLED_ENV = "RISK0_RADAR_ENABLED"
+
+
+def radar_enabled() -> bool:
+    value = os.environ.get(RADAR_ENABLED_ENV, "").strip().lower()
+    if not value:
+        return False
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{RADAR_ENABLED_ENV} must be a boolean")
+
+
+class _NoChainState:
+    """Fixture-mode chain collector: recorded data only, so no RPC is ever opened."""
+
+    def collect_all(self, chain_ids, now):
+        return ()
+
+
+def build_radar_scheduler() -> RadarScheduler:
+    cache_path = Path(
+        os.environ.get("RISK0_CACHE_PATH", SERVICE_ROOT / ".cache" / "risk0.sqlite3")
+    )
+    database_path = Path(os.environ.get("RISK0_RADAR_DB_PATH", cache_path))
+    catalog_path = Path(
+        os.environ.get(
+            "RISK0_CATALOG_PATH", REPOSITORY_ROOT / "data" / "catalog" / "ethereum.json"
+        )
+    )
+    cache = SQLiteCache(cache_path)
+    fixture = data_mode() == FIXTURE
+    morpho = (
+        fixture_morpho_client()
+        if fixture
+        else MorphoClient(os.environ.get("MORPHO_API_URL", DEFAULT_BASE_URL), cache=cache)
+    )
+    radar_context = get_radar_context()
+    # Share the API's database so scheduler writes invalidate its graph cache.
+    database = radar_context.database
+    if database is None:
+        database = RadarDatabase(database_path)
+        database.migrate()
+    runs = SchedulerRunRepository(database)
+    service = RadarService(
+        discovery=MorphoDiscovery(
+            morpho, catalog=CatalogRepository(catalog_path).list_entries()
+        ),
+        morpho_collector=MorphoStateCollector(morpho),
+        chain_collector=(
+            _NoChainState()
+            if fixture
+            else ChainStateCollector(RpcRegistry.from_environment())
+        ),
+        topology=radar_context.topology,
+        states=radar_context.states,
+        incidents=radar_context.incidents,
+        exposures=radar_context.exposures,
+        events=get_event_broker(),
+    )
+    return RadarScheduler(service, runs)
 
 
 @asynccontextmanager
-async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     # Fail fast on a mistyped RISK0_DATA_MODE rather than serving a healthy
     # /v1/health while every catalog and analysis request fails.
-    data_mode()
-    yield
+    mode = data_mode()
+    if mode == FIXTURE and os.environ.get("RISK0_RADAR_SEED_FIXTURES") == "1":
+        from app.fixture_mode import seed_fixture_radar
+
+        seed_fixture_radar(get_radar_context())
+    scheduler = build_radar_scheduler() if radar_enabled() else None
+    application.state.radar_scheduler = scheduler
+    if scheduler is not None:
+        await scheduler.start()
+    try:
+        yield
+    finally:
+        if scheduler is not None:
+            await scheduler.stop()
 
 
 app = FastAPI(title="Risk0 Risk Service", version="0.1.0", lifespan=lifespan)
 app.include_router(catalog_router)
 app.include_router(analysis_router)
+app.include_router(radar_router)
+app.include_router(events_router)
+app.include_router(fixtures_router)
 
 
 @app.get("/v1/health")

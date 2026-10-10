@@ -29,7 +29,9 @@ def open_oracle_incident(
     broker: RadarEventBroker = Depends(get_event_broker),
 ) -> Incident:
     _fixture_only()
-    return open_fixture_radar_incident(context, broker)
+    incident = open_fixture_radar_incident(context, broker)
+    context.graph_cache.invalidate()
+    return incident
 
 
 @router.post("/oracle-incident/resolve", response_model=Incident)
@@ -39,6 +41,7 @@ def resolve_oracle_incident(
 ) -> Incident:
     _fixture_only()
     incident = resolve_fixture_radar_incident(context, broker)
+    context.graph_cache.invalidate()
     if incident is None:
         raise HTTPException(status_code=404, detail="Incident not found.")
     return incident

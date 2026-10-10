@@ -434,6 +434,11 @@ export interface NotificationResponse {
   generated_at: string;
 }
 
+export interface NotificationReadAllResponse {
+  schema_version: "1.0.0";
+  updated: number;
+}
+
 export interface ExposureCreateRequest extends ExposureFields {}
 
 export interface ExposureImpactResponse {

@@ -1,5 +1,6 @@
+import json
 import sqlite3
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -30,6 +31,11 @@ MAX_PAGE_LIMIT = 500
 _SEVERITY_ORDER = (IncidentSeverity.WARNING, IncidentSeverity.CRITICAL)
 # Below SQLite's default bound-parameter limit.
 _ID_CHUNK = 500
+# SQL CASE arms ranking the most severe first.
+_SEVERITY_RANK = " ".join(
+    f"WHEN '{severity.value}' THEN {rank}"
+    for rank, severity in enumerate(reversed(_SEVERITY_ORDER))
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -212,6 +218,86 @@ class IncidentRepository:
             ).fetchall()
         return tuple(_incident(row) for row in rows)
 
+    def top_active(
+        self,
+        limit: int,
+        *,
+        preferred_source_ids: Sequence[str] = (),
+        source_ids: Sequence[str] | None = None,
+    ) -> tuple[Incident, ...]:
+        """The `limit` open incidents to surface first.
+
+        Most severe first; then those whose source is preferred (e.g. on the
+        radar's focus set); then the most recently opened. `source_ids`, when
+        given, restricts the candidates to those sources.
+        """
+        source_filter = (
+            ""
+            if source_ids is None
+            else "AND source_entity_id IN (SELECT value FROM json_each(?))"
+        )
+        params: list[object] = [] if source_ids is None else [json.dumps(list(source_ids))]
+        with self._db.transaction() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT * FROM incidents WHERE status = 'OPEN' {source_filter}
+                ORDER BY
+                    CASE severity {_SEVERITY_RANK} END,
+                    source_entity_id IN (SELECT value FROM json_each(?)) DESC,
+                    first_observed_at DESC,
+                    incident_id
+                LIMIT ?
+                """,
+                (*params, json.dumps(list(preferred_source_ids)), limit),
+            ).fetchall()
+        return tuple(_incident(row) for row in rows)
+
+    def path_entity_ids(
+        self,
+        incident_ids: Sequence[str],
+        *,
+        paths_per_incident: int | None = None,
+        preferred_target_ids: Sequence[str] = (),
+    ) -> tuple[str, ...]:
+        """Sources, path hops, and targets of the given incidents' impacts.
+
+        `paths_per_incident` keeps each incident's most telling paths: revealed
+        ones, then those reaching a preferred target, then the shortest and
+        most confident.
+        """
+        if not incident_ids:
+            return ()
+        with self._db.transaction() as connection:
+            rows = connection.execute(
+                """
+                WITH chosen (incident_id) AS (SELECT value FROM json_each(?)),
+                preferred (entity_id) AS (SELECT value FROM json_each(?)),
+                ranked AS (
+                    SELECT i.target_entity_id, i.path, ROW_NUMBER() OVER (
+                        PARTITION BY i.incident_id ORDER BY
+                            i.revealed DESC,
+                            i.target_entity_id IN preferred DESC,
+                            i.distance,
+                            -- Confidence is a decimal string; REAL only ranks it.
+                            CAST(i.confidence AS REAL) DESC,
+                            i.target_entity_id
+                    ) AS position
+                    FROM chosen JOIN incident_impacts i USING (incident_id)
+                ),
+                kept AS (SELECT * FROM ranked WHERE ? IS NULL OR position <= ?)
+                SELECT source_entity_id FROM chosen JOIN incidents USING (incident_id)
+                UNION SELECT target_entity_id FROM kept
+                UNION SELECT hop.value FROM kept, json_each(kept.path) AS hop
+                """,
+                (
+                    json.dumps(list(incident_ids)),
+                    json.dumps(list(preferred_target_ids)),
+                    paths_per_incident,
+                    paths_per_incident,
+                ),
+            ).fetchall()
+        return tuple(row[0] for row in rows)
+
     def replace_impacts(
         self, incident_id: str, impacts: Iterable[IncidentImpact]
     ) -> int:
@@ -318,6 +404,15 @@ class IncidentRepository:
                 (encode_timestamp(read_at), notification_id),
             )
             return self.get_notification(notification_id)
+
+    def mark_all_read(self, read_at: datetime) -> int:
+        """Mark every unread notification read; returns how many changed."""
+        with self._db.transaction() as connection:
+            cursor = connection.execute(
+                "UPDATE notifications SET read_at = ? WHERE read_at IS NULL",
+                (encode_timestamp(read_at),),
+            )
+        return cursor.rowcount
 
 
 IMPACT_COLUMNS = (

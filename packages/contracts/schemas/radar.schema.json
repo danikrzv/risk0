@@ -292,6 +292,15 @@
         "generated_at": { "$ref": "#/$defs/UtcTimestamp" }
       }
     },
+    "NotificationReadAllResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "updated"],
+      "properties": {
+        "schema_version": { "const": "1.0.0" },
+        "updated": { "type": "integer", "minimum": 0 }
+      }
+    },
     "ExposureCreateRequest": {
       "allOf": [{ "$ref": "#/$defs/ExposureFields" }],
       "unevaluatedProperties": false

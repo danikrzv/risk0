@@ -1,5 +1,8 @@
 import os
 import threading
+import time
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from functools import lru_cache
@@ -8,6 +11,7 @@ from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
+from app.api.events import RadarEventBroker, get_event_broker
 from app.radar.analysis import ExposureImpactEstimator
 from app.radar.contracts import (
     EntityHistoryResponse,
@@ -18,6 +22,7 @@ from app.radar.contracts import (
     ManualExposure,
     Notification,
     PositionMode,
+    NotificationReadAllResponse,
     NotificationResponse,
     RadarEntity,
     RadarEntityType,
@@ -38,38 +43,104 @@ from app.radar.repositories import (
 SERVICE_ROOT = Path(__file__).resolve().parents[2]
 
 
+# GET /v1/graph returns a pruned view, not the whole topology: the focus set
+# (catalog and visible entities), the focus set's neighbours, and the paths of
+# the most important active incidents. See `_build_graph`.
+GRAPH_INCIDENT_LIMIT = 50
+# Most telling propagation paths (revealed first) kept per listed incident; the
+# full set comes from GET /v1/graph/incidents/{id}.
+GRAPH_PATHS_PER_INCIDENT = 2
+# Focus entities with more live relationships than this (a chain, a protocol,
+# a major asset) are hubs: their neighbours are only listed on request.
+GRAPH_HUB_DEGREE = 64
+# Neighbours of the focus set listed, those shared by most focus entities first.
+GRAPH_NEIGHBOUR_LIMIT = 25
+# Neighbours listed for an explicitly focused entity (?focus=), heaviest first.
+GRAPH_FOCUS_NEIGHBOUR_LIMIT = 100
+GRAPH_CACHE_TTL_SECONDS = 5.0
+
+
+@dataclass(frozen=True, slots=True)
+class _CachedGraph:
+    revision: int
+    event_sequence: int
+    built_at: float
+    response: RadarGraphResponse
+
+
 class GraphCache:
-    """Built graph responses for the current database revision.
+    """Recently built graph responses.
 
     The web refetches GET /v1/graph after every SSE event and on focus, often
-    several times in a row with nothing changed in between. Any committed row
-    change bumps the revision and drops every cached entry.
+    several times in a row. An entry built at the current database revision is
+    always served. The scheduler writes continuously, so an entry from an older
+    revision is still served for `ttl_seconds` - unless an SSE event was
+    published since it was built: events follow the writes they announce, and
+    the refetch an event triggers must see them. Background churn thus costs at
+    most one rebuild per TTL or event. User-initiated writes call
+    `invalidate()` so their effect shows on the very next read.
     """
 
-    def __init__(self, max_entries: int = 32) -> None:
+    def __init__(
+        self,
+        max_entries: int = 32,
+        *,
+        ttl_seconds: float = GRAPH_CACHE_TTL_SECONDS,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
         self._max_entries = max_entries
-        self._revision = -1
-        self._entries: dict[tuple[object, ...], RadarGraphResponse] = {}
+        self._ttl_seconds = ttl_seconds
+        self._clock = clock
+        self._generation = 0
+        self._entries: dict[tuple[object, ...], _CachedGraph] = {}
         self._lock = threading.Lock()
 
-    def get(self, revision: int, key: tuple[object, ...]) -> RadarGraphResponse | None:
+    @property
+    def generation(self) -> int:
+        """Read before building; `put` drops a build that an invalidation overtook."""
         with self._lock:
-            if revision != self._revision:
+            return self._generation
+
+    def get(
+        self, revision: int, event_sequence: int, key: tuple[object, ...]
+    ) -> RadarGraphResponse | None:
+        with self._lock:
+            entry = self._entries.get(key)
+            if entry is None:
                 return None
-            return self._entries.get(key)
+            if entry.revision == revision or (
+                entry.event_sequence == event_sequence
+                and self._clock() - entry.built_at < self._ttl_seconds
+            ):
+                return entry.response
+            del self._entries[key]
+            return None
 
     def put(
-        self, revision: int, key: tuple[object, ...], response: RadarGraphResponse
+        self,
+        generation: int,
+        revision: int,
+        event_sequence: int,
+        key: tuple[object, ...],
+        response: RadarGraphResponse,
     ) -> None:
+        """Store a response built from data read after `revision` and `event_sequence`."""
         with self._lock:
-            if revision < self._revision:
+            if generation != self._generation:
                 return
-            if revision != self._revision:
-                self._revision = revision
-                self._entries = {}
-            if len(self._entries) >= self._max_entries:
+            current = self._entries.get(key)
+            if current is not None and current.revision > revision:
+                return
+            if current is None and len(self._entries) >= self._max_entries:
                 self._entries.pop(next(iter(self._entries)))
-            self._entries[key] = response
+            self._entries[key] = _CachedGraph(
+                revision, event_sequence, self._clock(), response
+            )
+
+    def invalidate(self) -> None:
+        with self._lock:
+            self._generation += 1
+            self._entries = {}
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,7 +149,8 @@ class RadarContext:
     states: StateRepository
     incidents: IncidentRepository
     exposures: ExposureRepository
-    # When set, GET /v1/graph is cached per database revision.
+    # When set, GET /v1/graph is cached (see GraphCache) and built from one
+    # consistent read transaction.
     database: RadarDatabase | None = None
     graph_cache: GraphCache = field(default_factory=GraphCache, compare=False)
 
@@ -109,22 +181,37 @@ def graph(
     health_status: HealthStatus | None = Query(default=None, alias="status"),
     visible: bool | None = None,
     incident_id: str | None = None,
+    focus: str | None = Query(default=None, min_length=1),
     context: RadarContext = Depends(get_radar_context),
+    broker: RadarEventBroker = Depends(get_event_broker),
 ) -> RadarGraphResponse:
-    key = (chain_id, entity_type, health_status, visible, incident_id)
-    # Read the revision before building: a write that commits mid-build bumps
-    # it, so this (possibly older) result is never served for the new data.
+    key = (chain_id, entity_type, health_status, visible, incident_id, focus)
+    # Read the versions before building: a write or event that lands mid-build
+    # moves them, so this (possibly older) result is never treated as current.
     revision = context.database.revision if context.database is not None else None
+    event_sequence = broker.sequence
+    generation = context.graph_cache.generation
     if revision is not None:
-        cached = context.graph_cache.get(revision, key)
+        cached = context.graph_cache.get(revision, event_sequence, key)
         if cached is not None:
             return cached.model_copy(update={"generated_at": datetime.now(UTC)})
-    response = _build_graph(
-        context, chain_id, entity_type, health_status, visible, incident_id
-    )
+    with _read_snapshot(context):
+        response = _build_graph(
+            context, chain_id, entity_type, health_status, visible, incident_id, focus
+        )
     if revision is not None:
-        context.graph_cache.put(revision, key, response)
+        context.graph_cache.put(generation, revision, event_sequence, key, response)
     return response
+
+
+@contextmanager
+def _read_snapshot(context: RadarContext) -> Iterator[None]:
+    """Run the repositories' reads in one transaction when the database is known."""
+    if context.database is None:
+        yield
+        return
+    with context.database.transaction():
+        yield
 
 
 def _build_graph(
@@ -134,11 +221,63 @@ def _build_graph(
     health_status: HealthStatus | None,
     visible: bool | None,
     incident_id: str | None,
+    focus: str | None,
 ) -> RadarGraphResponse:
+    """Build the pruned radar view.
+
+    Without `incident_id` the view holds:
+    - the focus set: catalog and visible entities;
+    - up to GRAPH_NEIGHBOUR_LIMIT of their direct neighbours, those shared by
+      the most focus entities first; hidden vaults and the neighbours of hubs
+      (more than GRAPH_HUB_DEGREE relationships) are left out;
+    - the GRAPH_INCIDENT_LIMIT most important active incidents (most severe,
+      then sourced on the focus set, then most recent) with their sources and
+      up to GRAPH_PATHS_PER_INCIDENT propagation paths each;
+    - with `focus`, that entity and up to GRAPH_FOCUS_NEIGHBOUR_LIMIT of its
+      neighbours (hidden vaults excepted), even when it is a hub.
+    With `incident_id` the view is that incident's whole propagation footprint.
+    The other filters then narrow the view; relationships and similarities are
+    kept only between returned entities, incidents only when their source is.
+    """
+    if incident_id is not None:
+        if context.incidents.get(incident_id) is None:
+            raise _not_found("Incident")
+        entity_ids = set(context.incidents.path_entity_ids((incident_id,)))
+        candidates = None
+    else:
+        focus_ids = context.topology.catalog_or_visible_ids()
+        candidates = context.incidents.top_active(
+            GRAPH_INCIDENT_LIMIT, preferred_source_ids=focus_ids
+        )
+        entity_ids = {
+            *focus_ids,
+            *context.topology.neighbour_ids(
+                focus_ids, max_degree=GRAPH_HUB_DEGREE, limit=GRAPH_NEIGHBOUR_LIMIT
+            ),
+            *context.incidents.path_entity_ids(
+                tuple(incident.incident_id for incident in candidates),
+                paths_per_incident=GRAPH_PATHS_PER_INCIDENT,
+                preferred_target_ids=focus_ids,
+            ),
+        }
+        if focus is not None:
+            if context.topology.get_entity(focus) is None:
+                raise _not_found("Entity")
+            entity_ids.add(focus)
+            entity_ids.update(
+                context.topology.neighbour_ids(
+                    (focus,), limit=GRAPH_FOCUS_NEIGHBOUR_LIMIT
+                )
+            )
     entities = context.topology.entities(
-        chain_id=chain_id, entity_type=entity_type, visible=visible
+        chain_id=chain_id,
+        entity_type=entity_type,
+        visible=visible,
+        entity_ids=sorted(entity_ids),
     )
-    latest_health = context.states.latest_health_all()
+    latest_health = context.states.latest_health_for(
+        tuple(entity.entity_id for entity in entities)
+    )
     if health_status is not None:
         entities = tuple(
             entity
@@ -146,40 +285,20 @@ def _build_graph(
             if latest_health.get(entity.entity_id) is not None
             and latest_health[entity.entity_id].status is health_status
         )
-    if incident_id is not None:
-        incident = context.incidents.get(incident_id)
-        if incident is None:
-            raise _not_found("Incident")
-        impacts = context.incidents.impacts(incident_id)
-        affected = {incident.source_entity_id}
-        for impact in impacts:
-            affected.update(impact.path)
-            affected.add(impact.target_entity_id)
-        entities = tuple(entity for entity in entities if entity.entity_id in affected)
     entities = tuple(_entity_with_health(entity, latest_health) for entity in entities)
-    entity_ids = {entity.entity_id for entity in entities}
-    relationships = tuple(
-        relationship
-        for relationship in context.topology.relationships()
-        if relationship.source_entity_id in entity_ids
-        and relationship.target_entity_id in entity_ids
-    )
-    similarities = tuple(
-        similarity
-        for similarity in context.topology.similarities()
-        if similarity.catalog_entity_id in entity_ids
-        and similarity.candidate_entity_id in entity_ids
-    )
-    active_incidents = tuple(
-        incident
-        for incident in context.incidents.active()
-        if incident.source_entity_id in entity_ids
-    )
+    returned_ids = tuple(entity.entity_id for entity in entities)
+    returned = set(returned_ids)
+    if candidates is None:
+        candidates = context.incidents.top_active(
+            GRAPH_INCIDENT_LIMIT, source_ids=returned_ids
+        )
     return RadarGraphResponse(
         entities=entities,
-        relationships=relationships,
-        similarities=similarities,
-        active_incidents=active_incidents,
+        relationships=context.topology.relationships_among(returned_ids),
+        similarities=context.topology.similarities_among(returned_ids),
+        active_incidents=tuple(
+            incident for incident in candidates if incident.source_entity_id in returned
+        ),
         generated_at=datetime.now(UTC),
     )
 
@@ -286,6 +405,15 @@ def notifications(
     )
 
 
+@router.post("/notifications/read-all", response_model=NotificationReadAllResponse)
+def mark_all_notifications_read(
+    context: RadarContext = Depends(get_radar_context),
+) -> NotificationReadAllResponse:
+    updated = context.incidents.mark_all_read(datetime.now(UTC))
+    context.graph_cache.invalidate()
+    return NotificationReadAllResponse(updated=updated)
+
+
 @router.post("/notifications/{notification_id}/read", response_model=Notification)
 def mark_notification_read(
     notification_id: str, context: RadarContext = Depends(get_radar_context)
@@ -293,6 +421,7 @@ def mark_notification_read(
     notification = context.incidents.mark_read(notification_id, datetime.now(UTC))
     if notification is None:
         raise _not_found("Notification")
+    context.graph_cache.invalidate()
     return notification
 
 
@@ -323,6 +452,7 @@ def create_exposure(
     except ValueError:
         raise HTTPException(status_code=422, detail="Invalid exposure.") from None
     _propagate_exposure(context, exposure)
+    context.graph_cache.invalidate()
     return exposure
 
 

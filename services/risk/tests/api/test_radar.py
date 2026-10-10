@@ -333,7 +333,7 @@ def test_incident_graph_reads_health_and_exposure_impacts_once(
 
 @pytest.fixture
 def cached_context(tmp_path):
-    from app.api.radar import RadarContext
+    from app.api.radar import GraphCache, RadarContext
 
     database = RadarDatabase(tmp_path / "cached.sqlite3")
     database.migrate()
@@ -343,6 +343,8 @@ def cached_context(tmp_path):
         incidents=IncidentRepository(database),
         exposures=ExposureRepository(database),
         database=database,
+        # No grace period: only the revision decides (TTL: test_radar_graph.py).
+        graph_cache=GraphCache(ttl_seconds=0),
     )
 
 

@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from collections.abc import Iterable, Sequence
 from datetime import datetime
@@ -157,6 +158,90 @@ class TopologyRepository:
             ).fetchall()
         return tuple(_entity(row) for row in rows)
 
+    def catalog_or_visible_ids(self) -> tuple[str, ...]:
+        """Live entities the radar always shows: the catalog and what it relies on."""
+        with self._db.transaction() as connection:
+            rows = connection.execute(
+                """
+                SELECT entity_id FROM entities
+                WHERE tombstoned_at IS NULL AND (catalog = 1 OR visible = 1)
+                ORDER BY entity_id
+                """
+            ).fetchall()
+        return tuple(row[0] for row in rows)
+
+    def neighbour_ids(
+        self,
+        entity_ids: Sequence[str],
+        *,
+        max_degree: int | None = None,
+        limit: int | None = None,
+    ) -> tuple[str, ...]:
+        """Live entities one live relationship away from `entity_ids`.
+
+        Vaults are only returned when catalog or visible; other vaults surface
+        through incident paths, never as plain neighbours. A seed with more than
+        `max_degree` live relationships (a chain, a protocol, a major asset) is
+        a hub and is not expanded. `limit` keeps the neighbours shared by the
+        most seeds, then those behind the heaviest edges.
+        """
+        if not entity_ids:
+            return ()
+        with self._db.transaction() as connection:
+            rows = connection.execute(
+                """
+                WITH seeds (entity_id) AS (SELECT value FROM json_each(?)),
+                -- Degrees are only counted up to the hub threshold, so a hub
+                -- costs no more than an ordinary seed.
+                expanded (entity_id) AS (
+                    SELECT entity_id FROM seeds WHERE ? IS NULL OR (
+                        SELECT COUNT(*) FROM (
+                            SELECT 1 FROM relationships r
+                            WHERE r.source_entity_id = seeds.entity_id
+                            AND r.tombstoned_at IS NULL
+                            UNION ALL
+                            SELECT 1 FROM relationships r
+                            WHERE r.target_entity_id = seeds.entity_id
+                            AND r.tombstoned_at IS NULL
+                            LIMIT ?
+                        )
+                    ) <= ?
+                ),
+                edges (seed, neighbour, weight) AS (
+                    SELECT r.source_entity_id, r.target_entity_id, r.weight
+                    FROM expanded JOIN relationships r
+                        ON r.source_entity_id = expanded.entity_id
+                    WHERE r.tombstoned_at IS NULL
+                    UNION ALL
+                    SELECT r.target_entity_id, r.source_entity_id, r.weight
+                    FROM expanded JOIN relationships r
+                        ON r.target_entity_id = expanded.entity_id
+                    WHERE r.tombstoned_at IS NULL
+                )
+                SELECT e.entity_id FROM edges
+                JOIN entities e ON e.entity_id = edges.neighbour
+                WHERE e.tombstoned_at IS NULL
+                AND (e.entity_type != 'vault' OR e.catalog = 1 OR e.visible = 1)
+                AND e.entity_id NOT IN (SELECT entity_id FROM seeds)
+                GROUP BY e.entity_id
+                -- Neighbours shared by more seeds first. Weights are decimal
+                -- strings; REAL is only used to rank them.
+                ORDER BY
+                    COUNT(DISTINCT edges.seed) DESC,
+                    MAX(CAST(edges.weight AS REAL)) DESC NULLS LAST,
+                    e.entity_id
+                LIMIT ?
+                """,
+                (
+                    _json_ids(entity_ids),
+                    max_degree,
+                    0 if max_degree is None else max_degree + 1,
+                    max_degree,
+                    -1 if limit is None else limit,
+                ),
+            ).fetchall()
+        return tuple(row[0] for row in rows)
+
     def upsert_relationships(
         self, relationships: Iterable[RadarRelationship], *, seen_at: datetime
     ) -> int:
@@ -224,6 +309,26 @@ class TopologyRepository:
             ).fetchall()
         return tuple(_relationship(row) for row in rows)
 
+    def relationships_among(
+        self, entity_ids: Sequence[str]
+    ) -> tuple[RadarRelationship, ...]:
+        """Live relationships whose two ends are both in `entity_ids`."""
+        if not entity_ids:
+            return ()
+        with self._db.transaction() as connection:
+            rows = connection.execute(
+                """
+                WITH ids (entity_id) AS (SELECT value FROM json_each(?))
+                SELECT r.* FROM ids JOIN relationships r
+                    ON r.source_entity_id = ids.entity_id
+                WHERE r.tombstoned_at IS NULL
+                AND r.target_entity_id IN (SELECT entity_id FROM ids)
+                ORDER BY r.source_entity_id, r.target_entity_id, r.relationship_type
+                """,
+                (_json_ids(entity_ids),),
+            ).fetchall()
+        return tuple(_relationship(row) for row in rows)
+
     def replace_similarities(
         self, catalog_entity_id: str, records: Iterable[SimilarityRecord]
     ) -> int:
@@ -281,17 +386,26 @@ class TopologyRepository:
             rows = connection.execute(
                 f"SELECT * FROM similarities {_where(clauses)}", params
             ).fetchall()
-        records = [_similarity(row) for row in rows]
-        # Scores are exact decimal strings, so ordering happens on Decimals here.
-        records.sort(
-            key=lambda record: (
-                record.catalog_entity_id,
-                -record.score,
-                record.candidate_entity_id,
-            )
-        )
-        return tuple(records)
+        return _sorted_similarities(rows)
 
+
+    def similarities_among(
+        self, entity_ids: Sequence[str]
+    ) -> tuple[SimilarityRecord, ...]:
+        """Similarities whose catalog vault and candidate are both in `entity_ids`."""
+        if not entity_ids:
+            return ()
+        with self._db.transaction() as connection:
+            rows = connection.execute(
+                """
+                WITH ids (entity_id) AS (SELECT value FROM json_each(?))
+                SELECT s.* FROM ids JOIN similarities s
+                    ON s.catalog_entity_id = ids.entity_id
+                WHERE s.candidate_entity_id IN (SELECT entity_id FROM ids)
+                """,
+                (_json_ids(entity_ids),),
+            ).fetchall()
+        return _sorted_similarities(rows)
 
 def _entity(row: sqlite3.Row) -> RadarEntity:
     return RadarEntity(
@@ -331,9 +445,28 @@ def _similarity(row: sqlite3.Row) -> SimilarityRecord:
     )
 
 
+def _sorted_similarities(rows: Sequence[sqlite3.Row]) -> tuple[SimilarityRecord, ...]:
+    records = [_similarity(row) for row in rows]
+    # Scores are exact decimal strings, so ordering happens on Decimals here.
+    records.sort(
+        key=lambda record: (
+            record.catalog_entity_id,
+            -record.score,
+            record.candidate_entity_id,
+        )
+    )
+    return tuple(records)
+
+
 def _placeholders(values: Sequence[object]) -> str:
     return ", ".join("?" for _ in values)
 
 
 def _where(clauses: Sequence[str]) -> str:
     return f"WHERE {' AND '.join(clauses)}" if clauses else ""
+
+
+def _json_ids(values: Sequence[str]) -> str:
+    # Bound as one JSON array and expanded with json_each, so id sets of any
+    # size stay a single parameter.
+    return json.dumps(list(values))

@@ -1,0 +1,41 @@
+{
+  "totalDefiTvl": 100000000000,
+  "protocols": [
+    {
+      "slug": "sample-protocol",
+      "name": "Sample Protocol",
+      "chain": "Ethereum",
+      "projectType": "lending",
+      "tokenName": "SAMPLE",
+      "verified": true,
+      "totals": {
+        "contractCount": 4,
+        "adminCount": 3,
+        "dependencyCount": 2,
+        "totalCapitalAtRisk": 1234.5,
+        "verifiedContractCount": 3,
+        "coverage": 100
+      }
+    },
+    {
+      "slug": "sample-base-vault",
+      "name": "Sample Base Vault",
+      "chain": "Base",
+      "projectType": "yield",
+      "tokenName": "sbVAULT",
+      "verified": false,
+      "totals": {
+        "contractCount": 2,
+        "adminCount": 1,
+        "dependencyCount": 0,
+        "totalCapitalAtRisk": 0,
+        "verifiedContractCount": 2,
+        "coverage": 87
+      }
+    }
+  ],
+  "globalTotals": {
+    "protocolsReviewed": 2
+  },
+  "dependencies": []
+}

@@ -53,6 +53,9 @@ importers:
 
   packages/contracts:
     devDependencies:
+      '@types/node':
+        specifier: 26.6.4
+        version: 26.6.4
       typescript:
         specifier: 7.0.2
         version: 7.0.2

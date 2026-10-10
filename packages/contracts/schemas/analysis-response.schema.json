@@ -27,7 +27,7 @@
       ]
     },
     "MetricValue": {
-      "type": ["string", "number", "boolean", "null"]
+      "type": ["string", "boolean", "null"]
     },
     "RiskNode": {
       "type": "object",
@@ -84,14 +84,17 @@
     "ProbabilityEstimate": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["method", "low", "central", "high", "confidence", "horizon_days", "explanation"],
+      "required": ["method", "low", "central", "high", "confidence", "horizon_days", "source", "retrieved_at", "freshness", "explanation"],
       "properties": {
         "method": { "enum": ["empirical_rolling_window", "model_estimated_protocol", "unavailable"] },
         "low": { "$ref": "#/$defs/NullableDecimalString" },
         "central": { "$ref": "#/$defs/NullableDecimalString" },
         "high": { "$ref": "#/$defs/NullableDecimalString" },
         "confidence": { "enum": ["high", "medium", "low", "unavailable"] },
-        "horizon_days": { "type": "integer", "minimum": 1 },
+        "horizon_days": { "const": 30 },
+        "source": { "type": "string", "minLength": 1 },
+        "retrieved_at": { "type": "string", "format": "date-time" },
+        "freshness": { "enum": ["fresh", "stale_usable", "expired"] },
         "explanation": { "type": "string" }
       }
     },
@@ -120,7 +123,7 @@
     "ExitEstimate": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["withdrawable", "route", "slippage", "fees", "gas", "price_impact", "total_cost", "quote_age_seconds", "warnings"],
+      "required": ["withdrawable", "route", "slippage", "fees", "gas", "price_impact", "total_cost", "quote_age_seconds", "quoted_at", "source", "retrieved_at", "freshness", "warnings"],
       "properties": {
         "withdrawable": { "type": "boolean" },
         "route": { "type": "array", "items": { "type": "string" } },
@@ -131,7 +134,10 @@
         "total_cost": { "$ref": "#/$defs/DecimalString" },
         "quote_age_seconds": { "type": "integer", "minimum": 0 },
         "quote_block": { "type": ["integer", "null"], "minimum": 0 },
-        "quoted_at": { "type": ["string", "null"], "format": "date-time" },
+        "quoted_at": { "type": "string", "format": "date-time" },
+        "source": { "type": "string", "minLength": 1 },
+        "retrieved_at": { "type": "string", "format": "date-time" },
+        "freshness": { "enum": ["fresh", "stale_usable", "expired"] },
         "warnings": { "type": "array", "items": { "type": "string" } }
       }
     },

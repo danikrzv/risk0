@@ -22,7 +22,7 @@ export type ProbabilityMethod = "empirical_rolling_window" | "model_estimated_pr
 export type ConfidenceLevel = "high" | "medium" | "low" | "unavailable";
 export type RecommendationDecision = "STAY" | "EXIT" | "UNAVAILABLE";
 export type DecimalString = string;
-export type MetricValue = string | number | boolean | null;
+export type MetricValue = string | boolean | null;
 
 export interface CatalogEntry {
   entity_id: string;
@@ -42,15 +42,27 @@ export interface CatalogResponse {
   entries: CatalogEntry[];
 }
 
-export interface PositionInput {
-  mode: PositionMode;
+interface PositionInputBase {
   entity_id: string;
   amount: DecimalString;
-  collateral_amount?: DecimalString;
-  debt_amount?: DecimalString;
-  ltv?: DecimalString;
   numeraire: string;
 }
+
+export interface LenderPositionInput extends PositionInputBase {
+  mode: "lender";
+  collateral_amount?: never;
+  debt_amount?: never;
+  ltv?: never;
+}
+
+export interface BorrowerPositionInput extends PositionInputBase {
+  mode: "borrower";
+  collateral_amount: DecimalString;
+  debt_amount: DecimalString;
+  ltv: DecimalString;
+}
+
+export type PositionInput = LenderPositionInput | BorrowerPositionInput;
 
 export interface ScenarioSelection {
   scenario_id: ScenarioId;
@@ -87,7 +99,10 @@ export interface ProbabilityEstimate {
   central: DecimalString | null;
   high: DecimalString | null;
   confidence: ConfidenceLevel;
-  horizon_days: number;
+  horizon_days: 30;
+  source: string;
+  retrieved_at: string;
+  freshness: FreshnessStatus;
   explanation: string;
 }
 
@@ -113,7 +128,10 @@ export interface ExitEstimate {
   total_cost: DecimalString;
   quote_age_seconds: number;
   quote_block?: number | null;
-  quoted_at?: string | null;
+  quoted_at: string;
+  source: string;
+  retrieved_at: string;
+  freshness: FreshnessStatus;
   warnings: string[];
 }
 
@@ -131,7 +149,7 @@ export interface Recommendation {
 
 export interface AnalysisRequest {
   position: PositionInput;
-  scenarios: ScenarioSelection[];
+  scenarios: [ScenarioSelection, ...ScenarioSelection[]];
 }
 
 export interface AnalysisResponse {

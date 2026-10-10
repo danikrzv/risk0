@@ -1,9 +1,31 @@
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
-from typing import TypeAlias
+from typing import Annotated, Literal, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
+
+
+def reject_binary_float(value: object) -> object:
+    if isinstance(value, float):
+        raise ValueError("binary floats are not valid domain decimal values")
+    return value
+
+
+DecimalValue = Annotated[Decimal, BeforeValidator(reject_binary_float)]
+NonEmptyString = Annotated[str, StringConstraints(min_length=1)]
+HexIdentifier = Annotated[
+    str, StringConstraints(pattern=r"^0x[0-9A-Fa-f]+$")
+]
+LltvValue = Annotated[DecimalValue, Field(ge=0, le=1)]
 
 
 class ContractModel(BaseModel):
@@ -83,17 +105,26 @@ class RecommendationDecision(StrEnum):
 
 
 class CatalogEntry(ContractModel):
-    entity_id: str
+    entity_id: NonEmptyString
     chain_id: int = Field(ge=1, le=1)
     entity_type: CatalogEntityType
-    address_or_market_id: str
-    name: str
-    description: str
+    address_or_market_id: HexIdentifier
+    name: NonEmptyString
+    description: NonEmptyString
     provenance: CatalogProvenance
-    provenance_label: str
+    provenance_label: NonEmptyString
     supported: bool
-    supported_modes: tuple[PositionMode, ...]
-    lltv: Decimal | None
+    supported_modes: tuple[PositionMode, ...] = Field(min_length=1)
+    lltv: LltvValue | None
+
+    @field_validator("supported_modes")
+    @classmethod
+    def supported_modes_are_unique(
+        cls, modes: tuple[PositionMode, ...]
+    ) -> tuple[PositionMode, ...]:
+        if len(modes) != len(set(modes)):
+            raise ValueError("supported_modes must be unique")
+        return modes
 
 
 class CatalogResponse(ContractModel):
@@ -102,20 +133,36 @@ class CatalogResponse(ContractModel):
 
 class PositionInput(ContractModel):
     mode: PositionMode
-    entity_id: str
-    amount: Decimal
-    collateral_amount: Decimal | None = None
-    debt_amount: Decimal | None = None
-    ltv: Decimal | None = None
-    numeraire: str
+    entity_id: NonEmptyString
+    amount: DecimalValue
+    collateral_amount: DecimalValue | None = None
+    debt_amount: DecimalValue | None = None
+    ltv: DecimalValue | None = None
+    numeraire: NonEmptyString
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_mode_fields(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        borrower_fields = ("collateral_amount", "debt_amount", "ltv")
+        if value.get("mode") == PositionMode.LENDER and any(
+            field in value for field in borrower_fields
+        ):
+            raise ValueError("lender positions forbid borrower fields")
+        if value.get("mode") == PositionMode.BORROWER and any(
+            field not in value or value[field] is None for field in borrower_fields
+        ):
+            raise ValueError("borrower positions require collateral, debt, and LTV")
+        return value
 
 
 class ScenarioSelection(ContractModel):
     scenario_id: ScenarioId
-    severity: Decimal
+    severity: DecimalValue
 
 
-MetricValue: TypeAlias = Decimal | str | bool | None
+MetricValue: TypeAlias = DecimalValue | str | bool | None
 
 
 class RiskNode(ContractModel):
@@ -132,7 +179,7 @@ class RiskEdge(ContractModel):
     source: str
     target: str
     relationship: RiskEdgeType
-    exposure_weight: Decimal | None = None
+    exposure_weight: DecimalValue | None = None
 
 
 class RiskGraph(ContractModel):
@@ -144,11 +191,14 @@ class RiskGraph(ContractModel):
 
 class ProbabilityEstimate(ContractModel):
     method: ProbabilityMethod
-    low: Decimal | None
-    central: Decimal | None
-    high: Decimal | None
+    low: DecimalValue | None
+    central: DecimalValue | None
+    high: DecimalValue | None
     confidence: ConfidenceLevel
-    horizon_days: int = Field(ge=1)
+    horizon_days: Literal[30]
+    source: NonEmptyString
+    retrieved_at: datetime
+    freshness: FreshnessStatus
     explanation: str
 
 
@@ -157,8 +207,8 @@ class ScenarioResult(ContractModel):
     affected_path: tuple[str, ...]
     stressed_values: dict[str, MetricValue]
     hard_triggers: tuple[str, ...]
-    impact: Decimal
-    impact_components: dict[str, Decimal]
+    impact: DecimalValue
+    impact_components: dict[str, DecimalValue]
     probability: ProbabilityEstimate
     confidence: ConfidenceLevel
     explanation: str
@@ -167,23 +217,26 @@ class ScenarioResult(ContractModel):
 class ExitEstimate(ContractModel):
     withdrawable: bool
     route: tuple[str, ...]
-    slippage: Decimal
-    fees: Decimal
-    gas: Decimal
-    price_impact: Decimal
-    total_cost: Decimal
+    slippage: DecimalValue
+    fees: DecimalValue
+    gas: DecimalValue
+    price_impact: DecimalValue
+    total_cost: DecimalValue
     quote_age_seconds: int = Field(ge=0)
     quote_block: int | None = Field(default=None, ge=0)
-    quoted_at: datetime | None = None
+    quoted_at: datetime
+    source: NonEmptyString
+    retrieved_at: datetime
+    freshness: FreshnessStatus
     warnings: tuple[str, ...] = ()
 
 
 class Recommendation(ContractModel):
     decision: RecommendationDecision
-    expected_loss: Decimal
-    expected_loss_low: Decimal | None = None
-    expected_loss_high: Decimal | None = None
-    exit_cost: Decimal
+    expected_loss: DecimalValue
+    expected_loss_low: DecimalValue | None = None
+    expected_loss_high: DecimalValue | None = None
+    exit_cost: DecimalValue
     triggers: tuple[str, ...]
     dominant_dependency: str | None
     confidence: ConfidenceLevel
@@ -192,7 +245,7 @@ class Recommendation(ContractModel):
 
 class AnalysisRequest(ContractModel):
     position: PositionInput
-    scenarios: tuple[ScenarioSelection, ...]
+    scenarios: tuple[ScenarioSelection, ...] = Field(min_length=1)
 
 
 class AnalysisResponse(ContractModel):

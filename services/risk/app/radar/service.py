@@ -46,6 +46,12 @@ class ChainCollector(Protocol):
     ) -> tuple[StateSnapshot, ...]: ...
 
 
+class EventPublisher(Protocol):
+    def publish(
+        self, event_type: str, resource_id: str, summary: Mapping[str, object]
+    ) -> object: ...
+
+
 class RadarService:
     """Coordinates deterministic slow discovery and fast monitoring cycles."""
 
@@ -64,6 +70,7 @@ class RadarService:
         propagation: PropagationEngine | None = None,
         exposure_impact: ExposureImpactEstimator | None = None,
         similarity: VaultSimilarity | None = None,
+        events: EventPublisher | None = None,
     ) -> None:
         self._discovery = discovery
         self._morpho_collector = morpho_collector
@@ -77,6 +84,7 @@ class RadarService:
         self._propagation = propagation or PropagationEngine()
         self._exposure_impact = exposure_impact or ExposureImpactEstimator()
         self._similarity = similarity or VaultSimilarity()
+        self._events = events
         self._batch: DiscoveryBatch | None = None
         self._health_history: dict[str, HealthHistory] = {}
 
@@ -113,6 +121,15 @@ class RadarService:
             )
         errors = len(batch.failures)
         status = "partial" if errors else "completed"
+        self._publish(
+            "graph.updated",
+            "graph",
+            {
+                "entity_count": entity_count,
+                "relationship_count": relationship_count,
+                "status": status,
+            },
+        )
         return self._record_run(
             "slow",
             now,
@@ -163,6 +180,12 @@ class RadarService:
         health_states = self._evaluate_health(new_snapshots)
         self._reconcile_incidents(health_states, now)
         status = "partial" if errors else "completed"
+        if new_snapshots:
+            self._publish(
+                "graph.updated",
+                "graph",
+                {"processed_count": len(new_snapshots), "status": status},
+            )
         return self._record_run(
             "fast",
             now,
@@ -212,22 +235,42 @@ class RadarService:
             )
             for incident in (*changes.opened, *changes.updated):
                 result = self._incidents.upsert_active(incident)
+                self._publish(
+                    "incident.opened" if result.created else "incident.updated",
+                    result.incident.incident_id,
+                    {
+                        "source_entity_id": result.incident.source_entity_id,
+                        "severity": result.incident.severity.value,
+                    },
+                )
                 if result.created:
-                    self._incidents.add_notification(
-                        Notification(
-                            notification_id=f"notification:{result.incident.incident_id}",
-                            incident_id=result.incident.incident_id,
-                            severity=result.incident.severity,
-                            title=f"{result.incident.severity.value}: radar incident",
-                            message=(
-                                f"{result.incident.source_entity_id}: "
-                                f"{'; '.join(result.incident.reasons)}"
-                            ),
-                            created_at=now,
-                        )
+                    notification = Notification(
+                        notification_id=f"notification:{result.incident.incident_id}",
+                        incident_id=result.incident.incident_id,
+                        severity=result.incident.severity,
+                        title=f"{result.incident.severity.value}: radar incident",
+                        message=(
+                            f"{result.incident.source_entity_id}: "
+                            f"{'; '.join(result.incident.reasons)}"
+                        ),
+                        created_at=now,
                     )
+                    if self._incidents.add_notification(notification):
+                        self._publish(
+                            "notification.created",
+                            notification.notification_id,
+                            {
+                                "incident_id": notification.incident_id,
+                                "severity": notification.severity.value,
+                            },
+                        )
             for incident in changes.resolved:
                 self._incidents.resolve(incident.incident_id, now)
+                self._publish(
+                    "incident.resolved",
+                    incident.incident_id,
+                    {"source_entity_id": incident.source_entity_id},
+                )
 
         entities = self._topology.entities()
         relationships = self._topology.relationships()
@@ -321,6 +364,12 @@ class RadarService:
             message=message,
         )
         return run
+
+    def _publish(
+        self, event_type: str, resource_id: str, summary: Mapping[str, object]
+    ) -> None:
+        if self._events is not None:
+            self._events.publish(event_type, resource_id, summary)
 
 
 def _snapshot_health_order(snapshot: StateSnapshot) -> tuple[int, str]:

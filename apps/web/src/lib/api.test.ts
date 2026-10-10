@@ -1,7 +1,17 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { analysisResponse, catalogResponse } from "../test-fixtures"
-import { ApiError, getCatalog, runAnalysis } from "./api"
+import {
+  ApiError,
+  createExposure,
+  getCatalog,
+  getExposureImpact,
+  getNotifications,
+  getRadarEventsUrl,
+  getRadarGraph,
+  markNotificationRead,
+  runAnalysis,
+} from "./api"
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -55,5 +65,89 @@ describe("browser API client", () => {
     vi.stubGlobal("fetch", vi.fn(async () => Promise.reject(new TypeError("connect ECONNREFUSED 10.0.0.1"))))
 
     await expect(getCatalog()).rejects.toThrow("Could not reach the Risk0 server")
+  })
+
+  it("loads a filtered radar graph from the same-origin proxy", async () => {
+    const graph = {
+      schema_version: "1.0.0",
+      entities: [],
+      relationships: [],
+      similarities: [],
+      active_incidents: [],
+      generated_at: "2026-10-10T10:00:00Z",
+    }
+    const fetchMock = vi.fn(async () => Response.json(graph))
+    vi.stubGlobal("fetch", fetchMock)
+
+    await expect(
+      getRadarGraph({ chainId: 1, entityType: "vault", status: "WARNING", visible: true }),
+    ).resolves.toEqual(graph)
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/graph?chain_id=1&entity_type=vault&status=WARNING&visible=true",
+      expect.objectContaining({ method: "GET" }),
+    )
+  })
+
+  it("loads paginated notifications from the same-origin proxy", async () => {
+    const notifications = {
+      schema_version: "1.0.0",
+      notifications: [],
+      next_cursor: null,
+      generated_at: "2026-10-10T10:00:00Z",
+    }
+    const fetchMock = vi.fn(async () => Response.json(notifications))
+    vi.stubGlobal("fetch", fetchMock)
+
+    await expect(getNotifications("notification-10")).resolves.toEqual(notifications)
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/notifications?cursor=notification-10",
+      expect.objectContaining({ method: "GET" }),
+    )
+  })
+
+  it("creates manual exposures through the same-origin proxy", async () => {
+    const exposure = {
+      entity_id: "vault:1:0x123",
+      mode: "lender" as const,
+      amount: "100000",
+      numeraire: "USDC",
+      collateral_amount: null,
+      debt_amount: null,
+      ltv: null,
+    }
+    const created = {
+      ...exposure,
+      exposure_id: "exposure-1",
+      created_at: "2026-10-10T10:00:00Z",
+    }
+    const fetchMock = vi.fn(async () => Response.json(created, { status: 201 }))
+    vi.stubGlobal("fetch", fetchMock)
+
+    await expect(createExposure(exposure)).resolves.toEqual(created)
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toBe("/api/exposures")
+    expect(init.method).toBe("POST")
+    expect(JSON.parse(String(init.body))).toEqual(exposure)
+  })
+
+  it("provides only the same-origin SSE endpoint to browser consumers", () => {
+    expect(getRadarEventsUrl()).toBe("/api/events")
+  })
+
+  it("marks notifications read and loads exposure impact through same-origin routes", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(Response.json({ notification_id: "notification-1" }))
+      .mockResolvedValueOnce(Response.json({ schema_version: "1.0.0", impacts: [] }))
+    vi.stubGlobal("fetch", fetchMock)
+
+    await markNotificationRead("notification-1")
+    await getExposureImpact("exposure-1")
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/notifications")
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+      notification_id: "notification-1",
+    })
+    expect(fetchMock.mock.calls[1]?.[0]).toBe("/api/exposures?exposure_id=exposure-1")
   })
 })

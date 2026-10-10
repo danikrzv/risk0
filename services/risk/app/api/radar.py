@@ -1,0 +1,313 @@
+import os
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from functools import lru_cache
+from pathlib import Path
+from urllib.parse import urlsplit
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+
+from app.radar.contracts import (
+    EntityHistoryResponse,
+    ExposureCreateRequest,
+    ExposureImpactResponse,
+    HealthStatus,
+    IncidentGraphResponse,
+    ManualExposure,
+    Notification,
+    NotificationResponse,
+    RadarEntity,
+    RadarEntityType,
+    RadarGraphResponse,
+    SimilarityResponse,
+    StateSnapshot,
+)
+from app.radar.repositories import (
+    ExposureRepository,
+    IncidentRepository,
+    RadarDatabase,
+    StateRepository,
+    TopologyRepository,
+)
+
+
+SERVICE_ROOT = Path(__file__).resolve().parents[2]
+
+
+@dataclass(frozen=True, slots=True)
+class RadarContext:
+    topology: TopologyRepository
+    states: StateRepository
+    incidents: IncidentRepository
+    exposures: ExposureRepository
+
+
+@lru_cache(maxsize=1)
+def get_radar_context() -> RadarContext:
+    default_path = SERVICE_ROOT / ".cache" / "risk0.sqlite3"
+    database = RadarDatabase(
+        Path(
+            os.environ.get(
+                "RISK0_RADAR_DB_PATH",
+                os.environ.get("RISK0_CACHE_PATH", default_path),
+            )
+        )
+    )
+    database.migrate()
+    return RadarContext(
+        topology=TopologyRepository(database),
+        states=StateRepository(database),
+        incidents=IncidentRepository(database),
+        exposures=ExposureRepository(database),
+    )
+
+
+router = APIRouter(prefix="/v1")
+
+
+@router.get("/graph", response_model=RadarGraphResponse)
+def graph(
+    chain_id: int | None = Query(default=None, gt=0),
+    entity_type: RadarEntityType | None = None,
+    health_status: HealthStatus | None = Query(default=None, alias="status"),
+    visible: bool | None = None,
+    incident_id: str | None = None,
+    context: RadarContext = Depends(get_radar_context),
+) -> RadarGraphResponse:
+    entities = context.topology.entities(
+        chain_id=chain_id, entity_type=entity_type, visible=visible
+    )
+    latest_health = context.states.latest_health_all()
+    if health_status is not None:
+        entities = tuple(
+            entity
+            for entity in entities
+            if latest_health.get(entity.entity_id) is not None
+            and latest_health[entity.entity_id].status is health_status
+        )
+    if incident_id is not None:
+        incident = context.incidents.get(incident_id)
+        if incident is None:
+            raise _not_found("Incident")
+        impacts = context.incidents.impacts(incident_id)
+        affected = {incident.source_entity_id}
+        for impact in impacts:
+            affected.update(impact.path)
+            affected.add(impact.target_entity_id)
+        entities = tuple(entity for entity in entities if entity.entity_id in affected)
+    entities = tuple(_entity_with_health(entity, latest_health) for entity in entities)
+    entity_ids = {entity.entity_id for entity in entities}
+    relationships = tuple(
+        relationship
+        for relationship in context.topology.relationships()
+        if relationship.source_entity_id in entity_ids
+        and relationship.target_entity_id in entity_ids
+    )
+    similarities = tuple(
+        similarity
+        for similarity in context.topology.similarities()
+        if similarity.catalog_entity_id in entity_ids
+        and similarity.candidate_entity_id in entity_ids
+    )
+    active_incidents = tuple(
+        incident
+        for incident in context.incidents.active()
+        if incident.source_entity_id in entity_ids
+    )
+    return RadarGraphResponse(
+        entities=entities,
+        relationships=relationships,
+        similarities=similarities,
+        active_incidents=active_incidents,
+        generated_at=datetime.now(UTC),
+    )
+
+
+@router.get("/graph/incidents/{incident_id}", response_model=IncidentGraphResponse)
+def incident_graph(
+    incident_id: str, context: RadarContext = Depends(get_radar_context)
+) -> IncidentGraphResponse:
+    incident = context.incidents.get(incident_id)
+    if incident is None:
+        raise _not_found("Incident")
+    impacts = context.incidents.impacts(incident_id)
+    entity_ids = {incident.source_entity_id}
+    for impact in impacts:
+        entity_ids.update(impact.path)
+        entity_ids.add(impact.target_entity_id)
+    entities = tuple(
+        _entity_with_health(entity, context.states.latest_health_all())
+        for entity in context.topology.entities(entity_ids=tuple(entity_ids))
+    )
+    relationships = tuple(
+        relationship
+        for relationship in context.topology.relationships(entity_ids=tuple(entity_ids))
+        if relationship.source_entity_id in entity_ids
+        and relationship.target_entity_id in entity_ids
+    )
+    similarities = tuple(
+        similarity
+        for similarity in context.topology.similarities()
+        if similarity.catalog_entity_id in entity_ids
+        and similarity.candidate_entity_id in entity_ids
+    )
+    exposure_ids = {
+        exposure.exposure_id
+        for exposure in context.exposures.list_exposures()
+        if any(
+            impact.incident_id == incident_id
+            for impact in context.exposures.impacts(exposure.exposure_id)
+        )
+    }
+    exposures = tuple(
+        exposure
+        for exposure in context.exposures.list_exposures()
+        if exposure.exposure_id in exposure_ids
+    )
+    return IncidentGraphResponse(
+        incident=incident,
+        entities=entities,
+        relationships=relationships,
+        similarities=similarities,
+        exposures=exposures,
+        impacts=impacts,
+        generated_at=datetime.now(UTC),
+    )
+
+
+@router.get(
+    "/entities/{entity_id}/history", response_model=EntityHistoryResponse
+)
+def entity_history(
+    entity_id: str,
+    limit: int = Query(default=100, ge=1, le=500),
+    cursor: str | None = None,
+    context: RadarContext = Depends(get_radar_context),
+) -> EntityHistoryResponse:
+    entity = context.topology.get_entity(entity_id)
+    if entity is None:
+        raise _not_found("Entity")
+    try:
+        history = context.states.history(entity_id, limit=limit, cursor=cursor)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid history cursor.") from None
+    return EntityHistoryResponse(
+        entity=_sanitize_entity(entity),
+        snapshots=tuple(_sanitize_snapshot(item) for item in history.snapshots),
+        health_states=history.health_states,
+        next_cursor=history.next_cursor,
+        generated_at=datetime.now(UTC),
+    )
+
+
+@router.get("/similarities/{vault_id}", response_model=SimilarityResponse)
+def similarities(
+    vault_id: str, context: RadarContext = Depends(get_radar_context)
+) -> SimilarityResponse:
+    entity = context.topology.get_entity(vault_id)
+    if entity is None:
+        raise _not_found("Vault")
+    if entity.entity_type is not RadarEntityType.VAULT:
+        raise HTTPException(status_code=422, detail="Similarity requires a vault.")
+    return SimilarityResponse(
+        vault_id=vault_id,
+        similarities=context.topology.similarities(catalog_entity_id=vault_id),
+        generated_at=datetime.now(UTC),
+    )
+
+
+@router.get("/notifications", response_model=NotificationResponse)
+def notifications(
+    limit: int = Query(default=50, ge=1, le=500),
+    cursor: str | None = None,
+    unread_only: bool = False,
+    context: RadarContext = Depends(get_radar_context),
+) -> NotificationResponse:
+    try:
+        page = context.incidents.list_notifications(
+            limit=limit, cursor=cursor, unread_only=unread_only
+        )
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid notification cursor.") from None
+    return NotificationResponse(
+        notifications=page.notifications,
+        next_cursor=page.next_cursor,
+        generated_at=datetime.now(UTC),
+    )
+
+
+@router.post("/notifications/{notification_id}/read", response_model=Notification)
+def mark_notification_read(
+    notification_id: str, context: RadarContext = Depends(get_radar_context)
+) -> Notification:
+    notification = context.incidents.mark_read(notification_id, datetime.now(UTC))
+    if notification is None:
+        raise _not_found("Notification")
+    return notification
+
+
+@router.post(
+    "/exposures", response_model=ManualExposure, status_code=status.HTTP_201_CREATED
+)
+def create_exposure(
+    request: ExposureCreateRequest,
+    context: RadarContext = Depends(get_radar_context),
+) -> ManualExposure:
+    if context.topology.get_entity(request.entity_id) is None:
+        raise _not_found("Entity")
+    try:
+        return context.exposures.create(request, created_at=datetime.now(UTC))
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid exposure.") from None
+
+
+@router.get(
+    "/exposures/{exposure_id}/impact", response_model=ExposureImpactResponse
+)
+def exposure_impact(
+    exposure_id: str, context: RadarContext = Depends(get_radar_context)
+) -> ExposureImpactResponse:
+    exposure = context.exposures.get(exposure_id)
+    if exposure is None:
+        raise _not_found("Exposure")
+    return ExposureImpactResponse(
+        exposure=exposure,
+        impacts=context.exposures.impacts(exposure_id),
+        generated_at=datetime.now(UTC),
+    )
+
+
+def _entity_with_health(entity: RadarEntity, latest_health: dict) -> RadarEntity:
+    health = latest_health.get(entity.entity_id)
+    metadata = dict(entity.metadata)
+    if health is not None:
+        metadata.update(
+            {
+                "health_status": health.status.value,
+                "health_score": health.score,
+                "health_evaluated_at": health.evaluated_at.isoformat(),
+            }
+        )
+    return _sanitize_entity(entity.model_copy(update={"metadata": metadata}))
+
+
+def _sanitize_entity(entity: RadarEntity) -> RadarEntity:
+    return entity.model_copy(update={"source": _sanitize_source(entity.source)})
+
+
+def _sanitize_snapshot(snapshot: StateSnapshot) -> StateSnapshot:
+    return snapshot.model_copy(update={"source": _sanitize_source(snapshot.source)})
+
+
+def _sanitize_source(source: str) -> str:
+    if "://" not in source:
+        return source.split("?", 1)[0]
+    parsed = urlsplit(source)
+    if not parsed.hostname:
+        return "redacted"
+    port = f":{parsed.port}" if parsed.port else ""
+    return f"{parsed.scheme}://{parsed.hostname}{port}"
+
+
+def _not_found(resource: str) -> HTTPException:
+    return HTTPException(status_code=404, detail=f"{resource} not found.")

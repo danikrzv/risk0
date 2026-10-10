@@ -59,6 +59,14 @@ class EmptyChainCollector:
         return ()
 
 
+class RecordingEvents:
+    def __init__(self) -> None:
+        self.items: list[tuple[str, str, dict[str, object]]] = []
+
+    def publish(self, event_type: str, resource_id: str, summary: dict[str, object]):
+        self.items.append((event_type, resource_id, summary))
+
+
 def test_vertical_monitoring_cycle_is_persisted_and_idempotent(database):
     market = entity(RadarEntityType.MARKET, "market-a")
     vault = entity(RadarEntityType.VAULT, "vault-a", catalog=True)
@@ -100,6 +108,7 @@ def test_vertical_monitoring_cycle_is_persisted_and_idempotent(database):
     states = StateRepository(database)
     incidents = IncidentRepository(database)
     exposures = ExposureRepository(database)
+    events = RecordingEvents()
     service = RadarService(
         discovery=FixedDiscovery(batch),
         morpho_collector=FixedMorphoCollector((market_snapshot,)),
@@ -108,6 +117,7 @@ def test_vertical_monitoring_cycle_is_persisted_and_idempotent(database):
         states=states,
         incidents=incidents,
         exposures=exposures,
+        events=events,
     )
 
     discovery_run = service.run_discovery(NOW)
@@ -136,6 +146,12 @@ def test_vertical_monitoring_cycle_is_persisted_and_idempotent(database):
     assert [impact.target_entity_id for impact in incidents.impacts(incident.incident_id)] == [VAULT]
     assert exposures.impacts(exposure.exposure_id)[0].estimated_affected_amount == Decimal("1000")
     assert len(incidents.list_notifications().notifications) == 1
+    assert [item[0] for item in events.items] == [
+        "graph.updated",
+        "incident.opened",
+        "notification.created",
+        "graph.updated",
+    ]
 
 
 def test_monitoring_without_topology_records_a_partial_run(database):

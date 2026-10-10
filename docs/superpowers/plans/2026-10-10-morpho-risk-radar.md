@@ -359,7 +359,7 @@ Run: `uv run --project services/risk pytest services/risk/tests -m "not live" -v
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add services/risk/app/radar services/risk/app/main.py services/risk/tests/radar
@@ -387,29 +387,29 @@ git commit -m "feat: orchestrate continuous radar cycles"
 - SSE publishes `graph.updated`, `incident.opened`, `incident.updated`, `incident.resolved`, and `notification.created` with resource IDs and sequence numbers.
 - Graph filters are chain, entity type, health status, visibility, and incident ID.
 
-- [ ] **Step 1: Write failing FastAPI read/write endpoint tests**
+- [x] **Step 1: Write failing FastAPI read/write endpoint tests**
 
 Pin filters, pagination, invalid IDs, exposure validation, notification read idempotence, source redaction, and empty-database responses.
 
-- [ ] **Step 2: Write failing SSE tests**
+- [x] **Step 2: Write failing SSE tests**
 
 Pin event shape, monotonic sequence, heartbeat, reconnect with `Last-Event-ID`, and no full graph payload.
 
-- [ ] **Step 3: Implement API routers and register them**
+- [x] **Step 3: Implement API routers and register them**
 
 Map repository/domain failures to public-safe 4xx/5xx responses without provider bodies.
 
-- [ ] **Step 4: Write and implement Next.js proxy/API-client tests**
+- [x] **Step 4: Write and implement Next.js proxy/API-client tests**
 
 Follow existing catalog/analysis proxy behavior: server-side URL only, bounded timeout, generic upstream errors, and typed response validation.
 
-- [ ] **Step 5: Run API, contract, and web client tests**
+- [x] **Step 5: Run API, contract, and web client tests**
 
 Run: `uv run --project services/risk pytest services/risk/tests/api -v && pnpm --filter @risk0/contracts test && pnpm --filter @risk0/web test -- routes.test.ts api.test.ts`
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add services/risk/app/api services/risk/app/main.py services/risk/tests/api apps/web/src/app/api apps/web/src/lib

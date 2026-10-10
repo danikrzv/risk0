@@ -9,18 +9,16 @@ from app.adapters.morpho import DEFAULT_BASE_URL, MorphoClient
 from app.adapters.rpc_registry import RpcRegistry
 from app.api.analysis import router as analysis_router
 from app.api.catalog import router as catalog_router
+from app.api.events import get_event_broker, router as events_router
+from app.api.radar import get_radar_context, router as radar_router
 from app.catalog.repository import CatalogRepository
 from app.fixture_mode import FIXTURE, data_mode, fixture_morpho_client
 from app.infrastructure.cache import SQLiteCache
 from app.radar.collectors import ChainStateCollector, MorphoStateCollector
 from app.radar.discovery import MorphoDiscovery
 from app.radar.repositories import (
-    ExposureRepository,
-    IncidentRepository,
     RadarDatabase,
     SchedulerRunRepository,
-    StateRepository,
-    TopologyRepository,
 )
 from app.radar.scheduler import RadarScheduler
 from app.radar.service import RadarService
@@ -61,16 +59,18 @@ def build_radar_scheduler() -> RadarScheduler:
         else MorphoClient(os.environ.get("MORPHO_API_URL", DEFAULT_BASE_URL), cache=cache)
     )
     runs = SchedulerRunRepository(database)
+    radar_context = get_radar_context()
     service = RadarService(
         discovery=MorphoDiscovery(
             morpho, catalog=CatalogRepository(catalog_path).list_entries()
         ),
         morpho_collector=MorphoStateCollector(morpho),
         chain_collector=ChainStateCollector(RpcRegistry.from_environment()),
-        topology=TopologyRepository(database),
-        states=StateRepository(database),
-        incidents=IncidentRepository(database),
-        exposures=ExposureRepository(database),
+        topology=radar_context.topology,
+        states=radar_context.states,
+        incidents=radar_context.incidents,
+        exposures=radar_context.exposures,
+        events=get_event_broker(),
     )
     return RadarScheduler(service, runs)
 
@@ -94,6 +94,8 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(title="Risk0 Risk Service", version="0.1.0", lifespan=lifespan)
 app.include_router(catalog_router)
 app.include_router(analysis_router)
+app.include_router(radar_router)
+app.include_router(events_router)
 
 
 @app.get("/v1/health")

@@ -625,3 +625,104 @@ def test_graph_without_a_single_position_node_is_rejected():
         ScenarioEngine().run(
             lender(), risk_graph, (select(ScenarioId.STABLECOIN_DEPEG),), all_probabilities()
         )
+
+
+# Unmodelled vault allocations (graph builder's "Unmodelled allocation" nodes)
+
+UNMODELLED = "protocol:1:0x00000000000000000000000000000000000000e1"
+
+
+def vault_graph_with_unmodelled_share(unmodelled_weight: str = "0.3") -> RiskGraph:
+    """The builder's shape: vault --allocated_to(weight)--> protocol node with exposure_unknown."""
+    base = vault_graph("0.4", "0.3")
+    unmodelled = RiskNode(
+        node_id=UNMODELLED,
+        node_type=RiskNodeType.PROTOCOL,
+        label="Unmodelled allocation",
+        metrics={"exposure_unknown": True, "weight": Decimal(unmodelled_weight)},
+        provenance="test fixture",
+        freshness=FreshnessStatus.FRESH,
+        observed_at=OBSERVED_AT,
+    )
+    return graph(
+        [*base.nodes, unmodelled],
+        [*base.edges, edge(VAULT, UNMODELLED, RiskEdgeType.ALLOCATED_TO, unmodelled_weight)],
+    )
+
+
+@pytest.mark.parametrize(
+    ("scenario_id", "severity"),
+    [(ScenarioId.COLLATERAL_SHOCK, "0.10"), (ScenarioId.ORACLE_FAILURE, "0.10")],
+)
+def test_unmodelled_vault_allocation_makes_asset_and_oracle_scenarios_unavailable(
+    scenario_id, severity
+):
+    result = run_one(lender("1000"), vault_graph_with_unmodelled_share(), select(scenario_id, severity))
+
+    assert result.confidence == ConfidenceLevel.UNAVAILABLE
+    assert result.stressed_values["impact_complete"] is False
+    assert result.stressed_values["unmodelled_exposure_fraction"] == Decimal("0.3")
+    assert "unmodelled" in result.explanation.lower()
+    # The impact on the known (modelled) exposure is still reported.
+    assert result.impact > Decimal(0)
+
+
+def test_collateral_shock_known_impact_is_kept_alongside_unmodelled_share():
+    result = run_one(
+        lender("1000"),
+        vault_graph_with_unmodelled_share(),
+        select(ScenarioId.COLLATERAL_SHOCK, "0.10"),
+    )
+
+    assert result.impact == Decimal("40")
+
+
+def test_zero_weight_unmodelled_allocation_does_not_block_the_scenario():
+    result = run_one(
+        lender("1000"),
+        vault_graph_with_unmodelled_share("0"),
+        select(ScenarioId.COLLATERAL_SHOCK, "0.10"),
+    )
+
+    assert result.confidence != ConfidenceLevel.UNAVAILABLE
+    assert result.stressed_values["impact_complete"] is True
+
+
+def test_unmodelled_share_is_irrelevant_when_known_exposure_is_already_full():
+    # The vault lends USDC itself (full edge), so a USDC depeg already hits 100%.
+    result = run_one(
+        lender("1000"),
+        vault_graph_with_unmodelled_share(),
+        select(ScenarioId.STABLECOIN_DEPEG, "0.10"),
+    )
+
+    assert result.impact == Decimal("100")
+    assert result.stressed_values["impact_complete"] is True
+    assert result.confidence != ConfidenceLevel.UNAVAILABLE
+
+
+def test_protocol_impairment_counts_unmodelled_allocation_as_exposed():
+    result = run_one(
+        lender("1000"),
+        vault_graph_with_unmodelled_share(),
+        select(ScenarioId.PROTOCOL_IMPAIRMENT, "0.10"),
+    )
+
+    assert result.impact == Decimal("100")
+    assert result.stressed_values["impact_complete"] is True
+
+
+def test_missing_data_marks_impact_incomplete():
+    result = run_one(
+        lender("1000"),
+        vault_graph("0.5", "0.5", available_liquidity=None),
+        select(ScenarioId.LIQUIDITY_COLLAPSE),
+    )
+
+    assert result.stressed_values["impact_complete"] is False
+
+
+def test_complete_scenario_reports_impact_complete():
+    result = run_one(lender("1000"), vault_graph("0.4", "0.6"), select(ScenarioId.COLLATERAL_SHOCK, "0.10"))
+
+    assert result.stressed_values["impact_complete"] is True

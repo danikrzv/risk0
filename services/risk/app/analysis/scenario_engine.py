@@ -9,6 +9,14 @@ Traversal rules:
   therefore counted once per scenario.
 - `affected_path` holds every node on some position-to-shocked-node path, ordered
   by breadth-first discovery (ties broken by node id), shocked nodes last.
+- A node with metric `exposure_unknown=True` (the graph builder's "Unmodelled
+  allocation") hides an unknown share of capital. For asset and oracle scenarios
+  that share cannot be priced, so when it is reachable with non-zero weight and
+  the known exposure is not already full, the scenario's confidence is
+  UNAVAILABLE: the impact on the known exposure is reported but is incomplete.
+- Every result carries `stressed_values["impact_complete"]`: False when the
+  impact rests on missing, expired, or unmodelled data and must not be used as
+  a complete loss figure.
 """
 
 from collections import deque
@@ -60,6 +68,13 @@ AVAILABLE_LIQUIDITY_KEY = "available_liquidity"  # vault/market nodes, position 
 POOL_DEPTH_KEY = "liquidity_depth"  # pool nodes, executable depth in numeraire units
 ORACLE_AGE_SECONDS_KEY = "age_seconds"  # oracle nodes, seconds since last update
 ORACLE_DEVIATION_KEY = "deviation"  # oracle nodes, fractional deviation vs comparison
+EXPOSURE_UNKNOWN_KEY = "exposure_unknown"  # unmodelled allocation nodes (True)
+IMPACT_COMPLETE_KEY = "impact_complete"
+UNMODELLED_EXPOSURE_KEY = "unmodelled_exposure_fraction"
+# Families whose shock cannot be priced through an unmodelled allocation.
+UNMODELLED_SENSITIVE_FAMILIES = frozenset(
+    {EventFamily.PRICE_DEPEG, EventFamily.PRICE_SHOCK, EventFamily.ORACLE_FAILURE}
+)
 
 ZERO = Decimal(0)
 ONE = Decimal(1)
@@ -202,6 +217,7 @@ class _Outcome:
     summary: str = ""
     warnings: list[str] = field(default_factory=list)
     missing: list[str] = field(default_factory=list)
+    unmodelled: Decimal = ZERO
 
 
 class ScenarioEngine:
@@ -237,6 +253,8 @@ class ScenarioEngine:
             self._check_live_oracles(view, outcome)
         if definition.event_family == EventFamily.LIQUIDITY_COLLAPSE:
             self._stress_exit_pools(view, severity, outcome)
+        if definition.event_family in UNMODELLED_SENSITIVE_FAMILIES:
+            self._check_unmodelled_exposure(view, definition, outcome)
 
         probability = probabilities.get(selection.scenario_id.value)
         if probability is None:
@@ -244,8 +262,12 @@ class ScenarioEngine:
         impact = sum(
             (outcome.components[name] for name in PERMANENT_LOSS_COMPONENTS), ZERO
         )
+        data_confidence = self._data_confidence(graph, view, outcome)
+        outcome.stressed_values[IMPACT_COMPLETE_KEY] = (
+            data_confidence != ConfidenceLevel.UNAVAILABLE
+        )
         confidence = min(
-            self._data_confidence(graph, view, outcome),
+            data_confidence,
             probability.confidence,
             key=_CONFIDENCE_RANK.__getitem__,
         )
@@ -565,10 +587,33 @@ class ScenarioEngine:
             stressed_exit_pool_depth=depth * (ONE - severity),
         )
 
+    def _check_unmodelled_exposure(
+        self, view: _GraphView, definition: ScenarioDefinition, outcome: _Outcome
+    ) -> None:
+        targets = self._targets(view, definition)
+        unknown = frozenset(
+            node_id
+            for node_id in view.reachable(LOSS_EDGES)
+            if view.nodes[node_id].metrics.get(EXPOSURE_UNKNOWN_KEY) is True
+            and node_id not in targets
+        )
+        if not unknown or view.exposure(targets) >= ONE:
+            return
+        share = view.exposure(unknown)
+        if share <= ZERO:
+            return
+        outcome.unmodelled = share
+        outcome.stressed_values[UNMODELLED_EXPOSURE_KEY] = share
+        outcome.warnings.append(
+            f"A {share} share of the position sits in unmodelled allocations whose "
+            "exposure to this event is unknown; the impact covers only the modelled "
+            "exposure and is incomplete."
+        )
+
     def _data_confidence(
         self, graph: RiskGraph, view: _GraphView, outcome: _Outcome
     ) -> ConfidenceLevel:
-        if outcome.missing:
+        if outcome.missing or outcome.unmodelled > ZERO:
             return ConfidenceLevel.UNAVAILABLE
         freshness = {view.nodes[node_id].freshness for node_id in outcome.path}
         if FreshnessStatus.EXPIRED in freshness:

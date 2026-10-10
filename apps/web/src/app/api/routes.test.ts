@@ -34,12 +34,35 @@ const radarGraphResponse = {
 
 const incidentGraphResponse = {
   schema_version: "1.0.0",
-  incident: { incident_id: "incident:oracle/1" },
+  incident: {
+    incident_id: "incident:oracle/1",
+    source_entity_id: "oracle:1:oracle",
+    severity: "CRITICAL",
+    status: "OPEN",
+    trigger_metrics: {},
+    rule_version: "oracle-health-v1",
+    first_observed_at: "2026-10-10T10:00:00Z",
+    last_observed_at: "2026-10-10T10:00:00Z",
+    resolved_at: null,
+    reasons: ["Oracle deviation is critical."],
+  },
   entities: [],
   relationships: [],
   similarities: [],
   exposures: [],
-  impacts: [],
+  impacts: [
+    {
+      incident_id: "incident:oracle/1",
+      target_entity_id: "vault:1:catalog",
+      path: ["oracle:1:oracle", "vault:1:catalog"],
+      distance: 1,
+      confidence: "0.9",
+      estimated_affected_amount: null,
+      reasons: [],
+      revealed: false,
+      alternate_path_count: 0,
+    },
+  ],
   generated_at: "2026-10-10T10:00:00Z",
 }
 
@@ -255,6 +278,18 @@ describe("GET /api/graph", () => {
 
     expect(response.status).toBe(502)
     expect(await response.json()).toEqual({ error: "Risk service returned an invalid response" })
+  })
+
+  it("rejects incident graphs whose incident or impacts do not match the contract", async () => {
+    for (const body of [
+      { ...incidentGraphResponse, incident: { incident_id: "incident:oracle/1" } },
+      { ...incidentGraphResponse, impacts: [{ target_entity_id: "vault:1:catalog", path: "oracle" }] },
+      { ...incidentGraphResponse, entities: [{ entity_id: 1 }] },
+    ]) {
+      vi.stubGlobal("fetch", vi.fn(async () => Response.json(body)))
+      const response = await getGraph(new Request("http://localhost/api/graph?incident_graph_id=incident%3Aoracle%2F1"))
+      expect(response.status).toBe(502)
+    }
   })
 
   it("does not leak graph upstream failures", async () => {

@@ -9,80 +9,115 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null
 }
 
-function isRadarGraphResponse(value: unknown): value is RadarGraphResponse {
-  if (!isObject(value)) return false
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string")
+}
+
+function isEntity(entity: unknown): boolean {
   return (
+    isObject(entity) &&
+    typeof entity.entity_id === "string" &&
+    typeof entity.entity_type === "string" &&
+    typeof entity.chain_id === "number" &&
+    typeof entity.address_or_key === "string" &&
+    typeof entity.label === "string" &&
+    typeof entity.source === "string" &&
+    typeof entity.catalog === "boolean" &&
+    typeof entity.visible === "boolean" &&
+    isObject(entity.metadata)
+  )
+}
+
+function isRelationship(relationship: unknown): boolean {
+  return (
+    isObject(relationship) &&
+    typeof relationship.source_entity_id === "string" &&
+    typeof relationship.target_entity_id === "string" &&
+    typeof relationship.relationship_type === "string" &&
+    (typeof relationship.weight === "string" || relationship.weight === null) &&
+    isObject(relationship.metadata)
+  )
+}
+
+function isSimilarity(similarity: unknown): boolean {
+  return (
+    isObject(similarity) &&
+    typeof similarity.catalog_entity_id === "string" &&
+    typeof similarity.candidate_entity_id === "string" &&
+    typeof similarity.score === "string" &&
+    isObject(similarity.components) &&
+    isStringArray(similarity.missing_dimensions) &&
+    typeof similarity.model_version === "string" &&
+    typeof similarity.stored === "boolean" &&
+    typeof similarity.normally_visible === "boolean" &&
+    typeof similarity.computed_at === "string"
+  )
+}
+
+function isIncident(incident: unknown): boolean {
+  return (
+    isObject(incident) &&
+    typeof incident.incident_id === "string" &&
+    typeof incident.source_entity_id === "string" &&
+    typeof incident.severity === "string" &&
+    typeof incident.status === "string" &&
+    isObject(incident.trigger_metrics) &&
+    typeof incident.rule_version === "string" &&
+    typeof incident.first_observed_at === "string" &&
+    typeof incident.last_observed_at === "string" &&
+    (typeof incident.resolved_at === "string" || incident.resolved_at === null) &&
+    isStringArray(incident.reasons)
+  )
+}
+
+function isImpact(impact: unknown): boolean {
+  return (
+    isObject(impact) &&
+    typeof impact.incident_id === "string" &&
+    typeof impact.target_entity_id === "string" &&
+    isStringArray(impact.path) &&
+    typeof impact.distance === "number" &&
+    typeof impact.confidence === "string" &&
+    (typeof impact.estimated_affected_amount === "string" || impact.estimated_affected_amount === null) &&
+    isStringArray(impact.reasons) &&
+    typeof impact.revealed === "boolean" &&
+    typeof impact.alternate_path_count === "number"
+  )
+}
+
+function isRadarGraphResponse(value: unknown): value is RadarGraphResponse {
+  return (
+    isObject(value) &&
     value.schema_version === "1.0.0" &&
     Array.isArray(value.entities) &&
-    value.entities.every(
-      (entity) =>
-        isObject(entity) &&
-        typeof entity.entity_id === "string" &&
-        typeof entity.entity_type === "string" &&
-        typeof entity.chain_id === "number" &&
-        typeof entity.address_or_key === "string" &&
-        typeof entity.label === "string" &&
-        typeof entity.source === "string" &&
-        typeof entity.catalog === "boolean" &&
-        typeof entity.visible === "boolean" &&
-        isObject(entity.metadata),
-    ) &&
+    value.entities.every(isEntity) &&
     Array.isArray(value.relationships) &&
-    value.relationships.every(
-      (relationship) =>
-        isObject(relationship) &&
-        typeof relationship.source_entity_id === "string" &&
-        typeof relationship.target_entity_id === "string" &&
-        typeof relationship.relationship_type === "string" &&
-        (typeof relationship.weight === "string" || relationship.weight === null) &&
-        isObject(relationship.metadata),
-    ) &&
+    value.relationships.every(isRelationship) &&
     Array.isArray(value.similarities) &&
-    value.similarities.every(
-      (similarity) =>
-        isObject(similarity) &&
-        typeof similarity.catalog_entity_id === "string" &&
-        typeof similarity.candidate_entity_id === "string" &&
-        typeof similarity.score === "string" &&
-        isObject(similarity.components) &&
-        Array.isArray(similarity.missing_dimensions) &&
-        similarity.missing_dimensions.every((dimension) => typeof dimension === "string") &&
-        typeof similarity.model_version === "string" &&
-        typeof similarity.stored === "boolean" &&
-        typeof similarity.normally_visible === "boolean" &&
-        typeof similarity.computed_at === "string",
-    ) &&
+    value.similarities.every(isSimilarity) &&
     Array.isArray(value.active_incidents) &&
-    value.active_incidents.every(
-      (incident) =>
-        isObject(incident) &&
-        typeof incident.incident_id === "string" &&
-        typeof incident.source_entity_id === "string" &&
-        typeof incident.severity === "string" &&
-        typeof incident.status === "string" &&
-        isObject(incident.trigger_metrics) &&
-        typeof incident.rule_version === "string" &&
-        typeof incident.first_observed_at === "string" &&
-        typeof incident.last_observed_at === "string" &&
-        (typeof incident.resolved_at === "string" || incident.resolved_at === null) &&
-        Array.isArray(incident.reasons) &&
-        incident.reasons.every((reason) => typeof reason === "string"),
-    ) &&
+    value.active_incidents.every(isIncident) &&
     typeof value.generated_at === "string"
   )
 }
 
+// The page renders the incident, its entities, and impact paths directly, so
+// they are checked as strictly as the radar graph itself.
 function isIncidentGraphResponse(value: unknown): value is IncidentGraphResponse {
   return (
     isObject(value) &&
     value.schema_version === "1.0.0" &&
-    isObject(value.incident) &&
-    typeof value.incident.incident_id === "string" &&
+    isIncident(value.incident) &&
     Array.isArray(value.entities) &&
+    value.entities.every(isEntity) &&
     Array.isArray(value.relationships) &&
+    value.relationships.every(isRelationship) &&
     Array.isArray(value.similarities) &&
+    value.similarities.every(isSimilarity) &&
     Array.isArray(value.exposures) &&
+    value.exposures.every(isObject) &&
     Array.isArray(value.impacts) &&
+    value.impacts.every(isImpact) &&
     typeof value.generated_at === "string"
   )
 }

@@ -1,22 +1,36 @@
 import { expect, test } from "@playwright/test"
 
-test("resolved oracle incident reveals hidden propagation and affected exposure", async ({ page }) => {
+const riskUrl = `http://127.0.0.1:${process.env.RISK0_E2E_RISK_PORT ?? 8710}`
+
+test("oracle incident opens, propagates to exposure, and resolves", async ({ page, request }) => {
   await page.goto("/")
 
-  const toast = page.getByRole("alert").filter({ hasText: "Oracle deviation resolved" })
+  const exposure = page.getByRole("region", { name: "Exposure" })
+  await exposure.getByLabel("Exposure target").selectOption({ label: "Belem Sentinel USDC" })
+  await exposure.getByRole("button", { name: "Add exposure" }).click()
+  await expect(page.getByRole("status")).toContainText("Exposure recorded: 100000 USDC")
+
+  const opened = await request.post(`${riskUrl}/v1/fixtures/radar/oracle-incident/open`)
+  expect(opened.status()).toBe(201)
+
+  const toast = page.getByRole("alert").filter({ hasText: "Critical oracle deviation" })
   await expect(toast).toContainText("deviated 8%")
   await expect(toast).toHaveAttribute("data-severity", "CRITICAL")
 
   await page.getByRole("button", { name: "Notifications, 1 unread" }).click()
   const history = page.getByLabel("Notification history")
-  await expect(history).toContainText("Oracle deviation resolved")
-  await history.getByRole("button", { name: "View incident Oracle deviation resolved" }).click()
+  await expect(history).toContainText("Critical oracle deviation")
+  await history.getByRole("button", { name: "View incident Critical oracle deviation" }).click()
 
   const graph = page.getByRole("region", { name: "Morpho radar graph" })
   const hidden = graph.getByRole("button", { name: /Hidden 48% Neighbor HEALTHY/ })
   await expect(hidden).toBeVisible()
   await expect(hidden).toHaveAttribute("data-revealed", "true")
   await expect(graph.getByRole("button", { name: /WETH \/ USDC Oracle CRITICAL/ })).toHaveAttribute("data-incident-path", "true")
-  await expect(graph.getByLabel("Incident impact summary")).toContainText("153,000")
+  await expect(graph.getByLabel("Incident impact summary")).toContainText("60,000")
+
+  const resolved = await request.post(`${riskUrl}/v1/fixtures/radar/oracle-incident/resolve`)
+  expect(resolved.ok()).toBe(true)
   await expect(page.getByText("No active incidents.")).toBeVisible()
+  await expect(hidden).toBeVisible()
 })

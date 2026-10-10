@@ -111,7 +111,7 @@ export default function Home() {
     } catch (error) {
       setRadarError(errorMessage(error))
     }
-  }, [])
+  }, [exposureId])
 
   async function addExposure(request: ExposureCreateRequest) {
     setExposureBusy(true)
@@ -139,6 +139,9 @@ export default function Home() {
   const catalogEntries = catalog.status === "ready" ? catalog.entries.length : 0
   const supportedEntries =
     catalog.status === "ready" ? catalog.entries.filter((item) => item.analysis_available).length : 0
+  const displayedImpacts = (selectedIncident?.impacts ?? []).map((impact) => (
+    exposureImpacts.find((item) => item.target_entity_id === impact.target_entity_id) ?? impact
+  ))
 
   function selectEntry(entityId: string) {
     requestToken.current += 1
@@ -208,7 +211,7 @@ export default function Home() {
           <RadarGraph
             graph={radarGraph}
             selectedIncident={selectedIncident?.incident ?? null}
-            impacts={exposureImpacts.length > 0 ? exposureImpacts : (selectedIncident?.impacts ?? [])}
+            impacts={displayedImpacts}
             selectedEntityId={selectedRadarEntityId}
             onSelectEntity={setSelectedRadarEntityId}
           />

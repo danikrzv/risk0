@@ -352,11 +352,40 @@ p {
 
 .radar-graph__canvas {
   min-height: 31rem;
-  padding: 1rem;
   border: 1px solid var(--color-border);
   background-image: linear-gradient(#101c2928 1px, transparent 1px), linear-gradient(90deg, #101c2928 1px, transparent 1px);
   background-size: 24px 24px;
 }
+
+.radar-filters {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.radar-filters label,
+.radar-similarities li {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.radar-filters select {
+  width: 100%;
+}
+
+.radar-flow-node {
+  border: 1px solid var(--color-unavailable) !important;
+  border-radius: 0 !important;
+  background: #08101a !important;
+  color: var(--color-text) !important;
+}
+
+.radar-flow-node--healthy { border-color: var(--color-safe) !important; }
+.radar-flow-node--warning { border-color: var(--color-stale) !important; }
+.radar-flow-node--critical { border-color: var(--color-danger) !important; }
+.radar-flow-node--incident { box-shadow: 0 0 1rem #f0656570; }
+.radar-flow-edge--incident path { stroke: var(--color-danger); stroke-width: 2; }
 
 .radar-nodes {
   display: grid;
@@ -391,6 +420,16 @@ p {
 
 .radar-relationships li[data-incident-path="true"] {
   color: var(--color-danger);
+}
+
+.radar-similarities {
+  display: grid;
+  gap: 0.5rem;
+  margin: 1rem 0 0;
+  padding: 0;
+  list-style: none;
+  color: var(--color-muted);
+  font-size: 0.7rem;
 }
 
 .radar-impact-summary {

@@ -49,7 +49,7 @@ it into docs, issues, or pull requests.
 | `RISK0_DATA_MODE` | risk service | `live` (default) or `fixture`. |
 | `RISK0_RADAR_ENABLED` | risk service | Enables the continuous five-minute monitoring and hourly discovery loops. |
 | `RISK0_RADAR_DB_PATH` | risk service | Optional separate SQLite path for radar topology, history, incidents, notifications, and manual exposures. |
-| `RISK0_RADAR_SEED_FIXTURES` | risk service | Fixture/demo only: seeds a healthy graph plus one resolved oracle incident. |
+| `RISK0_RADAR_SEED_FIXTURES` | risk service | Fixture/demo only: seeds the deterministic healthy radar topology. |
 | `RISK0_CATALOG_PATH` | risk service | Optional override for the version-controlled catalog JSON. |
 
 ## Running

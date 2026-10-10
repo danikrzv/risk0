@@ -1,0 +1,399 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=2.2cm]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs,longtable,array}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{microtype}
+
+\definecolor{riskblue}{HTML}{1976A3}
+\definecolor{riskred}{HTML}{B83A3A}
+\hypersetup{colorlinks=true,linkcolor=riskblue,urlcolor=riskblue}
+\setlist{nosep}
+\newcommand{\RiskZero}{\textsc{Risk0}}
+\newcommand{\Prob}{\mathbb{P}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\ind}{\mathbf{1}}
+
+\title{\RiskZero{}: Algorithms and Computational Formulas}
+\author{Morpho Risk Radar MVP}
+\date{10 October 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This document specifies the algorithms used by the \RiskZero{} MVP to discover
+Morpho dependencies, compare vaults, evaluate entity health, propagate incidents,
+estimate 30-day scenario risk, estimate immediate exit cost, and produce an
+explainable \texttt{STAY}, \texttt{EXIT}, or \texttt{UNAVAILABLE} result.  It
+distinguishes empirical probabilities from transparent model estimates and makes
+missing data an explicit state rather than silently replacing it by zero.
+\end{abstract}
+
+\tableofcontents
+
+\section{Scope, notation, and invariants}
+
+The monitored dependency system is a directed attributed graph
+\begin{equation}
+G_t=(V_t,E_t,X_t),
+\end{equation}
+where $V_t$ contains chain, protocol, vault, market, asset, oracle, interest-rate
+model (IRM), and manually entered position entities; $E_t$ contains typed
+dependencies; and $X_t$ contains time-stamped observations and health state.
+Relevant edge types include \texttt{allocated\_to}, \texttt{lends},
+\texttt{borrows}, \texttt{uses\_collateral}, \texttt{uses\_oracle},
+\texttt{uses\_irm}, \texttt{deployed\_on}, and \texttt{similar\_to}.
+
+Every observation stores an observation time $t_o$, retrieval time $t_r$, source
+identity, freshness class, metrics, and an explicit missing-field set.  Three
+invariants govern all calculations:
+\begin{enumerate}
+  \item unknown critical data is never interpreted as zero risk;
+  \item empirical and model-estimated probabilities are labelled separately;
+  \item every incident impact retains at least one explainable dependency path.
+\end{enumerate}
+
+The decision horizon is $H=30$ days.  Decimal values cross the service boundary
+as decimal strings to avoid binary floating-point ambiguity.
+
+\section{Collection and scheduling}
+
+Two non-overlapping loops update the radar:
+\begin{align}
+\Delta_{\mathrm{fast}} &= 300\ \mathrm{s},\\
+\Delta_{\mathrm{slow}} &= 3600\ \mathrm{s}.
+\end{align}
+The fast loop collects changing market, oracle, vault, and chain state, evaluates
+health, updates incidents, and propagates impacts.  The slow loop rediscovers
+topology and recomputes vault similarity.  For loop $\ell$, an asynchronous lock
+$L_\ell$ enforces
+\begin{equation}
+\ind[\text{start next run of }\ell]=\ind[L_\ell\text{ is free}].
+\end{equation}
+If the lock is held, the tick is stored as \texttt{skipped}; overlapping work is
+not queued.  Failures are isolated into a recorded scheduler run and do not
+terminate the other loop.
+
+Raw snapshots and superseded health records have 30-day retention.  Hourly
+aggregates have 365-day retention.  Current health and incident history survive
+pruning.  This supports a local SQLite MVP; a distributed deployment would need
+a shared scheduler lock, message broker, durable event log, and managed backups.
+
+\section{Morpho market representation}
+
+A Morpho market $m$ is represented by the tuple
+\begin{equation}
+m=(a_L,a_C,o,r,\lambda),
+\end{equation}
+where $a_L$ is the loan asset, $a_C$ the collateral asset, $o$ the oracle, $r$
+the IRM, and $\lambda\in(0,1)$ the liquidation loan-to-value (LLTV).  Vault
+allocations add weighted edges
+\begin{equation}
+v \xrightarrow[\ w_{vm}\ ]{\texttt{allocated\_to}} m,
+\qquad 0\leq w_{vm}\leq 1,
+\end{equation}
+with $w_{vm}$ interpreted as the observable allocation share when available.
+The graph then links $m$ to its loan asset, collateral asset, oracle, IRM,
+protocol, and deployment chain.
+
+\section{Vault similarity}
+
+Similarity is computed between a catalog vault $c$ and candidate vault $v$.
+Let $J_w(A,B)$ be weighted Jaccard similarity,
+\begin{equation}
+J_w(A,B)=\frac{\sum_{k\in A\cup B}\min(a_k,b_k)}
+                   {\sum_{k\in A\cup B}\max(a_k,b_k)},
+\end{equation}
+with zero contribution when the denominator is zero.  The MVP score is
+\begin{align}
+S(c,v)={}&0.35J_w(M_c,M_v)+0.20J(A_c,A_v)+0.15J(O_c,O_v)\nonumber\\
+        &+0.10J(R_c,R_v)+0.10P_{\lambda}(c,v)
+          +0.05I_{\mathrm{chain}}+0.05I_{\mathrm{curator}},
+\end{align}
+where $M,A,O,R$ denote market, asset, oracle, and IRM sets.  The LLTV proximity
+component is
+\begin{equation}
+P_{\lambda}(c,v)=\max\left(0,1-|\bar\lambda_c-\bar\lambda_v|\right).
+\end{equation}
+Missing dimensions are recorded and contribute zero; they are not imputed.
+
+Candidates are stored when $S>0.33$.  A maximum of ten candidates per catalog
+vault are normally visible when $S>0.60$.  Stored candidates below the visual
+threshold remain processed and are revealed if an incident path reaches them.
+
+Allocation concentration is summarized with the Herfindahl--Hirschman index
+\begin{equation}
+\mathrm{HHI}(v)=\sum_m w_{vm}^{2}.
+\end{equation}
+The current policy flags concentration when $\mathrm{HHI}>0.25$.
+
+\section{Oracle consensus and deviation}
+
+For oracle $o_i$ representing a common economic pair at time $t$, normalized
+prices are compared with the peer median
+\begin{equation}
+\widetilde p_t=\operatorname{median}\{p_{1,t},\ldots,p_{n,t}\}.
+\end{equation}
+The relative deviation of oracle $i$ is
+\begin{equation}
+d_{i,t}=\frac{|p_{i,t}-\widetilde p_t|}{\widetilde p_t}.
+\end{equation}
+The MVP policy is
+\begin{equation}
+h_o(d)=
+\begin{cases}
+\texttt{CRITICAL}, & d\geq 0.05,\\
+\texttt{WARNING}, & 0.02\leq d<0.05,\\
+\texttt{HEALTHY}, & d<0.02,\\
+\texttt{UNKNOWN}, & \text{insufficient, stale, or incompatible references.}
+\end{cases}
+\end{equation}
+Staleness, invalid rounds, and unavailable peer consensus are evaluated in
+parallel with price deviation.  The most severe valid condition wins.
+
+\section{Entity health state machine}
+
+Each rule emits a proposed state $\hat h_{e,t}$, score, reasons, missing fields,
+and a version.  The externally visible state is
+\begin{equation}
+h_{e,t}\in\{\texttt{HEALTHY},\texttt{WARNING},\texttt{CRITICAL},\texttt{UNKNOWN}\}.
+\end{equation}
+\texttt{UNKNOWN} is not healthy and is visually distinct.  To reduce flapping,
+a warning requires two consecutive violating cycles and recovery requires three
+consecutive healthy cycles.
+
+For a market with supplied amount $S$ and borrowed amount $B$, utilization is
+\begin{equation}
+u=\begin{cases}B/S,&S>0,\\\text{unknown},&S\leq0.\end{cases}
+\end{equation}
+The current utilization thresholds are warning at $u\geq0.90$ and critical at
+$u\geq0.98$.  Bad debt is critical.  Near-liquidation borrower ratios use
+warning and critical portfolio-share thresholds of $0.10$ and $0.30$.
+
+For vault allocations, the unmodelled share is
+\begin{equation}
+q_{\mathrm{unknown}}=\max\left(0,1-\sum_{m\in M_{\mathrm{modelled}}}w_{vm}\right).
+\end{equation}
+When $q_{\mathrm{unknown}}>0.05$, health cannot be asserted without qualification;
+the missing allocation coverage is carried into the state and recommendation.
+
+\section{Incident lifecycle}
+
+A transition to warning or critical opens or updates an incident keyed by the
+source entity and rule.  Duplicate evaluations update the same incident rather
+than producing notification storms.  A recovery sequence resolves the incident
+but does not delete its impacts or notification history.  The persistence rule
+is therefore
+\begin{equation}
+\text{resolved}\neq\text{forgotten}.
+\end{equation}
+Notifications are durable local records with optional read time.  Toasts are a
+transient projection of those records and may disappear without deleting them.
+
+\section{Reverse dependency propagation}
+
+An incident originating at $s$ propagates against dependency direction: if a
+vault depends on a market and that market depends on an oracle, an oracle
+incident travels oracle $\rightarrow$ market $\rightarrow$ vault.  The MVP uses
+breadth-first search over the reverse adjacency relation
+\begin{equation}
+\operatorname{pred}(x)=\{u:(u,x)\in E\}.
+\end{equation}
+For each reached target $y$, BFS stores a shortest path
+\begin{equation}
+\pi(s,y)=(s,\ldots,y),\qquad d(s,y)=|\pi|-1.
+\end{equation}
+Alternative shortest paths are counted for explainability.  Distance confidence
+is deliberately simple and bounded:
+\begin{equation}
+C(s,y)=\max(0.50,1-0.05d(s,y)).
+\end{equation}
+
+For lender exposure amount $A$ attached to a vault, an affected amount along an
+allocation path $\pi$ is
+\begin{equation}
+I_{\mathrm{lender}}(\pi)=A\prod_{e\in\pi}w_e,
+\end{equation}
+where unweighted dependency edges contribute one.  For a borrower, debt amount
+is the primary at-risk amount while collateral and LTV drive liquidation tests.
+If several paths reach the same target, amounts are not blindly summed without
+deduplication; one primary path and an alternate-path count are retained.
+
+\section{Scenario impact}
+
+For scenario $j$ with severity $s_j$, deterministic propagation produces gross
+loss $L_j$ and a hard-trigger set $T_j$.  A lender loss on an affected allocation
+may be approximated by
+\begin{equation}
+L_j=A\sum_{m\in M_j}w_{vm}\ell_{jm},
+\end{equation}
+where $\ell_{jm}\in[0,1]$ is the scenario loss fraction for market $m$.
+
+For a borrower with collateral value $C$, debt value $D$, current LTV
+$\rho=D/C$, and a collateral shock $s\in[0,1)$,
+\begin{equation}
+\rho'=\frac{D}{C(1-s)}=\frac{\rho}{1-s}.
+\end{equation}
+Liquidation is triggered when $\rho'\geq\lambda$.  Let $C_o$ be collateral
+valued at the oracle price after the shock and let $f>1$ be the liquidation
+incentive factor.  The engine first computes collateral seized at oracle value,
+the corresponding repaid debt, and collateral seized at the stressed value:
+\begin{equation}
+q_o=\min(C_o,D'f),\qquad R=\frac{q_o}{f},
+\qquad
+Q=\begin{cases}
+q_o, & C_o=C',\\
+q_o\,C'/C_o, & C_o>0\text{ and }C_o\neq C',\\
+0, & C_o=0.
+\end{cases}
+\end{equation}
+The liquidation-incentive loss component is therefore
+\begin{equation}
+L_{\mathrm{liq}}=Q-R.
+\end{equation}
+It is combined with other scenario components such as direct collateral
+impairment $C-C'$; the engine does not count the full debt principal as a
+liquidation loss.
+Other hard triggers include a live oracle breach, protocol emergency, or an
+exit-liquidity threshold breach.  Hard triggers dominate cost comparison.
+
+\section{Empirical 30-day probability}
+
+For measurable price events, hourly observations are transformed into
+overlapping 30-day windows of $720$ hours.  With $n$ valid windows and event
+indicator $Y_k$, the point estimate is
+\begin{equation}
+\widehat p=\frac{k}{n},\qquad k=\sum_{k=1}^{n}Y_k.
+\end{equation}
+For example, a depeg event can be
+\begin{equation}
+Y_k=\ind\left[\min_{t\in W_k}p_t < 1-s\right],
+\end{equation}
+and a collateral shock can use peak-to-trough drawdown within $W_k$.
+
+The 95\% Wilson interval, with $z=1.96$, is
+\begin{align}
+c&=\frac{\widehat p+z^2/(2n)}{1+z^2/n},\\
+r&=\frac{z}{1+z^2/n}\sqrt{\frac{\widehat p(1-\widehat p)}{n}+\frac{z^2}{4n^2}},\\
+[p_-,p_+]&=[\max(0,c-r),\min(1,c+r)].
+\end{align}
+Missing observations above 5\% of a window lower confidence; insufficiently
+covered windows are excluded.  Overlapping windows are useful for the MVP but
+are not independent, so Wilson intervals are descriptive rather than actuarial.
+
+\section{Protocol evidence probability}
+
+Rare smart-contract impairment cannot be estimated reliably from a small
+incident count.  The MVP therefore computes a transparent evidence score
+\begin{equation}
+Q=0.30Q_{\mathrm{audit}}+0.25Q_{\mathrm{controls}}+0.20Q_{\mathrm{track}}
+  +0.15Q_{\mathrm{dependencies}}+0.10Q_{\mathrm{monitoring}},
+\end{equation}
+with each component on $[0,100]$ and source provenance retained.  The score maps
+to an explicitly model-estimated annual impairment probability
+\begin{equation}
+p_y(Q)=
+\begin{cases}
+0.005,&Q\geq85,\\
+0.010,&70\leq Q<85,\\
+0.030,&50\leq Q<70,\\
+0.080,&Q<50.
+\end{cases}
+\end{equation}
+The 30-day equivalent assumes a constant annual hazard:
+\begin{equation}
+p_{30}=1-(1-p_y)^{30/365}.
+\end{equation}
+Evidence-quality multipliers of 2, 3, or 4 widen uncertainty bands as evidence
+weakens.  This result must be labelled \emph{model-estimated}; it is not a claim
+that audit scores are observed failure frequencies.
+
+\section{Exit-cost model}
+
+Immediate exit cost is decomposed as
+\begin{equation}
+C_{\mathrm{exit}}=C_{\mathrm{fee}}+C_{\mathrm{slippage}}+C_{\mathrm{impact}}
+ +C_{\mathrm{gas}}+C_{\mathrm{residual\ debt}}.
+\end{equation}
+For quoted input amount $q_{\mathrm{in}}$, reference mid-price $p$, and quoted
+output $q_{\mathrm{out}}$, a transparent quote shortfall is
+\begin{equation}
+C_{\mathrm{quote}}=\max(0,q_{\mathrm{in}}p-q_{\mathrm{out}}),
+\end{equation}
+then split into explicit venue fee and residual price impact when the quote
+adapter supplies both.  Gas cost in numeraire is
+\begin{equation}
+C_{\mathrm{gas}}=g\,b\,p_{\mathrm{native}},
+\end{equation}
+where $g$ is gas units, $b$ gas price in native token per unit, and
+$p_{\mathrm{native}}$ the native-token numeraire price.  A quote older than 30
+seconds or 20 blocks is refreshed once; if still expired, exit cost is unknown.
+
+\section{Expected loss and hybrid recommendation}
+
+For scenarios $j=1,\ldots,J$ with 30-day probabilities $p_j$ and impacts $L_j$,
+the additive MVP expected loss is
+\begin{equation}
+\E[L_{30}]=\sum_{j=1}^{J}p_jL_j.
+\end{equation}
+This is a first-order approximation: correlated scenarios can double-count the
+same tail event.  The radar graph and similarity matrices are intended to make
+those common dependencies visible; a future model may replace the sum by a
+joint scenario distribution.
+
+The hybrid decision is evaluated in strict order:
+\begin{equation}
+D=
+\begin{cases}
+\texttt{UNAVAILABLE}, & \text{critical state, probability, or exit data missing/expired},\\
+\texttt{EXIT}, & \exists j:T_j\neq\varnothing,\\
+\texttt{UNAVAILABLE}, & \exists j:L_j>0\land p_j\text{ unavailable},\\
+\texttt{EXIT}, & \E[L_{30}]>C_{\mathrm{exit}},\\
+\texttt{STAY}, & \E[L_{30}]\leq C_{\mathrm{exit}}.
+\end{cases}
+\end{equation}
+The explanation reports the decisive branch, scenario contributions, hard
+triggers, exit-cost components, probability method, confidence, freshness, and
+the affected graph path.  \texttt{UNAVAILABLE} is neutral and must never be
+styled or described as safe.
+
+\section{Known limitations and extension path}
+
+\begin{itemize}
+  \item The current similarity weights and health thresholds are policy values,
+        not statistically calibrated universal constants.
+  \item Peer-oracle comparison requires economic equivalence, unit normalization,
+        and enough independent sources; otherwise the result is unknown.
+  \item Overlapping historical windows induce dependence and rare-event samples
+        are small.  Tail estimates require backtesting and stress calibration.
+  \item Additive expected loss does not model correlated incidents or strategic
+        reaction time.  A Bayesian network or Monte Carlo dependency model is a
+        natural later extension.
+  \item SQLite and in-process scheduling suit the local MVP.  Scaling to nine
+        protocols and eight chains requires distributed ingestion, idempotent
+        event processing, access control, durable notifications, and observability.
+  \item The system is read-only decision support, not execution software and not
+        investment advice.
+\end{itemize}
+
+\section{Implementation traceability}
+
+The principal implementation locations are:
+\begin{longtable}{>{\ttfamily}p{0.43\textwidth}p{0.49\textwidth}}
+\toprule
+services/risk/app/radar/domain & Similarity, oracle consensus, and health rules.\\
+services/risk/app/radar/analysis & Incident lifecycle and reverse propagation.\\
+services/risk/app/history/estimator.py & Empirical rolling windows and Wilson interval.\\
+services/risk/app/evidence/scoring.py & Protocol evidence score and probability mapping.\\
+services/risk/app/analysis & Scenario impact, exit cost, and hybrid recommendation.\\
+services/risk/app/radar/scheduler.py & Fast/slow intervals and non-overlap policy.\\
+apps/web/src/components & Institutional Terminal graph, exposure, incident, and notification UI.\\
+\bottomrule
+\end{longtable}
+
+\end{document}

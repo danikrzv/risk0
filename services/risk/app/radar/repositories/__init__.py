@@ -1,4 +1,4 @@
-from app.radar.repositories.database import RadarDatabase
+from app.radar.repositories.database import RadarDatabase, default_radar_path
 from app.radar.repositories.exposures import ExposureRepository
 from app.radar.repositories.incidents import (
     IncidentRepository,
@@ -26,4 +26,5 @@ __all__ = [
     "StatePruneResult",
     "StateRepository",
     "TopologyRepository",
+    "default_radar_path",
 ]

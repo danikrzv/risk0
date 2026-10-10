@@ -13,6 +13,13 @@ MIGRATIONS_DIRECTORY = Path(__file__).parent / "migrations"
 _DECIMAL_TAG = "$decimal"
 
 
+def default_radar_path(cache_path: str | Path) -> Path:
+    """Sibling of the cache file. Sharing one file would make the cache's
+    whole-file size cap evict (and VACUUM) against the radar tables too."""
+    cache_path = Path(cache_path)
+    return cache_path.with_name(f"{cache_path.stem}-radar{cache_path.suffix}")
+
+
 class RadarDatabase:
     """SQLite home of the radar tables; may share a file with `SQLiteCache`."""
 

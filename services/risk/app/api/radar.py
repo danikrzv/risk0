@@ -31,6 +31,7 @@ from app.radar.repositories import (
     RadarDatabase,
     StateRepository,
     TopologyRepository,
+    default_radar_path,
 )
 
 
@@ -84,14 +85,9 @@ class RadarContext:
 
 @lru_cache(maxsize=1)
 def get_radar_context() -> RadarContext:
-    default_path = SERVICE_ROOT / ".cache" / "risk0.sqlite3"
+    cache_path = os.environ.get("RISK0_CACHE_PATH", SERVICE_ROOT / ".cache" / "risk0.sqlite3")
     database = RadarDatabase(
-        Path(
-            os.environ.get(
-                "RISK0_RADAR_DB_PATH",
-                os.environ.get("RISK0_CACHE_PATH", default_path),
-            )
-        )
+        Path(os.environ.get("RISK0_RADAR_DB_PATH", default_radar_path(cache_path)))
     )
     database.migrate()
     return RadarContext(

@@ -20,6 +20,7 @@ from app.radar.discovery import MorphoDiscovery
 from app.radar.repositories import (
     RadarDatabase,
     SchedulerRunRepository,
+    default_radar_path,
 )
 from app.radar.scheduler import RadarScheduler
 from app.radar.service import RadarService
@@ -52,7 +53,7 @@ def build_radar_scheduler() -> RadarScheduler:
     cache_path = Path(
         os.environ.get("RISK0_CACHE_PATH", SERVICE_ROOT / ".cache" / "risk0.sqlite3")
     )
-    database_path = Path(os.environ.get("RISK0_RADAR_DB_PATH", cache_path))
+    database_path = Path(os.environ.get("RISK0_RADAR_DB_PATH", default_radar_path(cache_path)))
     catalog_path = Path(
         os.environ.get(
             "RISK0_CATALOG_PATH", REPOSITORY_ROOT / "data" / "catalog" / "ethereum.json"

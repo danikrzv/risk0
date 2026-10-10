@@ -48,7 +48,7 @@ it into docs, issues, or pull requests.
 | `RISK_API_URL` | web (server side only) | Where the Next.js proxy routes reach the risk service (default `http://localhost:8000`). |
 | `RISK0_DATA_MODE` | risk service | `live` (default) or `fixture`. |
 | `RISK0_RADAR_ENABLED` | risk service | Enables the continuous five-minute monitoring and hourly discovery loops. |
-| `RISK0_RADAR_DB_PATH` | risk service | Optional separate SQLite path for radar topology, history, incidents, notifications, and manual exposures. |
+| `RISK0_RADAR_DB_PATH` | risk service | Optional SQLite path (default: `risk0-radar.sqlite3` beside the cache) for radar topology, history, incidents, notifications, and manual exposures. |
 | `RISK0_RADAR_SEED_FIXTURES` | risk service | Fixture/demo only: seeds the deterministic healthy radar topology. |
 | `RISK0_CATALOG_PATH` | risk service | Optional override for the version-controlled catalog JSON. |
 
@@ -101,9 +101,10 @@ move it.
 The continuous Morpho radar is opt-in. Set `RISK0_RADAR_ENABLED=true` to run
 its fast monitoring loop every 300 seconds and its slow discovery/similarity
 loop every 3,600 seconds inside the FastAPI lifespan. Overlapping runs are
-skipped and recorded rather than executed concurrently. Radar tables share the
-cache database by default; set `RISK0_RADAR_DB_PATH` to keep them in a separate
-SQLite file. Migrations run idempotently at service startup. Raw snapshots and
+skipped and recorded rather than executed concurrently. Radar tables live in
+their own SQLite file next to the cache (`risk0-radar.sqlite3` by default); set
+`RISK0_RADAR_DB_PATH` to move it. Keep the two apart: the cache enforces its
+100 MB cap on its whole file. Migrations run idempotently at service startup. Raw snapshots and
 superseded health history are retained for 30 days; hourly aggregates are kept
 for 365 days; incident records are retained. Fixture and test runs leave the
 scheduler disabled unless explicitly enabled.

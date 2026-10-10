@@ -1,0 +1,44 @@
+{
+  "source": "defisafety",
+  "methodology_version": "0.9",
+  "methodology_url": "https://defisafety.com/documentation-09/",
+  "snapshot_compiled_at": "2026-10-01T00:00:00Z",
+  "protocols": [
+    {
+      "protocol": "sample-protocol",
+      "status": "reviewed",
+      "review_url": "https://example.com/defisafety/sample-protocol",
+      "review_date": "2026-06-30T00:00:00Z",
+      "retrieved_at": "2026-10-01T09:00:00Z",
+      "overall_score": "81",
+      "answers": {
+        "Q1": "100", "Q2": "100", "Q3": "50", "Q4": "100",
+        "Q5": "100", "Q6": "90", "Q7": "80", "Q8": "70", "Q9": "100",
+        "Q10": "100", "Q11": "90", "Q12": "80", "Q13": "0", "Q14": "100", "Q15": "70",
+        "Q16": "90", "Q17": "60", "Q18": "0",
+        "Q19": "40", "Q20": "100", "Q21": "90", "Q22": "70", "Q23": "60",
+        "Q24": "100", "Q25": "80", "Q26": "70"
+      }
+    },
+    {
+      "protocol": "partial-protocol",
+      "status": "reviewed",
+      "review_url": "https://example.com/defisafety/partial-protocol",
+      "review_date": "2026-06-30T00:00:00Z",
+      "retrieved_at": "2026-10-01T09:00:00Z",
+      "overall_score": "64",
+      "answers": {
+        "Q10": "100", "Q11": "80",
+        "Q16": "100", "Q17": "100", "Q18": "100",
+        "Q24": "0", "Q25": "n/a", "Q26": "n/a"
+      }
+    },
+    {
+      "protocol": "uncaptured-protocol",
+      "status": "not_captured",
+      "source_url": "https://defisafety.com/",
+      "checked_at": "2026-10-01T09:00:00Z",
+      "note": "No review scores were transcribed for this protocol."
+    }
+  ]
+}

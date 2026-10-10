@@ -1,0 +1,122 @@
+{
+  "version": "1.0",
+  "publishedAt": "2026-04-01T00:00:00.000Z",
+  "lastModified": "2026-09-01T12:00:00.000Z",
+  "compiledAt": "2026-09-30T13:36:34.000Z",
+  "verified": true,
+  "project": "sample-protocol",
+  "metadata": {
+    "protocolName": "Sample Protocol",
+    "protocolSlug": "sample-protocol",
+    "chain": "Ethereum",
+    "projectType": "lending",
+    "tokenName": "SAMPLE",
+    "description": "Hand-written fixture shaped like a DeFiScan compiled review."
+  },
+  "totals": {
+    "contractCount": 4,
+    "permissionedFunctionCount": 4,
+    "adminCount": 3,
+    "dependencyCount": 2,
+    "totalCapitalAtRisk": 1234.5,
+    "verifiedContractCount": 3,
+    "coverage": 100
+  },
+  "admins": [
+    {
+      "address": "eth:0x0000000000000000000000000000000000000a01",
+      "name": "Sample Timelock (48h)",
+      "adminType": "Immutable",
+      "isGovernance": true,
+      "functions": [
+        {
+          "contractName": "SampleVault",
+          "functionName": "upgradeTo",
+          "impact": "critical",
+          "mitigations": [{"type": "delay", "delaySeconds": 172800}]
+        }
+      ]
+    },
+    {
+      "address": "eth:0x0000000000000000000000000000000000000a02",
+      "name": "Ops EOA",
+      "adminType": "EOA",
+      "isGovernance": false,
+      "functions": [
+        {
+          "contractName": "SampleVault",
+          "functionName": "setOracle",
+          "impact": "critical",
+          "mitigations": []
+        }
+      ]
+    },
+    {
+      "address": "eth:0x0000000000000000000000000000000000000a03",
+      "name": "Guardian 3/5 Multisig",
+      "adminType": "Multisig",
+      "isGovernance": false,
+      "functions": [
+        {
+          "contractName": "SampleVault",
+          "functionName": "pause",
+          "impact": "no-impact",
+          "mitigations": []
+        }
+      ]
+    }
+  ],
+  "functions": [
+    {
+      "contractName": "SampleVault",
+      "functionName": "upgradeTo",
+      "impact": "critical",
+      "mitigations": [{"type": "delay", "delaySeconds": 172800}]
+    },
+    {
+      "contractName": "SampleVault",
+      "functionName": "setOracle",
+      "impact": "critical",
+      "mitigations": []
+    },
+    {
+      "contractName": "SampleVault",
+      "functionName": "setFee",
+      "impact": "critical",
+      "mitigations": [{"type": "valueRange", "description": "Fee capped at 25%"}]
+    },
+    {
+      "contractName": "SampleVault",
+      "functionName": "pause",
+      "impact": "no-impact",
+      "mitigations": []
+    }
+  ],
+  "contracts": [
+    {"address": "eth:0x0000000000000000000000000000000000000c01", "name": "SampleVault", "isExternal": false, "isGovernance": false, "entity": null, "proxyType": "EIP1967 proxy"},
+    {"address": "eth:0x0000000000000000000000000000000000000c02", "name": "SampleRouter", "isExternal": false, "isGovernance": false, "entity": null, "proxyType": "immutable"},
+    {"address": "eth:0x0000000000000000000000000000000000000c03", "name": "SampleClone", "isExternal": false, "isGovernance": false, "entity": null, "proxyType": "EIP1167 proxy"},
+    {"address": "eth:0x0000000000000000000000000000000000000c04", "name": "External Feed", "isExternal": true, "isGovernance": false, "entity": "Chainlink", "proxyType": "EIP1967 proxy"}
+  ],
+  "dependencies": [
+    {"address": "eth:0x0000000000000000000000000000000000000d01", "name": "Chainlink ETH/USD", "entity": "Chainlink"},
+    {"address": "eth:0x0000000000000000000000000000000000000d02", "name": "Unlabelled Adapter", "entity": null}
+  ],
+  "dependencyEntityGroups": [
+    {"entity": "Chainlink", "totalFundsAtRisk": 1234.5},
+    {"entity": null, "totalFundsAtRisk": 1234.5}
+  ],
+  "audits": [
+    {"author": "Example Audits LLC", "date": "2025-11", "scope": "Core contracts", "url": "https://example.com/audits/core.pdf"},
+    {"author": "Second Review GmbH", "date": "2026-02-14", "scope": "Vault upgrade", "url": "https://example.com/audits/vault.pdf"}
+  ],
+  "governance": {
+    "framework": "Governor Bravo",
+    "voteExecution": "onchain",
+    "executionDelay": {"kind": "fieldRef", "resolved": true, "seconds": 172800}
+  },
+  "activity": [
+    {"timestamp": "2026-09-15T08:00:00.000Z", "address": "eth:0x0000000000000000000000000000000000000c01", "contractName": "SampleVault", "type": "data-change"},
+    {"timestamp": "2026-08-01T00:00:00.000Z", "address": "eth:0x0000000000000000000000000000000000000c01", "contractName": "SampleVault", "type": "implementation-change"}
+  ]
+}

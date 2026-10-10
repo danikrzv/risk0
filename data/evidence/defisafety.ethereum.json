@@ -1,0 +1,22 @@
+{
+  "source": "defisafety",
+  "methodology_version": "0.9",
+  "methodology_url": "https://defisafety.com/documentation-09/",
+  "snapshot_compiled_at": "2026-10-10T11:00:00Z",
+  "protocols": [
+    {
+      "protocol": "morpho",
+      "status": "not_captured",
+      "source_url": "https://defisafety.com/",
+      "checked_at": "2026-10-10T11:00:00Z",
+      "note": "No DeFiSafety review scores have been transcribed for Morpho; defisafety.com serves reviews through a client-rendered app without a documented data endpoint, so scores must be added by hand with the review URL and review date."
+    },
+    {
+      "protocol": "uniswap-v3",
+      "status": "not_captured",
+      "source_url": "https://defisafety.com/",
+      "checked_at": "2026-10-10T11:00:00Z",
+      "note": "No DeFiSafety review scores have been transcribed for Uniswap V3; defisafety.com serves reviews through a client-rendered app without a documented data endpoint, so scores must be added by hand with the review URL and review date."
+    }
+  ]
+}

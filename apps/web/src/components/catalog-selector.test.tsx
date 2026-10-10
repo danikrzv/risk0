@@ -81,14 +81,27 @@ describe("CatalogSelector", () => {
   it("shows live metrics with freshness and source", () => {
     const entries = catalogEntries.map((entry) =>
       entry.entity_id === "wsteth-weth-965"
-        ? { ...entry, freshness: "stale_usable" as const, fetched_at: "2026-10-10T11:58:00Z" }
+        ? { ...entry, freshness: "stale_usable" as const, fetched_at: "2026-10-10T11:58:00Z", age_seconds: 120 }
         : entry,
     )
     render(<CatalogSelector entries={entries} selectedId={null} onSelect={() => {}} now={NOW} />)
 
     const card = screen.getByRole("radio", { name: /wstETH collateral/ }).closest("label") as HTMLElement
     expect(within(card).getByText("Supplied 310,500 WETH · liquidity 27,900 WETH · utilization 91.01%")).toBeInTheDocument()
-    expect(within(card).getByText(/^Stale · 2 min 0 s old · https:\/\/api\.morpho\.org/)).toBeInTheDocument()
+    expect(within(card).getByText(/^Stale · 2 min old · https:\/\/api\.morpho\.org/)).toBeInTheDocument()
+  })
+
+  it("renders exponent-form metrics from the risk service without crashing", () => {
+    const entries = catalogEntries.map((entry) =>
+      entry.entity_id === "wsteth-weth-965"
+        ? { ...entry, metrics: { ...entry.metrics!, liquidity_assets: "0E-18", total_assets: "5E-18" }, age_seconds: 90 }
+        : entry,
+    )
+    render(<CatalogSelector entries={entries} selectedId={null} onSelect={() => {}} now={NOW} receivedAt={NOW} />)
+
+    const card = screen.getByRole("radio", { name: /wstETH collateral/ }).closest("label") as HTMLElement
+    expect(within(card).getByText("Supplied 0 WETH · liquidity 0 WETH · utilization 91.01%")).toBeInTheDocument()
+    expect(within(card).getByText(/^Fresh · 1 min 30 s old/)).toBeInTheDocument()
   })
 
   it("does not invent metrics when the provider returned none", () => {

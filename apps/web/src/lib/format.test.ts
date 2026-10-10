@@ -8,6 +8,7 @@ import {
   formatProbabilityRange,
   formatQuantity,
   isPositiveDecimal,
+  normalizeDecimal,
   percentToRatio,
   ratioToPercent,
 } from "./format"
@@ -28,6 +29,31 @@ describe("decimal formatting", () => {
     expect(formatQuantity("0.00000049")).toBe("0")
     expect(formatQuantity("0.0000005")).toBe("0.000001")
     expect(formatQuantity("100000")).toBe("100,000")
+  })
+
+  it("accepts exponent notation as emitted by the risk service", () => {
+    expect(formatQuantity("0E-18")).toBe("0")
+    expect(formatQuantity("5E-18")).toBe("0")
+    expect(formatQuantity("1.5E+3")).toBe("1,500")
+    expect(formatAmount("1E-7", 8)).toBe("0.00000010")
+    expect(formatAmount("2.5e2")).toBe("250.00")
+    expect(formatPercent("1E-2")).toBe("1.00%")
+    expect(compareDecimal("1e3", "1000")).toBe(0)
+    expect(compareDecimal("0E-18", "0")).toBe(0)
+    expect(isPositiveDecimal("1e3")).toBe(true)
+    expect(isPositiveDecimal("0E-18")).toBe(false)
+  })
+
+  it("normalizes user input to the contract's plain decimal form", () => {
+    expect(normalizeDecimal(" 0010 ")).toBe("10")
+    expect(normalizeDecimal("0010.50")).toBe("10.50")
+    expect(normalizeDecimal("000")).toBe("0")
+    expect(normalizeDecimal("0.5")).toBe("0.5")
+    expect(normalizeDecimal("1e3")).toBe("1000")
+    expect(normalizeDecimal("2.5E-3")).toBe("0.0025")
+    expect(normalizeDecimal("-1")).toBe("-1")
+    expect(normalizeDecimal("abc")).toBe("abc")
+    expect(normalizeDecimal("1.")).toBe("1.")
   })
 
   it("formats ratios as percentages", () => {
@@ -63,15 +89,19 @@ describe("decimal formatting", () => {
   it("accepts only finite positive plain decimals", () => {
     expect(isPositiveDecimal("100000")).toBe(true)
     expect(isPositiveDecimal("0.000001")).toBe(true)
-    for (const value of ["0", "0.000", "-1", "NaN", "Infinity", "1e5", "", " 1", "1.2.3"]) {
+    for (const value of ["0", "0.000", "-1", "NaN", "Infinity", "", " 1", "1.2.3", "1."]) {
       expect(isPositiveDecimal(value)).toBe(false)
     }
   })
 
-  it("formats ages exactly", () => {
+  it("formats ages exactly, never dropping a non-zero unit", () => {
+    expect(formatAge(0)).toBe("0 s")
     expect(formatAge(4)).toBe("4 s")
     expect(formatAge(65)).toBe("1 min 5 s")
     expect(formatAge(3600 + 120)).toBe("1 h 2 min")
     expect(formatAge(2 * 86400 + 3600)).toBe("2 d 1 h")
+    expect(formatAge(90061)).toBe("1 d 1 h 1 min 1 s")
+    expect(formatAge(86461)).toBe("1 d 1 min 1 s")
+    expect(formatAge(86400)).toBe("1 d")
   })
 })

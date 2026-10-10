@@ -135,6 +135,15 @@ describe("POST /api/analysis", () => {
     expect(text).not.toContain("risk.internal")
   })
 
+  it("rejects a 200 response that is not an analysis", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ graph: {} })))
+
+    const response = await POST(analysisCall(JSON.stringify(validRequest)))
+
+    expect(response.status).toBe(502)
+    expect(await response.json()).toEqual({ error: "Risk service returned an invalid response" })
+  })
+
   it("maps upstream server errors to a sanitized 502", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("RPC https://rpc.example.invalid/v2/fake-provider-key", { status: 500 })))
 

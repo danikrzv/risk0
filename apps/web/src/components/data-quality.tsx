@@ -1,6 +1,6 @@
 import type { AnalysisResponse, FreshnessStatus, ProbabilityEstimate } from "@risk0/contracts"
 
-import { ageSeconds, formatAge, formatProbabilityRange } from "../lib/format"
+import { ageSeconds, elapsedSeconds, formatAge, formatProbabilityRange } from "../lib/format"
 
 const FRESHNESS_LABELS: Record<FreshnessStatus, string> = {
   fresh: "Fresh",
@@ -15,13 +15,16 @@ export function FreshnessBadge({
   observedAt,
   source,
   now,
+  ageSeconds: serverAge,
 }: {
   freshness: FreshnessStatus
   observedAt: string
   source: string
   now: number
+  /** Age reported by the risk service; preferred over the browser clock, which may be skewed. */
+  ageSeconds?: number
 }) {
-  const age = formatAge(ageSeconds(observedAt, now))
+  const age = formatAge(serverAge ?? ageSeconds(observedAt, now))
   return (
     <span className={`badge badge--${freshness}`} title={observedAt}>
       {`${FRESHNESS_LABELS[freshness]} · ${age} old · ${source}`}
@@ -57,10 +60,11 @@ interface SourceRow {
   freshness: FreshnessStatus
   observedAt: string
   source: string
+  ageSeconds?: number
   detail?: string
 }
 
-function sourceRows(analysis: AnalysisResponse): SourceRow[] {
+function sourceRows(analysis: AnalysisResponse, elapsed: number): SourceRow[] {
   const nodes = analysis.graph.nodes.map((node) => ({
     key: `node:${node.node_id}`,
     label: node.label,
@@ -75,6 +79,7 @@ function sourceRows(analysis: AnalysisResponse): SourceRow[] {
     freshness: exit.freshness,
     observedAt: exit.quoted_at,
     source: exit.source,
+    ageSeconds: exit.quote_age_seconds + elapsed,
   }
   const probabilities = analysis.scenario_results.map((result) => ({
     key: `probability:${result.scenario_id}`,
@@ -87,8 +92,17 @@ function sourceRows(analysis: AnalysisResponse): SourceRow[] {
   return [...nodes, quote, ...probabilities]
 }
 
-export function DataQualityPanel({ analysis, now }: { analysis: AnalysisResponse; now: number }) {
-  const rows = sourceRows(analysis)
+export function DataQualityPanel({
+  analysis,
+  now,
+  receivedAt,
+}: {
+  analysis: AnalysisResponse
+  now: number
+  /** When this device received the analysis; server ages are advanced by the time since. */
+  receivedAt?: number
+}) {
+  const rows = sourceRows(analysis, elapsedSeconds(receivedAt, now))
   const degraded = rows.filter((row) => row.freshness !== "fresh")
   const warnings = [...analysis.graph.completeness_warnings, ...analysis.exit_estimate.warnings]
 
@@ -116,6 +130,7 @@ export function DataQualityPanel({ analysis, now }: { analysis: AnalysisResponse
               observedAt={row.observedAt}
               source={row.source}
               now={now}
+              ageSeconds={row.ageSeconds}
             />
             {row.detail && <span className="sources__detail">{row.detail}</span>}
           </li>

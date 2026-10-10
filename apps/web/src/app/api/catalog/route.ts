@@ -17,7 +17,11 @@ export async function GET(): Promise<Response> {
       signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
     })
     if (!upstream.ok) return Response.json({ error: "Risk service unavailable" }, { status: 502 })
-    return Response.json(await upstream.json())
+    const body: unknown = await upstream.json()
+    if (!body || typeof body !== "object" || !Array.isArray((body as { entries?: unknown }).entries)) {
+      return Response.json({ error: "Risk service returned an invalid response" }, { status: 502 })
+    }
+    return Response.json(body)
   } catch {
     return Response.json({ error: "Risk service unavailable" }, { status: 502 })
   }

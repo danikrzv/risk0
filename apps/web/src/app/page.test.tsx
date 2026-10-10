@@ -64,6 +64,57 @@ describe("Home", () => {
     expect(screen.getByRole("region", { name: "Data quality" })).toBeInTheDocument()
   })
 
+  it("drops an in-flight analysis when the entry changes before it resolves", async () => {
+    let resolveAnalysis: (response: Response) => void = () => {}
+    stubApi(() => new Promise<Response>((resolve) => (resolveAnalysis = resolve)))
+    render(<Home />)
+
+    fireEvent.click(await screen.findByRole("radio", { name: /wstETH collateral \/ WETH debt/ }))
+    fireEvent.click(screen.getByRole("radio", { name: "Borrower" }))
+    fireEvent.click(screen.getByRole("button", { name: "Run analysis" }))
+    expect(screen.getByRole("button", { name: "Running analysis…" })).toBeDisabled()
+
+    fireEvent.click(screen.getByRole("radio", { name: /Belem RWA EURCV/ }))
+    resolveAnalysis(Response.json(analysisResponse))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(screen.queryByRole("region", { name: "Recommendation" })).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Run analysis" })).toBeEnabled()
+  })
+
+  it("resets scenario edits and errors when the entry changes", async () => {
+    stubApi()
+    render(<Home />)
+
+    fireEvent.click(await screen.findByRole("radio", { name: /Belem RWA EURCV/ }))
+    fireEvent.change(screen.getByLabelText("Stablecoin depeg severity (%)"), { target: { value: "200" } })
+    fireEvent.click(screen.getByRole("button", { name: "Run analysis" }))
+    expect(screen.getByLabelText("Stablecoin depeg severity (%)")).toHaveAccessibleDescription(
+      "Enter a severity above 0% and at most 100%",
+    )
+
+    fireEvent.click(screen.getByRole("radio", { name: /MEV Capital wETH/ }))
+
+    expect(screen.getByLabelText("Stablecoin depeg severity (%)")).toHaveValue("10")
+    expect(screen.getByLabelText("Stablecoin depeg severity (%)")).not.toHaveAttribute("aria-invalid")
+  })
+
+  it("reports scenario errors even when the position is also invalid", async () => {
+    const fetchMock = stubApi()
+    render(<Home />)
+
+    fireEvent.click(await screen.findByRole("radio", { name: /Belem RWA EURCV/ }))
+    fireEvent.change(screen.getByLabelText("Amount"), { target: { value: "abc" } })
+    fireEvent.change(screen.getByLabelText("Stablecoin depeg severity (%)"), { target: { value: "200" } })
+    fireEvent.click(screen.getByRole("button", { name: "Run analysis" }))
+
+    expect(screen.getByLabelText("Stablecoin depeg severity (%)")).toHaveAccessibleDescription(
+      "Enter a severity above 0% and at most 100%",
+    )
+    expect(screen.getByLabelText("Amount")).toHaveAccessibleDescription("Enter a positive number")
+    expect(fetchMock.mock.calls.filter(([url]) => url === "/api/analysis")).toHaveLength(0)
+  })
+
   it("shows a sanitized error when the catalog cannot load", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({ error: "Risk service unavailable" }, { status: 502 })))
     render(<Home />)

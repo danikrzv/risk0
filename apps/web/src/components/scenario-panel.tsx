@@ -221,6 +221,12 @@ export function ScenarioResults({
                 </table>
               )}
               <p>{result.explanation}</p>
+              {result.probability.method === "model_estimated_protocol" && (
+                <section className="breakdown" aria-label="Model breakdown">
+                  <h4>Model breakdown</h4>
+                  <p>{result.probability.explanation}</p>
+                </section>
+              )}
             </article>
           )
         })}

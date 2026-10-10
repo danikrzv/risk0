@@ -487,6 +487,22 @@ fieldset.panel legend,
   font-style: italic;
 }
 
+.breakdown {
+  margin-top: 0.75rem;
+  padding: 0.75rem;
+  border-left: 3px solid var(--color-border);
+  font-size: 0.875rem;
+}
+
+.breakdown h4 {
+  margin: 0;
+}
+
+.breakdown p {
+  margin-top: 0.5rem;
+  overflow-wrap: anywhere;
+}
+
 .quality-summary--degraded {
   color: var(--color-stale);
   font-weight: 700;

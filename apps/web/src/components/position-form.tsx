@@ -1,10 +1,17 @@
 "use client"
 
 import type { HydratedCatalogEntry, PositionInput, PositionMode } from "@risk0/contracts"
-import { type FormEvent, type ReactNode, useId, useState } from "react"
+import { type FormEvent, type ReactNode, useEffect, useId, useRef, useState } from "react"
 
 import { canAnalyze } from "./catalog-selector"
-import { compareDecimal, formatPercent, isPositiveDecimal, percentToRatio, ratioToPercent } from "../lib/format"
+import {
+  compareDecimal,
+  formatPercent,
+  isPositiveDecimal,
+  normalizeDecimal,
+  percentToRatio,
+  ratioToPercent,
+} from "../lib/format"
 
 const MAX_AMOUNT = "1000000000000000"
 const MAX_AMOUNT_LABEL = "1,000,000,000,000,000"
@@ -79,10 +86,16 @@ function amountError(value: string): string | undefined {
 
 function validate(draft: Draft, entry: HydratedCatalogEntry): { errors: Errors; position?: PositionInput } {
   const errors: Errors = {}
-  if (!draft.numeraire.trim()) errors.numeraire = "Enter a numeraire"
+  const numeraire = draft.numeraire.trim()
+  if (!numeraire) errors.numeraire = "Enter a numeraire"
+  // Typed values are normalized to the contract's plain decimal form first.
+  const amountValue = normalizeDecimal(draft.amount)
+  const collateralValue = normalizeDecimal(draft.collateral)
+  const debtValue = normalizeDecimal(draft.debt)
+  const ltvPercent = normalizeDecimal(draft.ltvPercent)
 
   if (draft.mode === "lender") {
-    const amount = amountError(draft.amount)
+    const amount = amountError(amountValue)
     if (amount) errors.amount = amount
     if (Object.keys(errors).length) return { errors }
     return {
@@ -90,21 +103,21 @@ function validate(draft: Draft, entry: HydratedCatalogEntry): { errors: Errors; 
       position: {
         mode: "lender",
         entity_id: entry.entity_id,
-        amount: draft.amount,
-        numeraire: draft.numeraire.trim(),
+        amount: amountValue,
+        numeraire,
       },
     }
   }
 
-  const collateral = amountError(draft.collateral)
+  const collateral = amountError(collateralValue)
   if (collateral) errors.collateral = collateral
-  const debt = amountError(draft.debt)
+  const debt = amountError(debtValue)
   if (debt) errors.debt = debt
   let ltv: string | undefined
-  if (!isPositiveDecimal(draft.ltvPercent)) {
+  if (!isPositiveDecimal(ltvPercent)) {
     errors.ltvPercent = "Enter a positive LTV"
   } else {
-    ltv = percentToRatio(draft.ltvPercent)
+    ltv = percentToRatio(ltvPercent)
     if (entry.lltv && compareDecimal(ltv, entry.lltv) >= 0) {
       errors.ltvPercent = `LTV must be below the market LLTV of ${formatPercent(entry.lltv)}`
     }
@@ -116,11 +129,11 @@ function validate(draft: Draft, entry: HydratedCatalogEntry): { errors: Errors; 
       mode: "borrower",
       entity_id: entry.entity_id,
       // The contract's borrower example sizes the position by its debt.
-      amount: draft.debt,
-      collateral_amount: draft.collateral,
-      debt_amount: draft.debt,
+      amount: debtValue,
+      collateral_amount: collateralValue,
+      debt_amount: debtValue,
       ltv,
-      numeraire: draft.numeraire.trim(),
+      numeraire,
     },
   }
 }
@@ -165,34 +178,55 @@ export function PositionForm({
   entry,
   onSubmit,
   busy = false,
+  beforeSubmit,
   children,
 }: {
   entry: HydratedCatalogEntry
   onSubmit: (position: PositionInput) => void
   busy?: boolean
+  /**
+   * Called on every submit attempt before the position is validated, so the
+   * caller can validate what it renders as children (e.g. scenarios) at the
+   * same time. Returning false blocks submission.
+   */
+  beforeSubmit?: () => boolean
   /** Rendered between the position fields and the submit actions. */
   children?: ReactNode
 }) {
   const [draft, setDraft] = useState<Draft>(() => presetDraft(entry, entry.supported_modes[0] ?? "lender"))
   const [errors, setErrors] = useState<Errors>({})
+  const [failedFields, setFailedFields] = useState(0)
+  const formRef = useRef<HTMLFormElement>(null)
   const supportsBorrower = entry.supported_modes.includes("borrower")
+
+  // After a failed submit, move focus to the first invalid field so the
+  // problem is announced and reachable without scanning the form.
+  useEffect(() => {
+    if (!failedFields) return
+    formRef.current?.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus()
+  }, [failedFields, errors])
 
   const update = (field: Field) => (value: string) => setDraft((current) => ({ ...current, [field]: value }))
 
   function setMode(mode: PositionMode) {
     setDraft((current) => ({ ...current, mode }))
     setErrors({})
+    setFailedFields(0)
   }
 
   function handleSubmit(event: FormEvent) {
     event.preventDefault()
+    // Run the caller's checks unconditionally so their errors show alongside ours.
+    const surroundingOk = beforeSubmit ? beforeSubmit() : true
     const result = validate(draft, entry)
     setErrors(result.errors)
-    if (result.position) onSubmit(result.position)
+    setFailedFields(Object.keys(result.errors).length)
+    if (!surroundingOk || !result.position) return
+    onSubmit(result.position)
   }
 
   return (
-    <form className="panel position" onSubmit={handleSubmit} noValidate>
+    <form ref={formRef} className="panel position" onSubmit={handleSubmit} noValidate>
       <h2>2. Describe the position</h2>
       {supportsBorrower && entry.supported_modes.length > 1 ? (
         <fieldset className="mode">
@@ -243,6 +277,11 @@ export function PositionForm({
       />
 
       {children}
+      {failedFields > 0 && (
+        <p role="alert" className="alert">
+          {`Fix the ${failedFields} highlighted ${failedFields === 1 ? "field" : "fields"} before running the analysis.`}
+        </p>
+      )}
       {!canAnalyze(entry) && <p className="field__error">Analysis is unavailable for this entry.</p>}
       <div className="actions">
         <button
@@ -251,6 +290,7 @@ export function PositionForm({
           onClick={() => {
             setDraft(presetDraft(entry, draft.mode))
             setErrors({})
+            setFailedFields(0)
           }}
         >
           Reset to preset

@@ -23,6 +23,14 @@ describe("FreshnessBadge", () => {
     expect(screen.getByText("Stale · 5 min 7 s old · https://api.morpho.org/markets/0xb8fc")).toBeInTheDocument()
   })
 
+  it("prefers the server-reported age over the browser clock", () => {
+    render(
+      <FreshnessBadge freshness="fresh" observedAt="2026-10-10T11:59:58Z" source="rpc" now={NOW} ageSeconds={125} />,
+    )
+
+    expect(screen.getByText("Fresh · 2 min 5 s old · rpc")).toBeInTheDocument()
+  })
+
   it("labels fresh and expired data", () => {
     render(
       <>
@@ -32,7 +40,7 @@ describe("FreshnessBadge", () => {
     )
 
     expect(screen.getByText("Fresh · 2 s old · rpc")).toBeInTheDocument()
-    expect(screen.getByText("Expired · 1 d 0 h old · rpc")).toBeInTheDocument()
+    expect(screen.getByText("Expired · 1 d old · rpc")).toBeInTheDocument()
   })
 })
 
@@ -68,14 +76,15 @@ describe("DataQualityPanel", () => {
       ...analysisResponse,
       exit_estimate: { ...analysisResponse.exit_estimate, warnings: ["Quote refreshed once."] },
     }
-    render(<DataQualityPanel analysis={analysis} now={NOW} />)
+    render(<DataQualityPanel analysis={analysis} now={NOW} receivedAt={NOW - 3000} />)
 
     const panel = screen.getByRole("region", { name: "Data quality" })
     expect(within(panel).getByText("1 stale source")).toBeInTheDocument()
     expect(
-      within(panel).getByText("Stale · 5 min 0 s old · https://api.morpho.org/markets/0xb8fc"),
+      within(panel).getByText("Stale · 5 min old · https://api.morpho.org/markets/0xb8fc"),
     ).toBeInTheDocument()
-    expect(within(panel).getByText("Fresh · 4 s old · uniswap-v3 quoter")).toBeInTheDocument()
+    // The quote row uses the server's quote_age_seconds (4 s) plus time elapsed since receipt (3 s).
+    expect(within(panel).getByText("Fresh · 7 s old · uniswap-v3 quoter")).toBeInTheDocument()
     expect(within(panel).getByText("No Uniswap exit pool was found for wstETH.")).toBeInTheDocument()
     expect(within(panel).getByText("Quote refreshed once.")).toBeInTheDocument()
     expect(within(panel).getByText(/Model-estimated · protocol-evidence-v1/)).toBeInTheDocument()

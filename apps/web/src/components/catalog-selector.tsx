@@ -1,6 +1,6 @@
 import type { CatalogAvailability, CatalogEntry, CatalogProvenance, HydratedCatalogEntry } from "@risk0/contracts"
 
-import { formatPercent, formatQuantity } from "../lib/format"
+import { elapsedSeconds, formatPercent, formatQuantity } from "../lib/format"
 import { FreshnessBadge } from "./data-quality"
 
 const PROVENANCE_BADGES: Record<CatalogProvenance, string> = {
@@ -55,12 +55,16 @@ export function CatalogSelector({
   selectedId,
   onSelect,
   now,
+  receivedAt,
 }: {
   entries: HydratedCatalogEntry[]
   selectedId: string | null
   onSelect: (entityId: string) => void
   now: number
+  /** When this device received the catalog; server ages are advanced by the time since. */
+  receivedAt?: number
 }) {
+  const elapsed = elapsedSeconds(receivedAt, now)
   return (
     <fieldset className="panel catalog">
       <legend>1. Choose a curated vault or market</legend>
@@ -91,7 +95,13 @@ export function CatalogSelector({
               )}
               <span className="catalog__metrics">{summary ?? "Live metrics unavailable"}</span>
               {entry.freshness && entry.fetched_at && entry.source && (
-                <FreshnessBadge freshness={entry.freshness} observedAt={entry.fetched_at} source={entry.source} now={now} />
+                <FreshnessBadge
+                  freshness={entry.freshness}
+                  observedAt={entry.fetched_at}
+                  source={entry.source}
+                  now={now}
+                  ageSeconds={entry.age_seconds != null ? entry.age_seconds + elapsed : undefined}
+                />
               )}
               {!canAnalyze(entry) && <span className="catalog__unavailable">{unavailableLabel(entry)}</span>}
               {entry.warnings.length > 0 && (

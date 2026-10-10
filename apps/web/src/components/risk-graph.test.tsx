@@ -102,7 +102,7 @@ describe("RiskGraph", () => {
     expect(within(panel).getByText("1520.5")).toBeInTheDocument()
     expect(within(panel).getByText("https://api.morpho.org/markets/0xb8fc")).toBeInTheDocument()
     expect(within(panel).getByText("2026-10-10 11:55:00 UTC")).toBeInTheDocument()
-    expect(within(panel).getByText(/Stale · 5 min 0 s old/)).toBeInTheDocument()
+    expect(within(panel).getByText(/Stale · 5 min old/)).toBeInTheDocument()
   })
 
   it("shows completeness warnings", () => {

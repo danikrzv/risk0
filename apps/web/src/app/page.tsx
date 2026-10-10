@@ -1,7 +1,7 @@
 "use client"
 
 import type { AnalysisResponse, HydratedCatalogEntry, PositionInput } from "@risk0/contracts"
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 
 import { CatalogSelector } from "../components/catalog-selector"
 import { DataQualityPanel } from "../components/data-quality"
@@ -20,13 +20,13 @@ import { getCatalog, runAnalysis } from "../lib/api"
 type CatalogState =
   | { status: "loading" }
   | { status: "error"; message: string }
-  | { status: "ready"; entries: HydratedCatalogEntry[] }
+  | { status: "ready"; entries: HydratedCatalogEntry[]; receivedAt: number }
 
 type AnalysisState =
   | { status: "idle" }
   | { status: "running" }
   | { status: "error"; message: string }
-  | { status: "done"; result: AnalysisResponse; numeraire: string }
+  | { status: "done"; result: AnalysisResponse; numeraire: string; receivedAt: number }
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Something went wrong"
@@ -40,14 +40,17 @@ export default function Home() {
   const [analysis, setAnalysis] = useState<AnalysisState>({ status: "idle" })
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   const [now, setNow] = useState(() => Date.now())
+  // Identifies the latest analysis request; a response for an older one is dropped.
+  const requestToken = useRef(0)
 
   useEffect(() => {
     let active = true
     getCatalog()
       .then((response) => {
         if (!active) return
-        setNow(Date.now())
-        setCatalog({ status: "ready", entries: response.entries })
+        const receivedAt = Date.now()
+        setNow(receivedAt)
+        setCatalog({ status: "ready", entries: response.entries, receivedAt })
       })
       .catch((error: unknown) => active && setCatalog({ status: "error", message: errorMessage(error) }))
     return () => {
@@ -65,9 +68,18 @@ export default function Home() {
   const entry = catalog.status === "ready" ? catalog.entries.find((item) => item.entity_id === selectedId) : undefined
 
   function selectEntry(entityId: string) {
+    requestToken.current += 1
     setSelectedId(entityId)
+    setScenarios(defaultScenarioDrafts())
+    setScenarioErrors({})
     setAnalysis({ status: "idle" })
     setSelectedNodeId(null)
+  }
+
+  function validateScenarios(): boolean {
+    const { errors } = toScenarioSelections(scenarios)
+    setScenarioErrors(errors)
+    return Object.keys(errors).length === 0
   }
 
   async function analyze(position: PositionInput) {
@@ -75,6 +87,7 @@ export default function Home() {
     setScenarioErrors(errors)
     if (Object.keys(errors).length || selections.length === 0) return
 
+    const token = ++requestToken.current
     setAnalysis({ status: "running" })
     setSelectedNodeId(null)
     try {
@@ -82,9 +95,12 @@ export default function Home() {
         position,
         scenarios: selections as [(typeof selections)[number], ...typeof selections],
       })
-      setNow(Date.now())
-      setAnalysis({ status: "done", result, numeraire: position.numeraire })
+      if (token !== requestToken.current) return
+      const receivedAt = Date.now()
+      setNow(receivedAt)
+      setAnalysis({ status: "done", result, numeraire: position.numeraire, receivedAt })
     } catch (error) {
+      if (token !== requestToken.current) return
       setAnalysis({ status: "error", message: errorMessage(error) })
     }
   }
@@ -106,7 +122,13 @@ export default function Home() {
         </p>
       )}
       {catalog.status === "ready" && (
-        <CatalogSelector entries={catalog.entries} selectedId={selectedId} onSelect={selectEntry} now={now} />
+        <CatalogSelector
+          entries={catalog.entries}
+          selectedId={selectedId}
+          onSelect={selectEntry}
+          now={now}
+          receivedAt={catalog.receivedAt}
+        />
       )}
 
       {entry && (
@@ -115,6 +137,7 @@ export default function Home() {
           entry={entry}
           onSubmit={analyze}
           busy={analysis.status === "running"}
+          beforeSubmit={validateScenarios}
         >
           <ScenarioPanel drafts={scenarios} onChange={setScenarios} errors={scenarioErrors} />
         </PositionForm>
@@ -144,7 +167,7 @@ export default function Home() {
             graph={analysis.result.graph}
             numeraire={analysis.numeraire}
           />
-          <DataQualityPanel analysis={analysis.result} now={now} />
+          <DataQualityPanel analysis={analysis.result} now={now} receivedAt={analysis.receivedAt} />
         </div>
       )}
     </main>

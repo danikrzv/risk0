@@ -125,6 +125,41 @@ describe("PositionForm", () => {
     expect(screen.getByLabelText("Debt amount")).toHaveAccessibleDescription("Enter a positive number")
   })
 
+  it("normalizes amounts to the contract's plain decimal form before submitting", () => {
+    const onSubmit = vi.fn()
+    render(<PositionForm entry={entry("belem-rwa-eurcv")} onSubmit={onSubmit} />)
+
+    change("Amount", " 0010.50 ")
+    fireEvent.click(screen.getByRole("button", { name: "Run analysis" }))
+
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ amount: "10.50" }))
+  })
+
+  it("announces validation failures and focuses the first invalid field", () => {
+    const onSubmit = vi.fn()
+    render(<PositionForm entry={entry("wbtc-usdc-860")} onSubmit={onSubmit} />)
+    fireEvent.click(screen.getByRole("radio", { name: "Borrower" }))
+
+    change("Collateral amount", "abc")
+    change("Debt amount", "0")
+    fireEvent.click(screen.getByRole("button", { name: "Run analysis" }))
+
+    expect(screen.getByRole("alert")).toHaveTextContent("Fix the 2 highlighted fields before running the analysis.")
+    expect(screen.getByLabelText("Collateral amount")).toHaveFocus()
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it("does not submit when the surrounding checks fail, even with a valid position", () => {
+    const onSubmit = vi.fn()
+    const beforeSubmit = vi.fn(() => false)
+    render(<PositionForm entry={entry("belem-rwa-eurcv")} onSubmit={onSubmit} beforeSubmit={beforeSubmit} />)
+
+    fireEvent.click(screen.getByRole("button", { name: "Run analysis" }))
+
+    expect(beforeSubmit).toHaveBeenCalledTimes(1)
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
   it("restores presets on request", () => {
     render(<PositionForm entry={entry("belem-rwa-eurcv")} onSubmit={() => {}} />)
 

@@ -6,6 +6,21 @@ const MAX_BODY_CHARACTERS = 64_000
 
 export const dynamic = "force-dynamic"
 
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null
+}
+
+/** Minimal shape check so a misbehaving upstream cannot crash the page. */
+function isAnalysisShaped(value: unknown): boolean {
+  return (
+    isObject(value) &&
+    isObject(value.graph) &&
+    isObject(value.recommendation) &&
+    isObject(value.exit_estimate) &&
+    Array.isArray(value.scenario_results)
+  )
+}
+
 export async function POST(request: Request): Promise<Response> {
   const baseUrl = process.env.RISK_API_URL
   if (!baseUrl) return Response.json({ error: "Risk service is not configured" }, { status: 503 })
@@ -36,7 +51,11 @@ export async function POST(request: Request): Promise<Response> {
       )
     }
     if (!upstream.ok) return Response.json({ error: "Risk service unavailable" }, { status: 502 })
-    return Response.json(await upstream.json())
+    const result: unknown = await upstream.json()
+    if (!isAnalysisShaped(result)) {
+      return Response.json({ error: "Risk service returned an invalid response" }, { status: 502 })
+    }
+    return Response.json(result)
   } catch {
     return Response.json({ error: "Risk service unavailable" }, { status: 502 })
   }

@@ -126,5 +126,8 @@ describe("ScenarioResults", () => {
 
     const protocol = screen.getByRole("article", { name: "Protocol impairment" })
     expect(within(protocol).getByText("Model-estimated · protocol-evidence-v1")).toBeInTheDocument()
+    const breakdown = within(protocol).getByRole("region", { name: "Model breakdown" })
+    expect(breakdown).toHaveTextContent("demonstration heuristic")
+    expect(within(shock).queryByRole("region", { name: "Model breakdown" })).not.toBeInTheDocument()
   })
 })

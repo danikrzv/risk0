@@ -1,8 +1,12 @@
 // Display helpers for decimal strings from the risk service. All arithmetic is
 // done on scaled BigInts so values are never routed through binary floats.
 
-const PLAIN_DECIMAL = /^-?\d+(\.\d+)?$/
-const POSITIVE_PLAIN_DECIMAL = /^\d+(\.\d+)?$/
+// Decimal strings as the risk service emits them: Python's Decimal may use
+// exponent notation ("0E-18", "1E-7"), so the exponent is accepted and folded
+// into the scale. The contract's request pattern is stricter (no exponent, no
+// leading zeros); normalizeDecimal() produces that form.
+const DECIMAL = /^-?\d+(\.\d+)?([eE][+-]?\d+)?$/
+const POSITIVE_DECIMAL = /^\d+(\.\d+)?([eE][+-]?\d+)?$/
 
 // BigInt() rather than literals: the app's tsconfig targets ES2017.
 const ZERO = BigInt(0)
@@ -15,11 +19,17 @@ interface Scaled {
 }
 
 function parse(value: string): Scaled {
-  if (!PLAIN_DECIMAL.test(value)) throw new Error(`Not a plain decimal: ${value}`)
+  if (!DECIMAL.test(value)) throw new Error(`Not a decimal: ${value}`)
   const negative = value.startsWith("-")
-  const [whole, fraction = ""] = (negative ? value.slice(1) : value).split(".")
-  const units = BigInt(whole + fraction)
-  return { units: negative ? -units : units, scale: fraction.length }
+  const [mantissa, exponentText = "0"] = (negative ? value.slice(1) : value).split(/[eE]/)
+  const [whole, fraction = ""] = mantissa.split(".")
+  let units = BigInt(whole + fraction)
+  let scale = fraction.length - Number(exponentText)
+  if (scale < 0) {
+    units *= TEN ** BigInt(-scale)
+    scale = 0
+  }
+  return { units: negative ? -units : units, scale }
 }
 
 function rescale({ units, scale }: Scaled, target: number): bigint {
@@ -30,10 +40,11 @@ function rescale({ units, scale }: Scaled, target: number): bigint {
   return units < ZERO ? -rounded : rounded
 }
 
-function render(units: bigint, scale: number, trim: boolean): string {
+function render(units: bigint, scale: number, trim: boolean, group = true): string {
   const negative = units < ZERO
   const digits = (negative ? -units : units).toString().padStart(scale + 1, "0")
-  const whole = digits.slice(0, digits.length - scale).replace(/\B(?=(\d{3})+(?!\d))/g, ",")
+  let whole = digits.slice(0, digits.length - scale)
+  if (group) whole = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",")
   let fraction = scale > 0 ? digits.slice(digits.length - scale) : ""
   if (trim) fraction = fraction.replace(/0+$/, "")
   const sign = negative ? "-" : ""
@@ -44,7 +55,7 @@ function render(units: bigint, scale: number, trim: boolean): string {
 function shift(value: string, exponent: number): string {
   const { units, scale } = parse(value)
   const newScale = scale - exponent
-  if (newScale >= 0) return trimDecimal(render(units, newScale, false).replace(/,/g, ""))
+  if (newScale >= 0) return trimDecimal(render(units, newScale, false, false))
   return (units * TEN ** BigInt(-newScale)).toString()
 }
 
@@ -97,19 +108,37 @@ export function compareDecimal(left: string, right: string): -1 | 0 | 1 {
 }
 
 export function isPositiveDecimal(value: string): boolean {
-  return POSITIVE_PLAIN_DECIMAL.test(value) && compareDecimal(value, "0") === 1
+  return POSITIVE_DECIMAL.test(value) && compareDecimal(value, "0") === 1
 }
 
+/**
+ * Trim and rewrite a user-typed number in the contract's plain form: no
+ * exponent, no leading zeros, fraction digits kept as typed. Anything that is
+ * not a decimal is returned trimmed so validation can reject it.
+ */
+export function normalizeDecimal(value: string): string {
+  const trimmed = value.trim()
+  if (!DECIMAL.test(trimmed)) return trimmed
+  const { units, scale } = parse(trimmed)
+  return render(units, scale, false, false)
+}
+
+/** Exact age: every non-zero unit from days down to seconds. */
 export function formatAge(totalSeconds: number): string {
   const seconds = Math.max(0, Math.floor(totalSeconds))
-  const days = Math.floor(seconds / 86400)
-  const hours = Math.floor((seconds % 86400) / 3600)
-  const minutes = Math.floor((seconds % 3600) / 60)
-  const rest = seconds % 60
-  if (days > 0) return `${days} d ${hours} h`
-  if (hours > 0) return `${hours} h ${minutes} min`
-  if (minutes > 0) return `${minutes} min ${rest} s`
-  return `${rest} s`
+  const parts = [
+    [Math.floor(seconds / 86400), "d"],
+    [Math.floor((seconds % 86400) / 3600), "h"],
+    [Math.floor((seconds % 3600) / 60), "min"],
+    [seconds % 60, "s"],
+  ] as const
+  const shown = parts.filter(([count]) => count > 0).map(([count, unit]) => `${count} ${unit}`)
+  return shown.length ? shown.join(" ") : "0 s"
+}
+
+/** Seconds elapsed on this device since `receivedAt`, or 0 when unknown. */
+export function elapsedSeconds(receivedAt: number | undefined, now: number): number {
+  return receivedAt === undefined ? 0 : Math.max(0, Math.floor((now - receivedAt) / 1000))
 }
 
 export function ageSeconds(isoTimestamp: string, now: number): number {

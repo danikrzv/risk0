@@ -1,4 +1,5 @@
 import sqlite3
+import threading
 from datetime import timedelta
 
 import pytest
@@ -85,6 +86,83 @@ def test_migrate_keeps_an_existing_cache_only_database_intact(tmp_path):
     connection.close()
     cached = cache.get("morpho", "market:1:0xabc", NOW)
     assert cached is not None and cached.payload == b'{"value": 1}'
+
+
+def journal_mode(path) -> str:
+    connection = sqlite3.connect(path)
+    try:
+        return connection.execute("PRAGMA journal_mode").fetchone()[0]
+    finally:
+        connection.close()
+
+
+INSERT_RUN = (
+    "INSERT INTO scheduler_runs (run_id, loop, status, started_at, "
+    "processed_count, error_count, message) "
+    "VALUES (?, 'fast', 'running', '2026-10-10T12:00:00.000000+00:00', 0, 0, '')"
+)
+
+
+def test_migrate_switches_new_and_existing_files_to_wal(tmp_path):
+    from app.radar.repositories import RadarDatabase
+
+    fresh = tmp_path / "fresh.sqlite3"
+    RadarDatabase(fresh).migrate()
+    assert journal_mode(fresh) == "wal"
+
+    existing = tmp_path / "existing.sqlite3"
+    database = RadarDatabase(existing)
+    database.migrate()
+    with database.transaction() as connection:
+        connection.execute(INSERT_RUN, ("kept",))
+    connection = sqlite3.connect(existing)
+    connection.execute("PRAGMA journal_mode = DELETE")
+    connection.close()
+    assert journal_mode(existing) == "delete"
+
+    RadarDatabase(existing).migrate()
+
+    assert journal_mode(existing) == "wal"
+    with database.read() as connection:
+        rows = connection.execute("SELECT run_id FROM scheduler_runs").fetchall()
+    assert [row[0] for row in rows] == ["kept"]
+
+
+def test_read_does_not_wait_for_an_open_write_transaction(database):
+    from app.radar.repositories import RadarDatabase
+
+    # The default 30 s busy timeout would fail the test long before it expired.
+    reader = RadarDatabase(database.path, timeout_seconds=0.05)
+    writing = threading.Event()
+    release = threading.Event()
+
+    def write():
+        with database.transaction() as connection:
+            connection.execute(INSERT_RUN, ("uncommitted",))
+            writing.set()
+            release.wait(5)
+
+    writer = threading.Thread(target=write)
+    writer.start()
+    try:
+        assert writing.wait(5)
+        with reader.read() as connection:
+            count = connection.execute("SELECT COUNT(*) FROM scheduler_runs").fetchone()[0]
+        # A write transaction, by contrast, has to wait for the writer.
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
+            with reader.transaction():
+                pass
+    finally:
+        release.set()
+        writer.join()
+
+    assert count == 0
+
+
+def test_read_rejects_writes(database):
+    with pytest.raises(sqlite3.OperationalError, match="readonly"):
+        with database.read() as connection:
+            connection.execute(INSERT_RUN, ("rejected",))
 
 
 def test_transaction_rolls_back_every_statement_on_error(database):

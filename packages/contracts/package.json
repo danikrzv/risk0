@@ -1,0 +1,16 @@
+{
+  "name": "@risk0/contracts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/generated.ts",
+  "scripts": {
+    "generate": "node scripts/generate-types.mjs",
+    "test": "node scripts/generate-types.mjs --check && tsc --noEmit && vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.4",
+    "typescript": "7.0.2",
+    "vitest": "5.0.3"
+  }
+}

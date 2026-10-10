@@ -1,0 +1,22 @@
+services:
+  risk:
+    image: ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+    command: uv run --project services/risk uvicorn app.main:app --app-dir services/risk --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+
+  web:
+    image: node:22-bookworm-slim
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+    command: sh -c "corepack enable && pnpm install --frozen-lockfile && pnpm --filter @risk0/web dev --hostname 0.0.0.0"
+    environment:
+      RISK_API_URL: http://risk:8000
+    depends_on:
+      - risk
+    ports:
+      - "3000:3000"

@@ -1,0 +1,23 @@
+{
+  "chain_id": 1,
+  "feeds": [
+    {
+      "id": "ETH/USD",
+      "address": "0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419",
+      "deployment_block": 10606501,
+      "source": "chainlink:ETH/USD"
+    },
+    {
+      "id": "USDC/USD",
+      "address": "0x8fFfFfd4AfB6115b954Bd326cbe7B4BA576818f6",
+      "deployment_block": 12864088,
+      "source": "chainlink:USDC/USD"
+    },
+    {
+      "id": "EUR/USD",
+      "address": "0xb49f677943BC038e9857d61E7d053CaA2C1734C1",
+      "deployment_block": 10606501,
+      "source": "chainlink:EUR/USD"
+    }
+  ]
+}

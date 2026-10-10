@@ -233,3 +233,48 @@ def test_analysis_response_schema_rejects_json_numbers_for_domain_metrics(
 
     with pytest.raises(ValidationError):
         validator.validate(response)
+
+
+def catalog_entry_validator() -> Draft202012Validator:
+    schema = load_schema("catalog.schema.json")
+    return Draft202012Validator(
+        {"$ref": "#/$defs/CatalogEntry", "$defs": schema["$defs"]}
+    )
+
+
+def catalog_entry() -> dict:
+    catalog = json.loads((ROOT / "data" / "catalog" / "ethereum.json").read_text())
+    return copy.deepcopy(catalog["entries"][0])
+
+
+@pytest.mark.parametrize("chain_id", [1, 8453])
+def test_catalog_schema_accepts_supported_chain_ids(chain_id):
+    entry = catalog_entry()
+    entry["chain_id"] = chain_id
+
+    catalog_entry_validator().validate(entry)
+
+
+@pytest.mark.parametrize("chain_id", [0, 2, 10, 8452, 8454, 42161, "1"])
+def test_catalog_schema_rejects_unlisted_chain_ids(chain_id):
+    entry = catalog_entry()
+    entry["chain_id"] = chain_id
+
+    with pytest.raises(ValidationError):
+        catalog_entry_validator().validate(entry)
+
+
+def test_catalog_schema_and_python_enums_agree_on_chain_and_provenance():
+    from app.contracts.models import CatalogEntry, CatalogProvenance
+
+    properties = load_schema("catalog.schema.json")["$defs"]["CatalogEntry"][
+        "properties"
+    ]
+
+    assert properties["provenance"]["enum"] == [item.value for item in CatalogProvenance]
+    assert "rockawayx_curated" in properties["provenance"]["enum"]
+    assert properties["chain_id"]["enum"] == [1, 8453]
+    for chain_id in properties["chain_id"]["enum"]:
+        entry = catalog_entry()
+        entry["chain_id"] = chain_id
+        assert CatalogEntry.model_validate(entry).chain_id == chain_id

@@ -7,7 +7,8 @@ ENV NEXT_TELEMETRY_DISABLED=1 \
     PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 
 WORKDIR /workspace
-RUN corepack enable
+# Activate the exact pnpm from package.json "packageManager" at build time.
+RUN corepack enable && corepack prepare pnpm@11.19.0 --activate
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/web/package.json apps/web/

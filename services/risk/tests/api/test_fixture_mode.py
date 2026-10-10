@@ -74,6 +74,27 @@ def test_unknown_data_mode_is_a_configuration_error(monkeypatch):
         data_mode()
 
 
+def test_unknown_data_mode_stops_the_service_at_startup(monkeypatch):
+    monkeypatch.setenv(DATA_MODE_ENV, "fixtrue")
+
+    with pytest.raises(DataModeError):
+        with TestClient(app):
+            pass
+
+
+def test_unknown_data_mode_gives_a_sanitized_catalog_503(monkeypatch):
+    monkeypatch.setenv(DATA_MODE_ENV, "fixtrue")
+    get_catalog_service.cache_clear()
+    try:
+        response = TestClient(app).get("/v1/catalog")
+    finally:
+        get_catalog_service.cache_clear()
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "The curated catalog is temporarily unavailable."}
+    assert "RISK0_DATA_MODE" not in response.text
+
+
 def test_fixture_mode_selects_the_fixture_wiring(monkeypatch, tmp_path):
     from app.fixture_mode import FixtureOracles, fixture_morpho_client
 

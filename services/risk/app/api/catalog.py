@@ -2,7 +2,7 @@ import os
 from functools import lru_cache
 from pathlib import Path
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from app.adapters.morpho import DEFAULT_BASE_URL, MorphoClient
 from app.catalog.repository import CatalogRepository
@@ -16,12 +16,20 @@ REPOSITORY_ROOT = SERVICE_ROOT.parents[1]
 
 router = APIRouter(prefix="/v1")
 
+CATALOG_UNAVAILABLE_DETAIL = "The curated catalog is temporarily unavailable."
+
 
 @lru_cache(maxsize=1)
 def get_catalog_service() -> CatalogService:
-    from app.fixture_mode import FIXTURE, build_fixture_catalog_service, data_mode
+    from app.fixture_mode import FIXTURE, DataModeError, build_fixture_catalog_service, data_mode
 
-    if data_mode() == FIXTURE:
+    try:
+        mode = data_mode()
+    except DataModeError:
+        # Configuration errors are reported in logs at startup; keep the
+        # response as sanitized as the analysis route's.
+        raise HTTPException(status_code=503, detail=CATALOG_UNAVAILABLE_DETAIL) from None
+    if mode == FIXTURE:
         return build_fixture_catalog_service()
     catalog_path = Path(
         os.environ.get(

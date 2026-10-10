@@ -1,29 +1,33 @@
 :root {
-  --color-text: #111827;
-  --color-muted: #4b5563;
-  --color-background: #f9fafb;
-  --color-surface: #ffffff;
-  --color-border: #d1d5db;
-  --color-accent: #1d4ed8;
-  --color-safe: #047857;
-  --color-safe-surface: #ecfdf5;
-  --color-danger: #b91c1c;
-  --color-danger-surface: #fef2f2;
-  --color-unavailable: #374151;
-  --color-unavailable-surface: #f3f4f6;
-  --color-stale: #92400e;
-  --color-stale-surface: #fffbeb;
-  --node-position: #1d4ed8;
-  --node-vault: #7c3aed;
-  --node-market: #0e7490;
-  --node-protocol: #be185d;
-  --node-asset: #15803d;
-  --node-oracle: #b45309;
-  --node-pool: #0369a1;
-  --node-chain: #4b5563;
+  --color-text: #d8e2ec;
+  --color-muted: #718397;
+  --color-background: #05080d;
+  --color-surface: #090e16;
+  --color-surface-raised: #0c131e;
+  --color-border: #1a2a3b;
+  --color-border-strong: #29455f;
+  --color-accent: #5bc0eb;
+  --color-safe: #42d392;
+  --color-safe-surface: #081b16;
+  --color-danger: #f06565;
+  --color-danger-surface: #1d0c10;
+  --color-unavailable: #8b9bad;
+  --color-unavailable-surface: #101721;
+  --color-stale: #e7b955;
+  --color-stale-surface: #1d180b;
+  --node-position: #5bc0eb;
+  --node-vault: #a78bfa;
+  --node-market: #42c6c6;
+  --node-protocol: #e57aa6;
+  --node-asset: #42d392;
+  --node-oracle: #e7b955;
+  --node-pool: #54a7dd;
+  --node-chain: #8b9bad;
   color: var(--color-text);
   background: var(--color-background);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: "SFMono-Regular", "Cascadia Code", "Roboto Mono", Consolas, monospace;
+  font-size: 14px;
+  color-scheme: dark;
 }
 
 body {
@@ -31,25 +35,167 @@ body {
   background: var(--color-background);
 }
 
-main {
-  max-width: 72rem;
-  margin: 0 auto;
-  padding: 3rem 1rem 6rem;
+.terminal-shell {
+  min-height: 100vh;
+  display: grid;
+  grid-template-rows: auto auto 1fr auto;
 }
 
 h1 {
   margin: 0;
-  font-size: 3rem;
+  font-size: 1rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
 }
 
 h2 {
   margin: 0 0 1rem;
-  font-size: 1.25rem;
+  font-size: 1.15rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
 }
 
 p {
   margin-top: 1rem;
   line-height: 1.6;
+}
+
+.terminal-header {
+  min-height: 2.75rem;
+  display: grid;
+  grid-template-columns: 17rem minmax(0, 1fr) auto;
+  align-items: stretch;
+  border-bottom: 1px solid var(--color-border-strong);
+  background: #070b11;
+}
+
+.terminal-brand,
+.terminal-runtime,
+.terminal-nav span {
+  display: flex;
+  align-items: center;
+}
+
+.terminal-brand {
+  gap: 0.85rem;
+  padding: 0 1rem;
+  border-right: 1px solid var(--color-border);
+}
+
+.terminal-brand > span {
+  color: var(--color-accent);
+  font-size: 0.65rem;
+  letter-spacing: 0.08em;
+}
+
+.terminal-nav {
+  display: flex;
+  min-width: 0;
+}
+
+.terminal-nav span {
+  padding: 0 1.1rem;
+  border-right: 1px solid #111d29;
+  color: #526477;
+  font-size: 0.68rem;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.terminal-nav span[aria-current="page"] {
+  color: var(--color-accent);
+  background: #0b1520;
+  box-shadow: inset 0 -2px var(--color-accent);
+}
+
+.terminal-runtime {
+  gap: 0.55rem;
+  padding: 0 1rem;
+  color: var(--color-safe);
+  font-size: 0.7rem;
+}
+
+.terminal-runtime--degraded {
+  color: var(--color-stale);
+}
+
+.terminal-runtime__dot {
+  width: 0.4rem;
+  height: 0.4rem;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0.5rem currentColor;
+}
+
+.system-ticker {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(8rem, 0.7fr)) minmax(15rem, 1.7fr) minmax(8rem, 0.7fr);
+  min-height: 2.25rem;
+  border-bottom: 1px solid var(--color-border);
+  background: #070b11;
+}
+
+.system-ticker > div {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  padding: 0 0.85rem;
+  border-right: 1px solid #111d29;
+}
+
+.system-ticker span {
+  color: #526477;
+  font-size: 0.62rem;
+  letter-spacing: 0.09em;
+}
+
+.system-ticker strong {
+  min-width: 0;
+  overflow: hidden;
+  color: #bac8d5;
+  font-size: 0.68rem;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.system-ticker__analysis--running,
+.system-ticker__analysis--error {
+  color: var(--color-stale) !important;
+}
+
+.system-ticker__analysis--done {
+  color: var(--color-safe) !important;
+}
+
+.terminal-workspace {
+  width: min(100%, 96rem);
+  margin: 0 auto;
+  padding: 1.25rem 1rem 4rem;
+}
+
+.terminal-statusbar {
+  position: sticky;
+  bottom: 0;
+  z-index: 10;
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.48rem 0.85rem;
+  border-top: 1px solid var(--color-border);
+  background: #070b11ee;
+  color: #53677a;
+  font-size: 0.62rem;
+  letter-spacing: 0.05em;
+}
+
+.eyebrow {
+  display: block;
+  margin-bottom: 0.5rem;
+  color: var(--color-accent);
+  font-size: 0.65rem;
+  letter-spacing: 0.13em;
 }
 
 .visually-hidden {
@@ -64,14 +210,16 @@ p {
 .masthead p {
   max-width: 48rem;
   color: var(--color-muted);
+  margin-bottom: 0;
 }
 
 .panel {
   margin: 1.5rem 0 0;
   padding: 1.25rem;
   border: 1px solid var(--color-border);
-  border-radius: 0.5rem;
+  border-radius: 0;
   background: var(--color-surface);
+  box-shadow: 0 0.6rem 1.8rem #0004;
 }
 
 fieldset.panel legend,
@@ -98,13 +246,14 @@ fieldset.panel legend,
   gap: 0.35rem;
   padding: 0.85rem;
   border: 1px solid var(--color-border);
-  border-radius: 0.5rem;
+  border-radius: 0;
+  background: #080d14;
   cursor: pointer;
 }
 
 .catalog__card--selected {
   border-color: var(--color-accent);
-  box-shadow: 0 0 0 2px var(--color-accent);
+  box-shadow: inset 3px 0 var(--color-accent);
 }
 
 .catalog__card--disabled {
@@ -151,7 +300,7 @@ fieldset.panel legend,
   display: inline-block;
   justify-self: start;
   padding: 0.1rem 0.5rem;
-  border-radius: 999px;
+  border-radius: 0;
   font-size: 0.8rem;
   overflow-wrap: anywhere;
   background: var(--color-unavailable-surface);
@@ -189,7 +338,9 @@ fieldset.panel legend,
 .field input {
   padding: 0.5rem;
   border: 1px solid var(--color-border);
-  border-radius: 0.375rem;
+  border-radius: 0;
+  background: #070c13;
+  color: var(--color-text);
   font: inherit;
 }
 
@@ -236,7 +387,8 @@ fieldset.panel legend,
 .scenario {
   padding: 0.75rem;
   border: 1px solid var(--color-border);
-  border-radius: 0.5rem;
+  border-radius: 0;
+  background: #080d14;
 }
 
 .scenario--disabled {
@@ -263,9 +415,9 @@ fieldset.panel legend,
 .button {
   padding: 0.6rem 1.1rem;
   border: 1px solid var(--color-accent);
-  border-radius: 0.375rem;
-  background: var(--color-accent);
-  color: #ffffff;
+  border-radius: 0;
+  background: #0b2636;
+  color: #8fdbfa;
   font: inherit;
   cursor: pointer;
 }
@@ -395,7 +547,10 @@ fieldset.panel legend,
 .graph__canvas {
   height: 28rem;
   border: 1px solid var(--color-border);
-  border-radius: 0.5rem;
+  border-radius: 0;
+  background-color: #050a10;
+  background-image: linear-gradient(#101c2928 1px, transparent 1px), linear-gradient(90deg, #101c2928 1px, transparent 1px);
+  background-size: 28px 28px;
 }
 
 .graph__detail h3 {
@@ -406,6 +561,8 @@ fieldset.panel legend,
 .react-flow__node.graph-node {
   border-width: 2px;
   font-size: 0.8rem;
+  background: #09111b;
+  color: var(--color-text);
 }
 
 .react-flow__node.graph-node--position { border-color: var(--node-position); }
@@ -439,7 +596,7 @@ fieldset.panel legend,
 .node-chip {
   padding: 0.25rem 0.6rem;
   border: 2px solid var(--node-chain);
-  border-radius: 999px;
+  border-radius: 0;
   background: var(--color-surface);
   font: inherit;
   font-size: 0.8rem;
@@ -476,7 +633,8 @@ fieldset.panel legend,
 .result {
   padding: 1rem;
   border: 1px solid var(--color-border);
-  border-radius: 0.5rem;
+  border-radius: 0;
+  background: #080d14;
 }
 
 .result h3 {
@@ -533,8 +691,25 @@ fieldset.panel legend,
 }
 
 @media (max-width: 48rem) {
-  h1 {
-    font-size: 2.25rem;
+  .terminal-header {
+    grid-template-columns: 1fr auto;
+  }
+
+  .terminal-nav {
+    display: none;
+  }
+
+  .system-ticker {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .system-ticker > div:nth-child(4) {
+    grid-column: span 2;
+  }
+
+  .terminal-statusbar span:nth-child(2),
+  .terminal-statusbar span:nth-child(3) {
+    display: none;
   }
 
   .graph__layout {

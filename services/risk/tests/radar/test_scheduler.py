@@ -390,3 +390,28 @@ async def test_stop_cancels_in_flight_cycles_without_leaking_tasks():
     await scheduler.stop()
 
     assert asyncio.all_tasks() == before
+
+
+def test_fixture_mode_scheduler_never_builds_live_rpc_clients(monkeypatch, tmp_path):
+    from app import main
+    from app.api.radar import get_radar_context
+    from app.fixture_mode import fixture_morpho_client
+
+    monkeypatch.setenv("RISK0_DATA_MODE", "fixture")
+    monkeypatch.setenv("RISK0_CACHE_PATH", str(tmp_path / "cache.sqlite3"))
+    monkeypatch.setenv("RISK0_RADAR_DB_PATH", str(tmp_path / "radar.sqlite3"))
+    monkeypatch.setenv("RISK0_FIXTURE_CACHE_PATH", str(tmp_path / "fixture.sqlite3"))
+    monkeypatch.setattr(
+        main.RpcRegistry,
+        "from_environment",
+        classmethod(lambda cls, *args, **kwargs: pytest.fail("fixture mode opened RPC")),
+    )
+    get_radar_context.cache_clear()
+    fixture_morpho_client.cache_clear()
+    try:
+        scheduler = main.build_radar_scheduler()
+        chain = scheduler._service._chain_collector
+        assert chain.collect_all((1,), NOW) == ()
+    finally:
+        get_radar_context.cache_clear()
+        fixture_morpho_client.cache_clear()

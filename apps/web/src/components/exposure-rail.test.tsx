@@ -128,4 +128,37 @@ describe("ExposureRail", () => {
     expect(screen.getByRole("radio", { name: "Lender exposure" })).toHaveAttribute("name", "exposure-mode")
     expect(screen.getByRole("radio", { name: "Borrower exposure" })).toHaveAttribute("name", "exposure-mode")
   })
+
+  it("submits exact decimal strings and converts LTV without float error", () => {
+    const onSubmit = vi.fn()
+    render(<ExposureRail entities={entities} onSubmit={onSubmit} />)
+
+    fireEvent.click(screen.getByRole("radio", { name: "Borrower exposure" }))
+    change("Collateral amount", " 1e5 ")
+    change("Debt amount", "0.1")
+    change("Borrower LTV (%)", "33.3")
+    fireEvent.click(screen.getByRole("button", { name: "Add exposure" }))
+
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+      amount: "0.1",
+      collateral_amount: "100000",
+      debt_amount: "0.1",
+      ltv: "0.333",
+    }))
+  })
+
+  it("rejects non-decimal amounts and an empty numeraire", () => {
+    const onSubmit = vi.fn()
+    render(<ExposureRail entities={entities} onSubmit={onSubmit} />)
+
+    change("Exposure amount", "0x10")
+    change("Exposure numeraire", "  ")
+    fireEvent.click(screen.getByRole("button", { name: "Add exposure" }))
+
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(screen.getByLabelText("Exposure amount")).toHaveAccessibleDescription("Enter a positive number")
+    expect(screen.getByLabelText("Exposure amount")).toHaveAttribute("aria-invalid", "true")
+    expect(screen.getByLabelText("Exposure numeraire")).toHaveAccessibleDescription("Enter a numeraire")
+  })
 })
+

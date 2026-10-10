@@ -83,3 +83,26 @@ def test_data_quality_records_expired_critical_source_as_missing():
 
     assert quality.freshness == (Freshness.FRESH, Freshness.EXPIRED)
     assert quality.critical_missing == ("oracle:eth-usd",)
+
+
+def test_data_quality_records_absent_critical_source_as_missing():
+    quality = DataQuality.from_sources(
+        sources=(("market:weth-usdc", Freshness.FRESH),),
+        critical_sources=("oracle:eth-usd", "market:weth-usdc", "quote:weth-usdc"),
+        conflicts=(),
+    )
+
+    assert quality.critical_missing == ("oracle:eth-usd", "quote:weth-usdc")
+
+
+def test_data_quality_reports_each_missing_critical_source_once():
+    quality = DataQuality.from_sources(
+        sources=(
+            ("oracle:eth-usd", Freshness.EXPIRED),
+            ("oracle:eth-usd", Freshness.EXPIRED),
+        ),
+        critical_sources=("oracle:eth-usd",),
+        conflicts=(),
+    )
+
+    assert quality.critical_missing == ("oracle:eth-usd",)

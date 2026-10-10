@@ -559,6 +559,7 @@ p {
 .radar-detail dd { margin: 0; overflow-wrap: anywhere; }
 .radar-detail .metrics { margin-top: 0; color: var(--color-text); }
 .radar-detail__analyze { justify-self: start; }
+.radar-detail__actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
 
 .radar-detail__section ul {
   display: grid;

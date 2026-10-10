@@ -22,6 +22,8 @@ export function RadarEntityDetail({
   entityById,
   onSelectEntity,
   onAnalyze,
+  onShowNeighbours,
+  neighboursStatus = "idle",
   onClose,
 }: {
   entity: RadarEntity
@@ -32,6 +34,9 @@ export function RadarEntityDetail({
   onSelectEntity: (entityId: string) => void
   /** Present only when the entity matches an analyzable catalog entry. */
   onAnalyze?: () => void
+  /** Fetch this entity's neighbors from the risk service and add them to the radar. */
+  onShowNeighbours?: () => void
+  neighboursStatus?: "idle" | "loading" | "shown"
   onClose: () => void
 }) {
   const connections = useMemo(() => graph.relationships.flatMap((edge) => {
@@ -71,10 +76,26 @@ export function RadarEntityDetail({
         <dt>Catalog</dt>
         <dd>{entity.catalog ? "Curated catalog entry" : "Discovered by radar"}</dd>
       </dl>
-      {onAnalyze ? (
-        <button type="button" className="button radar-detail__analyze" onClick={onAnalyze}>
-          Analyze a position here
-        </button>
+      {onAnalyze || onShowNeighbours ? (
+        <div className="radar-detail__actions">
+          {onAnalyze ? (
+            <button type="button" className="button radar-detail__analyze" onClick={onAnalyze}>
+              Analyze a position here
+            </button>
+          ) : null}
+          {onShowNeighbours ? (
+            <button
+              type="button"
+              className="button button--secondary"
+              onClick={onShowNeighbours}
+              disabled={neighboursStatus !== "idle"}
+            >
+              {neighboursStatus === "loading"
+                ? "Loading neighbours…"
+                : neighboursStatus === "shown" ? "Neighbours shown" : "Show neighbours"}
+            </button>
+          ) : null}
+        </div>
       ) : null}
       {metadata.length > 0 ? (
         <table className="metrics">

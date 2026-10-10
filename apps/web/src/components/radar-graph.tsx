@@ -101,6 +101,7 @@ export function visibleRadarEntities(
 
 const NO_HEALTH_STATES: HealthState[] = []
 const NO_IMPACTS: IncidentImpact[] = []
+const NO_IDS: ReadonlySet<string> = new Set()
 
 function pairKey(left: string, right: string): string {
   return left < right ? `${left}\u0000${right}` : `${right}\u0000${left}`
@@ -144,6 +145,10 @@ export const RadarGraph = memo(function RadarGraph({
   selectedEntityId = null,
   analyzableEntityIds,
   onAnalyzeEntity,
+  pinnedEntityIds = NO_IDS,
+  expandedEntityIds = NO_IDS,
+  loadingNeighboursId = null,
+  onShowNeighbours,
 }: {
   graph: RadarGraphResponse
   healthStates?: HealthState[]
@@ -154,6 +159,13 @@ export const RadarGraph = memo(function RadarGraph({
   /** Radar entities that match an analyzable catalog entry. */
   analyzableEntityIds?: ReadonlySet<string>
   onAnalyzeEntity?: (entityId: string) => void
+  /** Entities always shown, e.g. neighborhoods fetched with `focus`. */
+  pinnedEntityIds?: ReadonlySet<string>
+  /** Entities whose neighbors were already fetched. */
+  expandedEntityIds?: ReadonlySet<string>
+  loadingNeighboursId?: string | null
+  /** Fetch and show an entity's neighbors. */
+  onShowNeighbours?: (entityId: string) => void
 }) {
   const [chainFilter, setChainFilter] = useState("all")
   const [typeFilter, setTypeFilter] = useState("all")
@@ -171,8 +183,8 @@ export const RadarGraph = memo(function RadarGraph({
   }, [impacts, incidentSourceId])
   const incidentEdges = useMemo(() => pathEdgeKeys(impacts), [impacts])
   const policyVisibleEntities = useMemo(
-    () => visibleRadarEntities(graph, impacts, incidentSourceId ? [incidentSourceId] : []),
-    [graph, impacts, incidentSourceId],
+    () => visibleRadarEntities(graph, impacts, incidentSourceId ? [...pinnedEntityIds, incidentSourceId] : pinnedEntityIds),
+    [graph, impacts, incidentSourceId, pinnedEntityIds],
   )
   const query = searchQuery.trim().toLowerCase()
   const visibleEntities = useMemo(() => policyVisibleEntities
@@ -328,6 +340,10 @@ export const RadarGraph = memo(function RadarGraph({
           onAnalyze={onAnalyzeEntity && analyzableEntityIds?.has(selectedEntity.entity_id)
             ? () => onAnalyzeEntity(selectedEntity.entity_id)
             : undefined}
+          onShowNeighbours={onShowNeighbours ? () => onShowNeighbours(selectedEntity.entity_id) : undefined}
+          neighboursStatus={loadingNeighboursId === selectedEntity.entity_id
+            ? "loading"
+            : expandedEntityIds.has(selectedEntity.entity_id) ? "shown" : "idle"}
           onClose={() => onSelectEntity(null)}
         />
       ) : null}

@@ -341,4 +341,77 @@ describe("Home", () => {
     await new Promise((resolve) => setTimeout(resolve, 1_500))
     expect(fetchMock.mock.calls.filter(([url]) => url === "/api/catalog")).toHaveLength(1)
   })
+
+  it("merges the selected incident's graph so path nodes missing from the pruned radar are drawn", async () => {
+    const incident = {
+      incident_id: "incident:oracle", source_entity_id: "oracle:1:hidden", severity: "CRITICAL", status: "OPEN",
+      trigger_metrics: {}, rule_version: "v1", first_observed_at: "2026-10-10T12:00:00Z",
+      last_observed_at: "2026-10-10T12:00:00Z", resolved_at: null, reasons: ["Oracle deviated."],
+    }
+    const oracle = { ...radarGraph.entities[0], entity_id: "oracle:1:hidden", entity_type: "oracle", catalog: false, visible: false, label: "Pruned Oracle", metadata: {} }
+    const market = { ...radarGraph.entities[0], entity_id: "market:1:pruned", entity_type: "market", catalog: false, visible: false, label: "Pruned Market", metadata: {} }
+    const base = stubApi()
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url === "/api/graph") return Response.json({ ...radarGraph, active_incidents: [incident] })
+      if (url.startsWith("/api/graph?incident_graph_id=")) {
+        return Response.json({
+          schema_version: "1.0.0", incident, entities: [oracle, market],
+          relationships: [
+            { source_entity_id: "market:1:pruned", target_entity_id: "oracle:1:hidden", relationship_type: "uses_oracle", weight: null, metadata: {} },
+            { source_entity_id: "vault:1:catalog", target_entity_id: "market:1:pruned", relationship_type: "allocated_to", weight: "0.5", metadata: {} },
+          ],
+          similarities: [], exposures: [],
+          impacts: [{
+            incident_id: "incident:oracle", target_entity_id: "vault:1:catalog", path: ["oracle:1:hidden", "market:1:pruned", "vault:1:catalog"],
+            distance: 2, confidence: "0.9", estimated_affected_amount: null, reasons: [], revealed: false, alternate_path_count: 0,
+          }],
+          generated_at: "2026-10-10T12:00:00Z",
+        })
+      }
+      return base(url)
+    }))
+    render(<Home />)
+
+    const rail = await screen.findByRole("list", { name: "Active incidents" })
+    expect(screen.queryByRole("button", { name: /Pruned Market/ })).not.toBeInTheDocument()
+    // The pruned radar lacks the source entity, so the rail falls back to its id until merged.
+    fireEvent.click(within(rail).getByRole("button", { name: "oracle:1:hidden CRITICAL" }))
+    expect(await within(rail).findByRole("button", { name: "Pruned Oracle CRITICAL" })).toHaveAttribute("aria-pressed", "true")
+
+    const graph = screen.getByRole("region", { name: "Morpho radar graph" })
+    expect(await within(graph).findByRole("button", { name: /Pruned Market/ })).toHaveAttribute("data-incident-path", "true")
+    expect(within(graph).getByRole("button", { name: /Pruned Oracle CRITICAL/ })).toHaveAttribute("data-incident-path", "true")
+    expect(within(screen.getByRole("list", { name: "Radar relationships" })).getByText(/Pruned Market — uses oracle → Pruned Oracle/)).toBeInTheDocument()
+  })
+
+  it("fetches and shows an entity's neighbours on request", async () => {
+    const hidden = { ...radarGraph.entities[1], entity_id: "vault:1:hidden", label: "Hidden Neighbour Vault", visible: false }
+    const market = { ...radarGraph.entities[1], entity_id: "market:1:shared", entity_type: "market", label: "Shared Market", visible: false }
+    const base = stubApi()
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url === "/api/graph?focus=vault%3A1%3Acatalog") {
+        return Response.json({
+          ...radarGraph,
+          entities: [radarGraph.entities[0], market, hidden],
+          relationships: [
+            { source_entity_id: "vault:1:catalog", target_entity_id: "market:1:shared", relationship_type: "allocated_to", weight: null, metadata: {} },
+            { source_entity_id: "vault:1:hidden", target_entity_id: "market:1:shared", relationship_type: "allocated_to", weight: null, metadata: {} },
+          ],
+        })
+      }
+      return base(url)
+    })
+    vi.stubGlobal("fetch", fetchMock)
+    render(<Home />)
+
+    fireEvent.click(await screen.findByRole("button", { name: /Belem Sentinel USDC HEALTHY/ }))
+    const detail = screen.getByRole("region", { name: "Selected radar entity" })
+    fireEvent.click(within(detail).getByRole("button", { name: "Show neighbours" }))
+
+    const nodes = screen.getByRole("list", { name: "Radar nodes" })
+    expect(await within(nodes).findByRole("button", { name: /Hidden Neighbour Vault/ })).toBeInTheDocument()
+    expect(within(nodes).getByRole("button", { name: /Shared Market/ })).toBeInTheDocument()
+    expect(within(screen.getByRole("region", { name: "Selected radar entity" })).getByRole("button", { name: "Neighbours shown" })).toBeDisabled()
+    expect(fetchMock.mock.calls.filter(([url]) => url.includes("focus="))).toHaveLength(1)
+  })
 })

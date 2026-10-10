@@ -208,10 +208,18 @@ class RadarService:
         entities = {entity.entity_id: entity for entity in self._topology.entities()}
         relationships = self._topology.relationships()
         dependency_ids: dict[str, list[str]] = {}
+        allocations: dict[str, dict[str, Decimal]] = {}
         for relationship in relationships:
             dependency_ids.setdefault(relationship.source_entity_id, []).append(
                 relationship.target_entity_id
             )
+            if (
+                relationship.relationship_type is RadarRelationshipType.ALLOCATED_TO
+                and relationship.weight is not None
+            ):
+                allocations.setdefault(relationship.source_entity_id, {})[
+                    relationship.target_entity_id
+                ] = relationship.weight
         latest = self._states.latest_health_all()
         evaluated: list[HealthState] = []
         errors = 0
@@ -228,7 +236,17 @@ class RadarService:
                 entity.entity_id, HealthHistory(current=latest.get(entity.entity_id))
             )
             try:
-                state = self._health.evaluate(entity, snapshot, dependencies, history)
+                if entity.entity_type is RadarEntityType.VAULT and entity.entity_id in allocations:
+                    # Vault health is weighted by allocation share when weights are known.
+                    state = self._health.evaluate(
+                        entity,
+                        snapshot,
+                        dependencies,
+                        history,
+                        allocations=allocations[entity.entity_id],
+                    )
+                else:
+                    state = self._health.evaluate(entity, snapshot, dependencies, history)
             except Exception:
                 # Isolate a bad entity: the rest of the cycle still evaluates.
                 errors += 1
@@ -249,7 +267,13 @@ class RadarService:
         self._propagation_stale = False
         if health_states:
             changes = self._incident_detector.reconcile(
-                self._incidents.active(), health_states, now
+                self._incidents.active(),
+                health_states,
+                now,
+                # Incidents whose source left the topology are resolved, not orphaned.
+                monitored_entity_ids={
+                    entity.entity_id for entity in self._topology.entities()
+                },
             )
             for incident in (*changes.opened, *changes.updated):
                 result = self._incidents.upsert_active(incident)

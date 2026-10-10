@@ -171,10 +171,10 @@ def test_one_failing_entity_evaluation_does_not_block_the_others(database):
     from app.radar.analysis import HealthEvaluator
 
     class FailingForMarket(HealthEvaluator):
-        def evaluate(self, entity, snapshot, dependencies, history):
+        def evaluate(self, entity, snapshot, dependencies, history, **kwargs):
             if entity.entity_id == MARKET:
                 raise ValueError("bad metric")
-            return super().evaluate(entity, snapshot, dependencies, history)
+            return super().evaluate(entity, snapshot, dependencies, history, **kwargs)
 
     class TwoEntityCollector:
         def collect(self, batch, now):
@@ -299,3 +299,49 @@ def test_monitoring_without_topology_records_a_partial_run(database):
     assert run.status == "partial"
     assert run.error_count == 1
     assert "discovery" in run.message.lower()
+
+
+def test_vault_health_receives_allocation_weights_from_topology(database):
+    from app.radar.analysis import HealthEvaluator
+
+    seen: dict[str, object] = {}
+
+    class RecordingHealth(HealthEvaluator):
+        def evaluate(self, entity, snapshot, dependencies, history, **kwargs):
+            seen[entity.entity_id] = kwargs.get("allocations")
+            return super().evaluate(entity, snapshot, dependencies, history, **kwargs)
+
+    class TwoEntityCollector:
+        def collect(self, batch, now):
+            return (
+                snapshot(MARKET, NOW, metrics=CRITICAL_MARKET_METRICS),
+                snapshot(VAULT, NOW, metrics={"utilization": Decimal("0.5")}),
+            )
+
+    service = build_service(database, TwoEntityCollector(), health=RecordingHealth())
+    service.run_discovery(NOW)
+    service.run_monitoring(NOW)
+
+    assert seen[VAULT] == {MARKET: Decimal("1")}
+    assert seen[MARKET] is None
+
+
+def test_incident_reconcile_receives_the_monitored_entity_ids(database):
+    from app.radar.analysis import IncidentDetector
+
+    seen: list[object] = []
+
+    class RecordingDetector(IncidentDetector):
+        def reconcile(self, previous, health_states, now, **kwargs):
+            seen.append(kwargs.get("monitored_entity_ids"))
+            return super().reconcile(previous, health_states, now, **kwargs)
+
+    service = build_service(
+        database,
+        SequencedCollector([NOW]),
+        incident_detector=RecordingDetector(),
+    )
+    service.run_discovery(NOW)
+    service.run_monitoring(NOW)
+
+    assert seen and set(seen[-1]) == {MARKET, VAULT}

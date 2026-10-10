@@ -454,9 +454,9 @@ def open_fixture_radar_incident(context, broker, now: datetime | None = None):
             message="WETH / USDC oracle deviated 8% from peer consensus.",
             created_at=observed_at,
         )
+        broker.publish("incident.opened", incident.incident_id, {"source_entity_id": incident.source_entity_id, "severity": incident.severity.value})
         if context.incidents.add_notification(notification):
             broker.publish("notification.created", notification.notification_id, {"incident_id": incident.incident_id, "severity": incident.severity.value})
-        broker.publish("incident.opened", incident.incident_id, {"source_entity_id": incident.source_entity_id, "severity": incident.severity.value})
 
     relationships = context.topology.relationships()
     impacts = PropagationEngine().propagate(
@@ -480,6 +480,15 @@ def resolve_fixture_radar_incident(context, broker, now: datetime | None = None)
         return None
     resolved = context.incidents.resolve(active[0].incident_id, now or datetime.now(UTC))
     if resolved is not None:
+        # A resolved incident no longer affects exposures (as in monitoring,
+        # which re-estimates exposures from active incidents only).
+        for exposure in context.exposures.list_exposures():
+            remaining = tuple(
+                impact
+                for impact in context.exposures.impacts(exposure.exposure_id)
+                if impact.incident_id != resolved.incident_id
+            )
+            context.exposures.replace_impacts(exposure.exposure_id, remaining)
         broker.publish("incident.resolved", resolved.incident_id, {"source_entity_id": resolved.source_entity_id})
         broker.publish("graph.updated", "graph", {"fixture": True, "incident_id": resolved.incident_id})
     return resolved

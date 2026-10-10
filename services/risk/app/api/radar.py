@@ -7,6 +7,7 @@ from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
+from app.radar.analysis import ExposureImpactEstimator
 from app.radar.contracts import (
     EntityHistoryResponse,
     ExposureCreateRequest,
@@ -15,6 +16,7 @@ from app.radar.contracts import (
     IncidentGraphResponse,
     ManualExposure,
     Notification,
+    PositionMode,
     NotificationResponse,
     RadarEntity,
     RadarEntityType,
@@ -253,12 +255,55 @@ def create_exposure(
     request: ExposureCreateRequest,
     context: RadarContext = Depends(get_radar_context),
 ) -> ManualExposure:
-    if context.topology.get_entity(request.entity_id) is None:
+    target = context.topology.get_entity(request.entity_id)
+    if target is None:
         raise _not_found("Entity")
+    allowed = (
+        _BORROWER_TARGETS if request.mode is PositionMode.BORROWER else _LENDER_TARGETS
+    )
+    if target.entity_type not in allowed:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Borrower exposures require a market or position."
+                if request.mode is PositionMode.BORROWER
+                else "Lender exposures require a vault, market, or position."
+            ),
+        )
     try:
-        return context.exposures.create(request, created_at=datetime.now(UTC))
+        exposure = context.exposures.create(request, created_at=datetime.now(UTC))
     except ValueError:
         raise HTTPException(status_code=422, detail="Invalid exposure.") from None
+    _propagate_exposure(context, exposure)
+    return exposure
+
+
+_LENDER_TARGETS = frozenset(
+    {RadarEntityType.VAULT, RadarEntityType.MARKET, RadarEntityType.POSITION}
+)
+_BORROWER_TARGETS = frozenset({RadarEntityType.MARKET, RadarEntityType.POSITION})
+
+
+def _propagate_exposure(context: RadarContext, exposure: ManualExposure) -> None:
+    """Estimate a new exposure against the stored impacts of every active incident.
+
+    Monitoring only re-propagates when incidents or topology change, so without
+    this a new exposure would show no impact until the next such change.
+    """
+    estimator = ExposureImpactEstimator()
+    relationships = None
+    impacts = []
+    for incident in context.incidents.active():
+        stored = context.incidents.impacts(incident.incident_id)
+        if not stored:
+            continue
+        if relationships is None:
+            relationships = context.topology.relationships()
+        impacts.extend(
+            estimator.estimate(exposure, incident, stored, relationships).impacts
+        )
+    if impacts:
+        context.exposures.replace_impacts(exposure.exposure_id, impacts)
 
 
 @router.get(

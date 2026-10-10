@@ -15,6 +15,8 @@ import {
   type ScenarioErrors,
   toScenarioSelections,
 } from "../components/scenario-panel"
+import { SystemTicker } from "../components/system-ticker"
+import { TerminalShell } from "../components/terminal-shell"
 import { getCatalog, runAnalysis } from "../lib/api"
 
 type CatalogState =
@@ -66,6 +68,9 @@ export default function Home() {
   }, [catalog.status])
 
   const entry = catalog.status === "ready" ? catalog.entries.find((item) => item.entity_id === selectedId) : undefined
+  const catalogEntries = catalog.status === "ready" ? catalog.entries.length : 0
+  const supportedEntries =
+    catalog.status === "ready" ? catalog.entries.filter((item) => item.analysis_available).length : 0
 
   function selectEntry(entityId: string) {
     requestToken.current += 1
@@ -106,12 +111,24 @@ export default function Home() {
   }
 
   return (
-    <main>
+    <TerminalShell
+      status={catalog.status === "error" ? "degraded" : "live"}
+      ticker={
+        <SystemTicker
+          catalogStatus={catalog.status}
+          catalogEntries={catalogEntries}
+          supportedEntries={supportedEntries}
+          selectedEntry={entry?.name ?? null}
+          analysisStatus={analysis.status}
+        />
+      }
+    >
       <header className="masthead">
-        <h1>Risk0</h1>
+        <span className="eyebrow">CURRENT MODULE / POSITION ANALYSIS</span>
+        <h2>Model exposure and exit risk</h2>
         <p>
-          Model a hypothetical Ethereum Morpho position, explore its dependencies, and compare the 30-day expected
-          loss of staying with the cost of exiting now. Read-only analysis; not investment advice.
+          Select a curated Morpho position, propagate explicit 30-day scenarios, and compare expected loss with the
+          current cost of exiting. Radar monitoring will connect here after its data pipelines land.
         </p>
       </header>
 
@@ -170,6 +187,6 @@ export default function Home() {
           <DataQualityPanel analysis={analysis.result} now={now} receivedAt={analysis.receivedAt} />
         </div>
       )}
-    </main>
+    </TerminalShell>
   )
 }

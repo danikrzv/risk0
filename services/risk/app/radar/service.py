@@ -1,5 +1,5 @@
-from collections.abc import Iterable, Mapping, Sequence
-from datetime import datetime
+from collections.abc import Collection, Iterable, Mapping, Sequence
+from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Protocol
 
@@ -11,9 +11,11 @@ from app.radar.analysis import (
     PropagationEngine,
     VaultSimilarity,
 )
+from app.radar.analysis.incidents import is_data_gap_incident
 from app.radar.contracts import (
     HealthState,
     HealthStatus,
+    IncidentSeverity,
     Notification,
     RadarEntity,
     RadarEntityType,
@@ -30,6 +32,14 @@ from app.radar.repositories import (
     StateRepository,
     TopologyRepository,
 )
+
+
+# Unchanged observations are persisted (snapshot and health) at most this often,
+# so raw history is a change log that still has a sample in every hour.
+STATE_HEARTBEAT = timedelta(hours=1)
+# Per-cycle SSE budget; anything beyond collapses into one summary event.
+MAX_INCIDENT_EVENTS = 20
+MAX_NOTIFICATION_EVENTS = 20
 
 
 class Discovery(Protocol):
@@ -71,7 +81,9 @@ class RadarService:
         exposure_impact: ExposureImpactEstimator | None = None,
         similarity: VaultSimilarity | None = None,
         events: EventPublisher | None = None,
+        chain_ids: Collection[int] | None = None,
     ) -> None:
+        """``chain_ids`` limits monitoring and incidents to those chains (None: all)."""
         self._discovery = discovery
         self._morpho_collector = morpho_collector
         self._chain_collector = chain_collector
@@ -85,8 +97,12 @@ class RadarService:
         self._exposure_impact = exposure_impact or ExposureImpactEstimator()
         self._similarity = similarity or VaultSimilarity()
         self._events = events
+        self._chain_ids = None if chain_ids is None else tuple(sorted(set(chain_ids)))
         self._batch: DiscoveryBatch | None = None
         self._health_history: dict[str, HealthHistory] = {}
+        # Latest observation evaluated per (entity, source): a re-read of the same
+        # observation must not advance the health hysteresis counters again.
+        self._observed_at: dict[tuple[str, str], datetime] = {}
         # Propagation inputs are incidents (changed only by health updates) and
         # topology/similarities (changed only by discovery). Exposures created
         # through the API are propagated at creation. Until either input changes,
@@ -94,6 +110,22 @@ class RadarService:
         self._propagation_stale = True
 
     def run_discovery(self, now: datetime) -> SchedulerRun:
+        run = self._discover(now)
+        # Hourly retention rides on the slow loop, whatever discovery's outcome.
+        try:
+            self._states.aggregate_completed_hours(now)
+            self._states.prune(now)
+        except Exception as error:
+            return run.model_copy(
+                update={
+                    "status": "failed" if run.status == "failed" else "partial",
+                    "error_count": run.error_count + 1,
+                    "message": f"{run.message} Retention failed: {type(error).__name__}",
+                }
+            )
+        return run
+
+    def _discover(self, now: datetime) -> SchedulerRun:
         if self._discovery is None:
             return self._record_run(
                 "slow", now, "failed", 0, 1, "Radar discovery is not configured."
@@ -164,48 +196,76 @@ class RadarService:
             errors += 1
         else:
             try:
-                chain_ids = tuple(
-                    sorted(
-                        {entity.chain_id for entity in self._batch.entities}
-                        | set(self._batch.complete_chain_ids)
-                    )
+                chain_ids = {entity.chain_id for entity in self._batch.entities} | set(
+                    self._batch.complete_chain_ids
                 )
+                if self._chain_ids is not None:
+                    chain_ids &= set(self._chain_ids)
                 snapshots.extend(
                     self._normalize_chain_snapshots(
-                        self._chain_collector.collect_all(chain_ids, now)
+                        self._chain_collector.collect_all(tuple(sorted(chain_ids)), now)
                     )
                 )
             except Exception:
                 errors += 1
 
-        new_snapshots = tuple(
+        monitored = self._monitored_entities()
+        observations = tuple(
             snapshot
             for snapshot in sorted(snapshots, key=lambda item: item.entity_id)
-            if self._states.append_snapshot(snapshot)
+            if snapshot.entity_id in monitored and self._is_new_observation(snapshot)
         )
-        health_states, health_errors = self._evaluate_health(new_snapshots)
+        stored = self._states.append_snapshots(observations, heartbeat=STATE_HEARTBEAT)
+        health_states, health_changes, health_errors = self._evaluate_health(
+            observations, monitored
+        )
         errors += health_errors
-        errors += self._reconcile_incidents(health_states, now)
+        events = _CycleEvents()
+        incidents_changed, incident_errors = self._reconcile_incidents(
+            health_states, now, monitored, events
+        )
+        errors += incident_errors
         status = "partial" if errors else "completed"
-        if new_snapshots:
-            self._publish(
-                "graph.updated",
-                "graph",
-                {"processed_count": len(new_snapshots), "status": status},
-            )
+        # One graph update per cycle, and only when something visible changed.
+        if stored or health_changes or incidents_changed:
+            events.graph = {"processed_count": len(observations), "status": status}
+        self._flush(events)
         return self._record_run(
             "fast",
             now,
             status,
-            len(new_snapshots),
+            len(observations),
             errors,
-            f"Processed {len(new_snapshots)} new state snapshots.",
+            f"Processed {len(observations)} new observations; stored "
+            f"{len(stored)} changed snapshots and {health_changes} health changes.",
         )
 
+    def _monitored_entities(self) -> dict[str, RadarEntity]:
+        """Live topology entities on the monitored chains."""
+        if self._chain_ids is None:
+            entities = self._topology.entities()
+        else:
+            entities = tuple(
+                entity
+                for chain_id in self._chain_ids
+                for entity in self._topology.entities(chain_id=chain_id)
+            )
+        return {entity.entity_id: entity for entity in entities}
+
+    def _is_new_observation(self, snapshot: StateSnapshot) -> bool:
+        key = (snapshot.entity_id, snapshot.source_identity)
+        previous = self._observed_at.get(key)
+        if previous is not None and snapshot.observed_at <= previous:
+            return False
+        self._observed_at[key] = snapshot.observed_at
+        return True
+
     def _evaluate_health(
-        self, snapshots: Sequence[StateSnapshot]
-    ) -> tuple[tuple[HealthState, ...], int]:
-        entities = {entity.entity_id: entity for entity in self._topology.entities()}
+        self, snapshots: Sequence[StateSnapshot], entities: Mapping[str, RadarEntity]
+    ) -> tuple[tuple[HealthState, ...], int, int]:
+        """Evaluate every new observation; persist only changed (or heartbeat) health."""
+        if not snapshots:
+            return (), 0, 0
         relationships = self._topology.relationships()
         dependency_ids: dict[str, list[str]] = {}
         allocations: dict[str, dict[str, Decimal]] = {}
@@ -220,7 +280,8 @@ class RadarService:
                 allocations.setdefault(relationship.source_entity_id, {})[
                     relationship.target_entity_id
                 ] = relationship.weight
-        latest = self._states.latest_health_all()
+        persisted = self._states.latest_health_all()
+        latest = dict(persisted)
         evaluated: list[HealthState] = []
         errors = 0
         for snapshot in sorted(snapshots, key=_snapshot_health_order):
@@ -251,70 +312,98 @@ class RadarService:
                 # Isolate a bad entity: the rest of the cycle still evaluates.
                 errors += 1
                 continue
-            self._states.set_health(state)
             latest[state.entity_id] = state
             evaluated.append(state)
             self._health_history[state.entity_id] = _next_history(history, state)
-        return tuple(evaluated), errors
+        changes = self._states.record_health(
+            state
+            for state in evaluated
+            if _health_changed(persisted.get(state.entity_id), state)
+        )
+        return tuple(evaluated), changes, errors
 
     def _reconcile_incidents(
-        self, health_states: tuple[HealthState, ...], now: datetime
-    ) -> int:
-        if not health_states and not self._propagation_stale:
-            return 0
-        # Cleared before reading topology so a concurrent discovery that lands
-        # mid-propagation marks the next cycle stale again.
-        self._propagation_stale = False
-        if health_states:
+        self,
+        health_states: tuple[HealthState, ...],
+        now: datetime,
+        monitored: Mapping[str, RadarEntity],
+        events: "_CycleEvents",
+    ) -> tuple[bool, int]:
+        """Apply incident changes; returns whether any changed materially, and errors."""
+        active = self._incidents.active()
+        changed = False
+        if health_states or active:
             changes = self._incident_detector.reconcile(
-                self._incidents.active(),
+                active,
                 health_states,
                 now,
-                # Incidents whose source left the topology are resolved, not orphaned.
-                monitored_entity_ids={
-                    entity.entity_id for entity in self._topology.entities()
-                },
+                # Incidents whose source left the topology or the monitored
+                # chains are resolved, not orphaned.
+                monitored_entity_ids=set(monitored),
             )
+            prior = {incident.incident_id: incident for incident in active}
             for incident in (*changes.opened, *changes.updated):
                 result = self._incidents.upsert_active(incident)
-                self._publish(
-                    "incident.opened" if result.created else "incident.updated",
-                    result.incident.incident_id,
-                    {
-                        "source_entity_id": result.incident.source_entity_id,
-                        "severity": result.incident.severity.value,
-                    },
-                )
+                stored = result.incident
+                previous = prior.get(stored.incident_id)
+                summary = {
+                    "source_entity_id": stored.source_entity_id,
+                    "severity": stored.severity.value,
+                }
                 if result.created:
+                    changed = True
+                    events.incident("incident.opened", stored.incident_id, summary)
                     notification = Notification(
-                        notification_id=f"notification:{result.incident.incident_id}",
-                        incident_id=result.incident.incident_id,
-                        severity=result.incident.severity,
-                        title=f"{result.incident.severity.value}: radar incident",
-                        message=(
-                            f"{result.incident.source_entity_id}: "
-                            f"{'; '.join(result.incident.reasons)}"
-                        ),
+                        notification_id=f"notification:{stored.incident_id}",
+                        incident_id=stored.incident_id,
+                        severity=stored.severity,
+                        title=f"{stored.severity.value}: radar incident",
+                        message=f"{stored.source_entity_id}: {'; '.join(stored.reasons)}",
                         created_at=now,
                     )
                     if self._incidents.add_notification(notification):
-                        self._publish(
-                            "notification.created",
+                        events.notification(
                             notification.notification_id,
                             {
                                 "incident_id": notification.incident_id,
                                 "severity": notification.severity.value,
                             },
                         )
-            for incident in changes.resolved:
-                self._incidents.resolve(incident.incident_id, now)
-                self._publish(
-                    "incident.resolved",
-                    incident.incident_id,
-                    {"source_entity_id": incident.source_entity_id},
+                elif previous is None or (stored.severity, stored.reasons) != (
+                    previous.severity,
+                    previous.reasons,
+                ):
+                    changed = True
+                    events.incident("incident.updated", stored.incident_id, summary)
+                # Otherwise the same cause was observed again: only its
+                # last_observed_at moved, so no event and no re-propagation.
+            if changes.resolved:
+                changed = True
+                self._incidents.resolve_many(
+                    (incident.incident_id for incident in changes.resolved), now
                 )
+                # Alerts raised from data gaps never reported a real deterioration.
+                self._incidents.mark_incidents_read(
+                    (
+                        incident.incident_id
+                        for incident in changes.resolved
+                        if is_data_gap_incident(incident)
+                    ),
+                    now,
+                )
+                for incident in changes.resolved:
+                    events.incident(
+                        "incident.resolved",
+                        incident.incident_id,
+                        {"source_entity_id": incident.source_entity_id},
+                    )
 
-        entities = self._topology.entities()
+        if not changed and not self._propagation_stale:
+            return changed, 0
+        # Cleared before reading topology so a concurrent discovery that lands
+        # mid-propagation marks the next cycle stale again.
+        self._propagation_stale = False
+        entities = tuple(self._monitored_entities().values())
         relationships = self._topology.relationships()
         similarities = self._topology.similarities()
         errors = 0
@@ -343,7 +432,7 @@ class RadarService:
             self._exposures.replace_impacts(exposure.exposure_id, impacts)
         if errors:
             self._propagation_stale = True
-        return errors
+        return changed, errors
 
     def _refresh_similarities(
         self,
@@ -415,11 +504,104 @@ class RadarService:
         )
         return run
 
+    def _flush(self, events: "_CycleEvents") -> None:
+        """Publish one cycle's events: bounded incident events, then the graph update."""
+        self._publish_capped(
+            sorted(events.incidents, key=_incident_event_priority),
+            MAX_INCIDENT_EVENTS,
+            "incident.updated",
+            "incidents",
+        )
+        self._publish_capped(
+            events.notifications,
+            MAX_NOTIFICATION_EVENTS,
+            "notification.created",
+            "notifications",
+        )
+        if events.graph is not None:
+            self._publish("graph.updated", "graph", events.graph)
+
+    def _publish_capped(
+        self,
+        items: Sequence[tuple[str, str, Mapping[str, object]]],
+        limit: int,
+        summary_type: str,
+        summary_id: str,
+    ) -> None:
+        if len(items) <= limit:
+            for event_type, resource_id, summary in items:
+                self._publish(event_type, resource_id, summary)
+            return
+        # Over budget: the first events individually, the rest as one summary
+        # that clients handle like any other change of that kind (a refetch).
+        for event_type, resource_id, summary in items[: limit - 1]:
+            self._publish(event_type, resource_id, summary)
+        rest = items[limit - 1 :]
+        counts: dict[str, int] = {}
+        for event_type, _, _ in rest:
+            kind = event_type.rsplit(".", 1)[-1]
+            counts[kind] = counts.get(kind, 0) + 1
+        self._publish(
+            summary_type, summary_id, {"coalesced": True, "count": len(rest), **counts}
+        )
+
     def _publish(
         self, event_type: str, resource_id: str, summary: Mapping[str, object]
     ) -> None:
         if self._events is not None:
             self._events.publish(event_type, resource_id, summary)
+
+
+class _CycleEvents:
+    """Events gathered during one cycle and published together at its end."""
+
+    def __init__(self) -> None:
+        self.incidents: list[tuple[str, str, Mapping[str, object]]] = []
+        self.notifications: list[tuple[str, str, Mapping[str, object]]] = []
+        self.graph: Mapping[str, object] | None = None
+
+    def incident(
+        self, event_type: str, incident_id: str, summary: Mapping[str, object]
+    ) -> None:
+        self.incidents.append((event_type, incident_id, summary))
+
+    def notification(self, notification_id: str, summary: Mapping[str, object]) -> None:
+        self.notifications.append(("notification.created", notification_id, summary))
+
+
+_INCIDENT_EVENT_ORDER = {"incident.opened": 0, "incident.updated": 1, "incident.resolved": 2}
+
+
+def _incident_event_priority(
+    item: tuple[str, str, Mapping[str, object]],
+) -> tuple[int, int]:
+    """New incidents first, then escalations, then resolutions; critical first."""
+    event_type, _, summary = item
+    critical = summary.get("severity") == IncidentSeverity.CRITICAL.value
+    return _INCIDENT_EVENT_ORDER[event_type], 0 if critical else 1
+
+
+def _health_changed(previous: HealthState | None, state: HealthState) -> bool:
+    """Whether an evaluation is worth persisting next to the latest persisted one."""
+    if previous is None:
+        return True
+    if state.evaluated_at <= previous.evaluated_at:
+        return False
+    if state.evaluated_at - previous.evaluated_at >= STATE_HEARTBEAT:
+        return True
+    return (
+        state.status,
+        state.score,
+        state.reasons,
+        tuple(sorted(state.missing_fields)),
+        state.rule_version,
+    ) != (
+        previous.status,
+        previous.score,
+        previous.reasons,
+        tuple(sorted(previous.missing_fields)),
+        previous.rule_version,
+    )
 
 
 def _snapshot_health_order(snapshot: StateSnapshot) -> tuple[int, str]:

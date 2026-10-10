@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -345,3 +345,301 @@ def test_incident_reconcile_receives_the_monitored_entity_ids(database):
     service.run_monitoring(NOW)
 
     assert seen and set(seen[-1]) == {MARKET, VAULT}
+
+
+FIVE_MINUTES = timedelta(minutes=5)
+WARNING_MARKET_METRICS = {**CRITICAL_MARKET_METRICS, "bad_debt": Decimal("0"), "utilization": Decimal("0.95")}
+BASE_MARKET = "market:8453:market-b"
+
+
+class AnyTimeChainCollector:
+    def __init__(self) -> None:
+        self.chain_ids: list[tuple[int, ...]] = []
+
+    def collect_all(self, chain_ids, now):
+        self.chain_ids.append(tuple(chain_ids))
+        return ()
+
+
+class PerCycleCollector:
+    """Builds each cycle's snapshots from the cycle time."""
+
+    def __init__(self, build) -> None:
+        self.build = build
+
+    def collect(self, batch, now):
+        return tuple(self.build(now))
+
+
+def markets_batch(*markets) -> DiscoveryBatch:
+    return DiscoveryBatch(
+        discovered_at=NOW,
+        chains=(),
+        protocols=(),
+        vaults=(),
+        markets=tuple(markets),
+        assets=(),
+        oracles=(),
+        irms=(),
+        relationships=(),
+        sources=(),
+        failures=(),
+        complete_chain_ids=tuple(sorted({market.chain_id for market in markets})),
+        market_records=(),
+        vault_records=(),
+    )
+
+
+def gap_incident(entity_id: str = MARKET):
+    from app.radar.contracts import Incident
+
+    return Incident(
+        incident_id=f"incident:{entity_id}:radar-health-v1:gap",
+        source_entity_id=entity_id,
+        severity="WARNING",
+        status="OPEN",
+        trigger_metrics={"health_status": "UNKNOWN", "health_score": None},
+        rule_version="radar-health-v1",
+        first_observed_at=NOW - FIVE_MINUTES,
+        last_observed_at=NOW - FIVE_MINUTES,
+        reasons=("snapshot is expired",),
+    )
+
+
+def test_expired_or_incomplete_data_is_unknown_without_incident_or_notification(database):
+    def gaps(now):
+        return (
+            snapshot(MARKET, now, metrics={}, freshness="expired", missing_fields=("state",)),
+            snapshot(
+                VAULT,
+                now,
+                metrics={"withdrawal_liquidity": None},
+                missing_fields=("withdrawal_liquidity",),
+            ),
+        )
+
+    states = StateRepository(database)
+    incidents = IncidentRepository(database)
+    events = RecordingEvents()
+    service = build_service(
+        database,
+        PerCycleCollector(gaps),
+        chain_collector=AnyTimeChainCollector(),
+        states=states,
+        incidents=incidents,
+        events=events,
+    )
+    service.run_discovery(NOW)
+    service.run_monitoring(NOW)
+    service.run_monitoring(NOW + FIVE_MINUTES)
+
+    assert states.latest_health(MARKET).status is HealthStatus.UNKNOWN
+    assert states.latest_health(MARKET).reasons == ("snapshot is expired",)
+    assert states.latest_health(VAULT).status is HealthStatus.UNKNOWN
+    assert incidents.list_incidents() == ()
+    assert incidents.list_notifications().notifications == ()
+    assert not [item for item in events.items if item[0] != "graph.updated"]
+
+
+def test_open_data_gap_incidents_are_resolved_and_their_alerts_read_next_cycle(database):
+    from app.radar.contracts import Notification
+
+    topology = TopologyRepository(database)
+    incidents = IncidentRepository(database)
+    topology.upsert_entities(vertical_batch().entities, seen_at=NOW)
+    gap = incidents.upsert_active(gap_incident()).incident
+    incidents.add_notification(
+        Notification(
+            notification_id=f"notification:{gap.incident_id}",
+            incident_id=gap.incident_id,
+            severity="WARNING",
+            title="WARNING: radar incident",
+            message="snapshot is expired",
+            created_at=gap.first_observed_at,
+        )
+    )
+    events = RecordingEvents()
+    service = build_service(
+        database,
+        PerCycleCollector(lambda now: ()),
+        chain_collector=AnyTimeChainCollector(),
+        incidents=incidents,
+        events=events,
+    )
+
+    service.run_discovery(NOW)
+    service.run_monitoring(NOW)
+
+    assert incidents.active() == ()
+    assert incidents.get(gap.incident_id).resolved_at == NOW
+    assert incidents.list_notifications(unread_only=True).notifications == ()
+    assert ("incident.resolved", gap.incident_id) in [item[:2] for item in events.items]
+
+
+def test_only_allowlisted_chains_are_monitored_and_raise_incidents(database):
+    from app.radar.contracts import Incident
+
+    base_market = entity(RadarEntityType.MARKET, "market-b", chain_id=8453)
+    batch = markets_batch(entity(RadarEntityType.MARKET, "market-a"), base_market)
+    topology = TopologyRepository(database)
+    states = StateRepository(database)
+    incidents = IncidentRepository(database)
+    topology.upsert_entities(batch.entities, seen_at=NOW)
+    base_incident = incidents.upsert_active(
+        Incident(
+            incident_id="incident:base",
+            source_entity_id=BASE_MARKET,
+            severity="CRITICAL",
+            status="OPEN",
+            trigger_metrics={"health_status": "CRITICAL", "health_score": "0"},
+            rule_version="radar-health-v1",
+            first_observed_at=NOW - FIVE_MINUTES,
+            last_observed_at=NOW - FIVE_MINUTES,
+            reasons=("bad debt detected",),
+        )
+    ).incident
+    chains = AnyTimeChainCollector()
+    service = build_service(
+        database,
+        PerCycleCollector(
+            lambda now: (
+                snapshot(MARKET, now, metrics=CRITICAL_MARKET_METRICS),
+                snapshot(BASE_MARKET, now, metrics=CRITICAL_MARKET_METRICS),
+            )
+        ),
+        discovery=FixedDiscovery(batch),
+        chain_collector=chains,
+        topology=topology,
+        states=states,
+        incidents=incidents,
+        chain_ids=(1,),
+    )
+
+    service.run_discovery(NOW)
+    service.run_monitoring(NOW)
+
+    assert chains.chain_ids == [(1,)]
+    assert states.history(BASE_MARKET).snapshots == ()
+    assert states.latest_health(BASE_MARKET) is None
+    assert [incident.source_entity_id for incident in incidents.active()] == [MARKET]
+    assert incidents.get(base_incident.incident_id).status == "RESOLVED"
+
+
+def test_unchanged_observations_confirm_hysteresis_without_rewriting_history(database):
+    states = StateRepository(database)
+    incidents = IncidentRepository(database)
+    events = RecordingEvents()
+    service = build_service(
+        database,
+        PerCycleCollector(lambda now: (snapshot(MARKET, now, metrics=WARNING_MARKET_METRICS),)),
+        discovery=FixedDiscovery(markets_batch(entity(RadarEntityType.MARKET, "market-a"))),
+        chain_collector=AnyTimeChainCollector(),
+        states=states,
+        incidents=incidents,
+        events=events,
+    )
+    service.run_discovery(NOW)
+    events.items.clear()
+
+    runs = [service.run_monitoring(NOW + FIVE_MINUTES * cycle) for cycle in range(4)]
+
+    # Every cycle is a new observation, but the state never changed: one snapshot.
+    assert [run.processed_count for run in runs] == [1, 1, 1, 1]
+    assert len(states.history(MARKET).snapshots) == 1
+    # Pending warning, confirmed warning; then unchanged health is not rewritten.
+    assert [h.status for h in states.history(MARKET).health_states] == [
+        HealthStatus.WARNING,
+        HealthStatus.HEALTHY,
+    ]
+    assert len(incidents.list_incidents()) == 1
+    assert len(incidents.list_notifications().notifications) == 1
+    assert incidents.active()[0].last_observed_at == NOW + FIVE_MINUTES * 3
+    assert [item[0] for item in events.items] == [
+        "graph.updated",
+        "incident.opened",
+        "notification.created",
+        "graph.updated",
+    ]
+
+
+def test_one_cycle_emits_one_graph_update_and_a_bounded_number_of_incident_events(database):
+    from app.radar.service import MAX_INCIDENT_EVENTS, MAX_NOTIFICATION_EVENTS
+
+    count = MAX_INCIDENT_EVENTS + 10
+    markets = [entity(RadarEntityType.MARKET, f"market-{index:02d}") for index in range(count)]
+    incidents = IncidentRepository(database)
+    events = RecordingEvents()
+    service = build_service(
+        database,
+        PerCycleCollector(
+            lambda now: [
+                snapshot(market.entity_id, now, metrics=CRITICAL_MARKET_METRICS)
+                for market in markets
+            ]
+        ),
+        discovery=FixedDiscovery(markets_batch(*markets)),
+        chain_collector=AnyTimeChainCollector(),
+        incidents=incidents,
+        events=events,
+    )
+    service.run_discovery(NOW)
+    events.items.clear()
+
+    service.run_monitoring(NOW)
+
+    types = [item[0] for item in events.items]
+    assert len(incidents.active()) == count
+    assert len(incidents.list_notifications(limit=100).notifications) == count
+    assert types.count("graph.updated") == 1
+    # The budget includes the one summary event standing for the remainder.
+    assert len([kind for kind in types if kind.startswith("incident.")]) == MAX_INCIDENT_EVENTS
+    assert types.count("incident.opened") == MAX_INCIDENT_EVENTS - 1
+    assert types.count("notification.created") == MAX_NOTIFICATION_EVENTS
+    omitted = count - MAX_INCIDENT_EVENTS + 1
+    incident_summary = next(item for item in events.items if item[1] == "incidents")
+    assert incident_summary == (
+        "incident.updated",
+        "incidents",
+        {"coalesced": True, "count": omitted, "opened": omitted},
+    )
+    notification_summary = next(item for item in events.items if item[1] == "notifications")
+    assert notification_summary[0] == "notification.created"
+    assert notification_summary[2]["count"] == count - MAX_NOTIFICATION_EVENTS + 1
+
+
+def test_slow_cycle_aggregates_completed_hours_and_applies_retention(database):
+    topology = TopologyRepository(database)
+    states = StateRepository(database)
+    topology.upsert_entities(vertical_batch().entities, seen_at=NOW - timedelta(days=40))
+    old = NOW - timedelta(days=31)
+    recent = NOW - timedelta(hours=2)
+    states.append_snapshot(snapshot(MARKET, old))
+    states.append_snapshot(snapshot(MARKET, recent))
+    service = build_service(
+        database, FixedMorphoCollector(()), topology=topology, states=states
+    )
+
+    run = service.run_discovery(NOW)
+
+    assert run.status == "completed"
+    assert [item.observed_at for item in states.history(MARKET).snapshots] == [recent]
+    hour = recent.replace(minute=0)
+    assert states.hourly(MARKET, start=hour, end=hour + timedelta(hours=1))
+    old_hour = old.replace(minute=0)
+    assert states.hourly(MARKET, start=old_hour, end=old_hour + timedelta(hours=1))
+
+
+def test_retention_failure_marks_the_slow_cycle_partial(database):
+    class FailingRetention(StateRepository):
+        def prune(self, now):
+            raise RuntimeError("database is locked")
+
+    service = build_service(
+        database, FixedMorphoCollector(()), states=FailingRetention(database)
+    )
+
+    run = service.run_discovery(NOW)
+
+    assert run.status == "partial"
+    assert run.error_count == 1
+    assert "Retention failed: RuntimeError" in run.message

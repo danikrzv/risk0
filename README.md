@@ -48,6 +48,7 @@ it into docs, issues, or pull requests.
 | `RISK_API_URL` | web (server side only) | Where the Next.js proxy routes reach the risk service (default `http://localhost:8000`). |
 | `RISK0_DATA_MODE` | risk service | `live` (default) or `fixture`. |
 | `RISK0_RADAR_ENABLED` | risk service | Enables the continuous five-minute monitoring and hourly discovery loops. |
+| `RISK0_RADAR_CHAIN_IDS` | risk service | Comma-separated chain IDs the radar discovers and monitors (default `1`, Ethereum mainnet). Invalid values stop startup. |
 | `RISK0_RADAR_DB_PATH` | risk service | Optional separate SQLite path for radar topology, history, incidents, notifications, and manual exposures. |
 | `RISK0_RADAR_SEED_FIXTURES` | risk service | Fixture/demo only: seeds the deterministic healthy radar topology. |
 | `RISK0_CATALOG_PATH` | risk service | Optional override for the version-controlled catalog JSON. |
@@ -103,9 +104,18 @@ its fast monitoring loop every 300 seconds and its slow discovery/similarity
 loop every 3,600 seconds inside the FastAPI lifespan. Overlapping runs are
 skipped and recorded rather than executed concurrently. Radar tables share the
 cache database by default; set `RISK0_RADAR_DB_PATH` to keep them in a separate
-SQLite file. Migrations run idempotently at service startup. Raw snapshots and
-superseded health history are retained for 30 days; hourly aggregates are kept
-for 365 days; incident records are retained. Fixture and test runs leave the
+SQLite file. Migrations run idempotently at service startup. Only chains listed
+in `RISK0_RADAR_CHAIN_IDS` (default: Ethereum mainnet) are discovered and
+monitored; open incidents on other chains are resolved. A snapshot or health
+evaluation is stored only when the observed state changes, plus an hourly
+heartbeat so every hour keeps a sample. Each discovery cycle also aggregates
+completed hours and applies retention: raw snapshots and superseded health
+history are retained for 30 days; hourly aggregates are kept for 365 days;
+incident records are retained. Missing, incomplete, or expired data makes an
+entity `UNKNOWN` but never opens an incident or notification; only observed
+`WARNING`/`CRITICAL` health does. A cycle emits at most one `graph.updated`
+event and a bounded number of incident and notification events, coalescing the
+rest into one summary event. Fixture and test runs leave the
 scheduler disabled unless explicitly enabled.
 
 ### Docker

@@ -415,3 +415,35 @@ def test_fixture_mode_scheduler_never_builds_live_rpc_clients(monkeypatch, tmp_p
     finally:
         get_radar_context.cache_clear()
         fixture_morpho_client.cache_clear()
+
+
+def test_radar_chain_allowlist_limits_discovery_and_monitoring(monkeypatch, tmp_path):
+    from app import main
+    from app.api.radar import get_radar_context
+    from app.fixture_mode import fixture_morpho_client
+
+    monkeypatch.setenv("RISK0_DATA_MODE", "fixture")
+    monkeypatch.setenv("RISK0_RADAR_CHAIN_IDS", "8453,1")
+    monkeypatch.setenv("RISK0_CACHE_PATH", str(tmp_path / "cache.sqlite3"))
+    monkeypatch.setenv("RISK0_RADAR_DB_PATH", str(tmp_path / "radar.sqlite3"))
+    monkeypatch.setenv("RISK0_FIXTURE_CACHE_PATH", str(tmp_path / "fixture.sqlite3"))
+    get_radar_context.cache_clear()
+    fixture_morpho_client.cache_clear()
+    try:
+        service = main.build_radar_scheduler()._service
+        assert service._discovery._allowed == (1, 8453)
+        assert service._chain_ids == (1, 8453)
+    finally:
+        get_radar_context.cache_clear()
+        fixture_morpho_client.cache_clear()
+
+
+def test_fastapi_lifespan_fails_fast_on_an_invalid_chain_allowlist(monkeypatch):
+    from app import main
+
+    monkeypatch.delenv(main.RADAR_ENABLED_ENV, raising=False)
+    monkeypatch.setenv("RISK0_RADAR_CHAIN_IDS", "mainnet")
+
+    with pytest.raises(ValueError, match="RISK0_RADAR_CHAIN_IDS"):
+        with TestClient(main.app):
+            pass

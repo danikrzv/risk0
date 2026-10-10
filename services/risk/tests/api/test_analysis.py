@@ -103,7 +103,7 @@ class FakeQuotes:
     def quote(self, request: QuoteRequest, *, refresh: bool) -> DataEnvelope[ExitQuote]:
         self.calls.append(refresh)
         if self.fail:
-            raise RuntimeError("provider said https://rpc.example.invalid/v2/alch_secret failed")
+            raise RuntimeError("provider said https://rpc.example.invalid/v2/fake-rpc-credential failed")
         index = min(len(self.calls) - 1, len(self.ages) - 1)
         age = self.ages[index]
         block = self.blocks[min(len(self.calls) - 1, len(self.blocks) - 1)]
@@ -421,7 +421,7 @@ def test_quote_provider_outage_is_unavailable_and_sanitized(api, morpho_client, 
     assert body["recommendation"]["decision"] == UNAVAILABLE
     assert body["exit_estimate"]["freshness"] == "expired"
     # Public data provenance (Morpho API paths) is expected; provider error text is not.
-    for leaked in ("rpc.example.invalid", "alch_", "failed"):
+    for leaked in ("rpc.example.invalid", "fake-rpc-credential", "failed"):
         assert leaked not in response.text
         assert leaked not in service_logs(caplog)
 

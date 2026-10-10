@@ -3,7 +3,7 @@
 import type { AnalysisResponse, ExposureCreateRequest, HydratedCatalogEntry, IncidentGraphResponse, IncidentImpact, PositionInput, RadarGraphResponse } from "@risk0/contracts"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
-import { CatalogSelector } from "../components/catalog-selector"
+import { CatalogSelector, canAnalyze } from "../components/catalog-selector"
 import { DataQualityPanel } from "../components/data-quality"
 import { ExposureRail } from "../components/exposure-rail"
 import { IncidentRail } from "../components/incident-rail"
@@ -182,14 +182,40 @@ export default function Home() {
     exposureImpacts.find((item) => item.target_entity_id === impact.target_entity_id) ?? impact
   )), [exposureImpacts, selectedIncident])
 
-  function selectEntry(entityId: string) {
+  // Stable (refs and setters only) so the memoized radar graph can hold it.
+  const selectEntry = useCallback((entityId: string) => {
     requestToken.current += 1
     setSelectedId(entityId)
     setScenarios(defaultScenarioDrafts())
     setScenarioErrors({})
     setAnalysis({ status: "idle" })
     setSelectedNodeId(null)
-  }
+  }, [])
+
+  /** Radar entity id → analyzable catalog entry id, matched on chain and address. */
+  const catalogByRadarEntity = useMemo(() => {
+    const matches = new Map<string, string>()
+    if (catalog.status !== "ready" || !radarGraph) return matches
+    for (const entity of radarGraph.entities) {
+      const match = catalog.entries.find((item) => (
+        canAnalyze(item)
+        && item.chain_id === entity.chain_id
+        && item.address_or_market_id.toLowerCase() === entity.address_or_key.toLowerCase()
+      ))
+      if (match) matches.set(entity.entity_id, match.entity_id)
+    }
+    return matches
+  }, [catalog, radarGraph])
+  const analyzableEntityIds = useMemo(() => new Set(catalogByRadarEntity.keys()), [catalogByRadarEntity])
+
+  const analyzeRadarEntity = useCallback((radarEntityId: string) => {
+    const catalogId = catalogByRadarEntity.get(radarEntityId)
+    if (!catalogId) return
+    selectEntry(catalogId)
+    requestAnimationFrame(() => {
+      document.getElementById("position-analysis")?.scrollIntoView({ behavior: "smooth", block: "start" })
+    })
+  }, [catalogByRadarEntity, selectEntry])
 
   function validateScenarios(): boolean {
     const { errors } = toScenarioSelections(scenarios)
@@ -259,6 +285,8 @@ export default function Home() {
             impacts={displayedImpacts}
             selectedEntityId={selectedRadarEntityId}
             onSelectEntity={setSelectedRadarEntityId}
+            analyzableEntityIds={analyzableEntityIds}
+            onAnalyzeEntity={analyzeRadarEntity}
           />
           <IncidentRail
             incidents={radarGraph.active_incidents}
@@ -271,7 +299,7 @@ export default function Home() {
       {exposureStatus?.kind === "ok" ? <p role="status" className="exposure-status">{exposureStatus.message}</p> : null}
       {exposureStatus?.kind === "error" ? <p role="alert" className="alert">{exposureStatus.message}</p> : null}
 
-      <section className="position-analysis-module" aria-labelledby="position-analysis-heading">
+      <section id="position-analysis" className="position-analysis-module" aria-labelledby="position-analysis-heading">
         <header className="module-heading">
           <span className="eyebrow">30-DAY DECISION SUPPORT</span>
           <h2 id="position-analysis-heading">Position analysis</h2>

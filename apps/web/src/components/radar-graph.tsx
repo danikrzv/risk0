@@ -6,6 +6,8 @@ import type { HealthState, HealthStatus, Incident, IncidentImpact, RadarEntity, 
 import { Background, Controls, type Edge, MarkerType, type Node, Position, ReactFlow } from "@xyflow/react"
 import { memo, useMemo, useState } from "react"
 
+import { RadarEntityDetail } from "./radar-entity-detail"
+
 const HEALTH_STATUSES: HealthStatus[] = ["HEALTHY", "WARNING", "CRITICAL", "UNKNOWN"]
 
 function healthByEntity(entities: RadarEntity[], healthStates: HealthState[]): Map<string, HealthStatus> {
@@ -63,13 +65,18 @@ export const RadarGraph = memo(function RadarGraph({
   impacts = NO_IMPACTS,
   onSelectEntity,
   selectedEntityId = null,
+  analyzableEntityIds,
+  onAnalyzeEntity,
 }: {
   graph: RadarGraphResponse
   healthStates?: HealthState[]
   selectedIncident?: Incident | null
   impacts?: IncidentImpact[]
-  onSelectEntity?: (entityId: string) => void
+  onSelectEntity?: (entityId: string | null) => void
   selectedEntityId?: string | null
+  /** Radar entities that match an analyzable catalog entry. */
+  analyzableEntityIds?: ReadonlySet<string>
+  onAnalyzeEntity?: (entityId: string) => void
 }) {
   const [chainFilter, setChainFilter] = useState("all")
   const [typeFilter, setTypeFilter] = useState("all")
@@ -110,6 +117,7 @@ export const RadarGraph = memo(function RadarGraph({
     () => graph.relationships.filter((edge) => visibleIds.has(edge.source_entity_id) && visibleIds.has(edge.target_entity_id)),
     [graph.relationships, visibleIds],
   )
+  const selectedEntity = selectedEntityId ? entityById.get(selectedEntityId) ?? null : null
   const statusOf = (entity: RadarEntity): HealthStatus => (
     selectedIncident?.source_entity_id === entity.entity_id
       ? selectedIncident.severity
@@ -163,6 +171,7 @@ export const RadarGraph = memo(function RadarGraph({
           nodes={flowNodes}
           edges={flowEdges}
           onNodeClick={(_, node) => onSelectEntity?.(node.id)}
+          onPaneClick={() => onSelectEntity?.(null)}
           nodesDraggable={false}
           nodesConnectable={false}
           fitView
@@ -172,6 +181,18 @@ export const RadarGraph = memo(function RadarGraph({
           <Controls showInteractive={false} />
         </ReactFlow>
       </div>
+      {selectedEntity && onSelectEntity ? (
+        <RadarEntityDetail
+          entity={selectedEntity}
+          status={statusOf(selectedEntity)}
+          graph={graph}
+          onSelectEntity={onSelectEntity}
+          onAnalyze={onAnalyzeEntity && analyzableEntityIds?.has(selectedEntity.entity_id)
+            ? () => onAnalyzeEntity(selectedEntity.entity_id)
+            : undefined}
+          onClose={() => onSelectEntity(null)}
+        />
+      ) : null}
       <div className="radar-graph__accessible">
         <ul className="radar-nodes" aria-label="Radar nodes">
           {visibleEntities.map((entity) => {

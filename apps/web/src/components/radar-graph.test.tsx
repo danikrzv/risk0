@@ -216,6 +216,42 @@ describe("RadarGraph", () => {
     expect(onSelectEntity).toHaveBeenCalledWith("vault:1:visible")
   })
 
+  it("inspects the selected entity, navigates its connections, and offers analysis only for catalog matches", () => {
+    const onSelectEntity = vi.fn()
+    const onAnalyzeEntity = vi.fn()
+    const { rerender } = render(
+      <RadarGraph
+        graph={graph}
+        healthStates={healthStates}
+        selectedEntityId="vault:1:catalog"
+        onSelectEntity={onSelectEntity}
+        analyzableEntityIds={new Set(["vault:1:catalog"])}
+        onAnalyzeEntity={onAnalyzeEntity}
+      />,
+    )
+
+    const detail = screen.getByRole("region", { name: "Selected radar entity" })
+    expect(within(detail).getByRole("heading", { name: "Catalog Vault" })).toBeInTheDocument()
+    fireEvent.click(within(detail).getByRole("button", { name: "USDC Market" }))
+    expect(onSelectEntity).toHaveBeenCalledWith("market:1:market")
+    fireEvent.click(within(detail).getByRole("button", { name: "Analyze a position here" }))
+    expect(onAnalyzeEntity).toHaveBeenCalledWith("vault:1:catalog")
+    fireEvent.click(within(detail).getByRole("button", { name: "Close entity details" }))
+    expect(onSelectEntity).toHaveBeenLastCalledWith(null)
+
+    rerender(
+      <RadarGraph
+        graph={graph}
+        healthStates={healthStates}
+        selectedEntityId="market:1:market"
+        onSelectEntity={onSelectEntity}
+        analyzableEntityIds={new Set(["vault:1:catalog"])}
+        onAnalyzeEntity={onAnalyzeEntity}
+      />,
+    )
+    expect(screen.queryByRole("button", { name: "Analyze a position here" })).not.toBeInTheDocument()
+  })
+
   it("filters visible nodes by chain, entity type, and health", () => {
     render(<RadarGraph graph={graph} healthStates={healthStates} />)
 

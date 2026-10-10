@@ -373,7 +373,7 @@ p {
 [data-health-status="UNKNOWN"] { color: var(--color-unavailable); }
 
 .radar-graph__canvas {
-  min-height: 31rem;
+  height: 31rem;
   border: 1px solid var(--color-border);
   background-image: linear-gradient(#101c2928 1px, transparent 1px), linear-gradient(90deg, #101c2928 1px, transparent 1px);
   background-size: 24px 24px;
@@ -431,6 +431,79 @@ p {
 .radar-node small { color: var(--color-muted); }
 .radar-node[data-incident-path="true"] { box-shadow: 0 0 0 2px var(--color-danger), 0 0 1.2rem #f0656544; }
 .radar-node[data-revealed="true"]::after { content: "REVEALED BY INCIDENT"; color: var(--color-danger); font-size: 0.58rem; }
+
+/* Interactive affordances: every clickable radar/catalog element shows hover and selection. */
+.radar-node,
+.radar-flow-node,
+.incident-rail button,
+.node-chip {
+  cursor: pointer;
+  transition: background-color 120ms ease, box-shadow 120ms ease;
+}
+
+.radar-node:hover,
+.incident-rail button:hover,
+.node-chip:hover {
+  background: var(--color-surface-raised);
+}
+
+.radar-flow-node:hover {
+  background: var(--color-surface-raised) !important;
+}
+
+.radar-node[aria-pressed="true"],
+.react-flow__node.radar-flow-node.selected {
+  box-shadow: 0 0 0 2px var(--color-accent);
+}
+
+.catalog__card:not(.catalog__card--disabled):hover {
+  border-color: var(--color-border-strong);
+  background: var(--color-surface-raised);
+}
+
+.radar-detail {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+  padding: 0.85rem;
+  border: 1px solid var(--color-border-strong);
+  border-left: 3px solid currentColor;
+  background: var(--color-surface-raised);
+}
+
+.radar-detail__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  gap: 1rem;
+}
+
+.radar-detail__header small { color: var(--color-muted); }
+.radar-detail h3 { margin: 0.2rem 0 0; color: var(--color-text); }
+.radar-detail h4 { margin: 0 0 0.35rem; color: var(--color-muted); font-size: 0.7rem; letter-spacing: 0.08em; text-transform: uppercase; }
+
+.radar-detail dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.35rem 1rem;
+  margin: 0;
+  color: var(--color-text);
+}
+
+.radar-detail dt { color: var(--color-muted); }
+.radar-detail dd { margin: 0; overflow-wrap: anywhere; }
+.radar-detail .metrics { margin-top: 0; color: var(--color-text); }
+.radar-detail__analyze { justify-self: start; }
+
+.radar-detail__section ul {
+  display: grid;
+  gap: 0.3rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--color-muted);
+  font-size: 0.8rem;
+}
 
 .radar-relationships {
   display: grid;

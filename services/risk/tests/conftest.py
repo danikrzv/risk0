@@ -90,6 +90,19 @@ class FakeMorphoApi:
         del self.graphql[f"market:{market_id}"]
 
 
+@pytest.fixture(autouse=True)
+def isolated_databases(request, monkeypatch, tmp_path_factory):
+    """Keep default wiring off the developer's `services/risk/.cache` databases.
+
+    Tests that need specific paths still set them; live smoke tests opt out.
+    """
+    if request.node.get_closest_marker("live") is not None:
+        return
+    directory = tmp_path_factory.mktemp("databases")
+    monkeypatch.setenv("RISK0_CACHE_PATH", str(directory / "risk0.sqlite3"))
+    monkeypatch.setenv("RISK0_RADAR_DB_PATH", str(directory / "risk0-radar.sqlite3"))
+
+
 @pytest.fixture
 def clock() -> FakeClock:
     return FakeClock(datetime(2026, 10, 10, 9, 15, tzinfo=UTC))

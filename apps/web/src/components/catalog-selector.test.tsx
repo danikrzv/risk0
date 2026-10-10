@@ -38,6 +38,33 @@ describe("CatalogSelector", () => {
     expect(screen.getByText("Belem-distributed")).toBeInTheDocument()
   })
 
+  it("labels RockawayX-curated and Base entries without implying Belem holdings", () => {
+    const rockaway = {
+      ...catalogEntries[1],
+      entity_id: "rockawayx-weth",
+      name: "RockawayX wETH",
+      entity_type: "morpho_vault_v2" as const,
+      provenance: "rockawayx_curated" as const,
+      provenance_label: "RockawayX-curated Morpho vault (source: RockawayX Dune dashboard)",
+    }
+    const base = {
+      ...rockaway,
+      entity_id: "midas-usdc-prime-base",
+      name: "RockawayX Midas USDC Prime (Base)",
+      chain_id: 8453 as const,
+      supported: false,
+    }
+    render(<CatalogSelector entries={[rockaway, base]} selectedId={null} onSelect={() => {}} now={NOW} />)
+
+    expect(screen.getAllByText("RockawayX-curated")).toHaveLength(2)
+    expect(screen.getAllByText("RockawayX-curated — not a confirmed Belem holding")).toHaveLength(2)
+    const baseCard = screen.getByRole("radio", { name: /Midas USDC Prime \(Base\)/ }).closest("label") as HTMLElement
+    expect(within(baseCard).getByText("Base · listed for reference, never analyzed")).toBeInTheDocument()
+    expect(within(baseCard).getByRole("radio")).toBeDisabled()
+    const mainnetCard = screen.getByRole("radio", { name: /RockawayX wETH/ }).closest("label") as HTMLElement
+    expect(within(mainnetCard).queryByText(/Base ·/)).not.toBeInTheDocument()
+  })
+
   it("selects an entry", () => {
     const onSelect = vi.fn()
     render(<CatalogSelector entries={catalogEntries} selectedId={null} onSelect={onSelect} now={NOW} />)

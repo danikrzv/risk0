@@ -9,6 +9,8 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@risk0/contracts": "workspace:*",
+    "@xyflow/react": "12.12.0",
     "next": "16.4.0",
     "react": "19.3.0",
     "react-dom": "19.3.0"

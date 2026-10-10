@@ -101,6 +101,14 @@ def test_block_number_and_gas_price_are_parsed_without_binary_float(monkeypatch)
     assert client.get_gas_price() == Decimal("30000000000")
 
 
+def test_chain_id_is_parsed(monkeypatch):
+    client = EthereumClient(
+        settings(monkeypatch), rpc_call=lambda method, params: {"eth_chainId": "0x1"}[method]
+    )
+
+    assert client.get_chain_id() == 1
+
+
 def test_unsupported_feed_is_explicit_and_never_calls_provider(monkeypatch):
     client = EthereumClient(
         settings(monkeypatch),

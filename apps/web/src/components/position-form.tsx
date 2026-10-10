@@ -28,26 +28,29 @@ export interface PositionPreset {
   borrower?: BorrowerPreset
 }
 
-// Illustrative starting points. Borrower LTVs sit below LLTV but close enough
-// that the default 15% collateral shock liquidates while milder shocks do not.
-// Debt amounts are approximate; the risk service values them at live prices.
+// Illustrative starting points. Borrower LTVs sit below LLTV so the default 15%
+// collateral shock liquidates: on the 86% markets (LTV 75%) a 10% shock still
+// survives, while on the 96.5% wstETH market (LTV 90%) anything above ~6.7%
+// liquidates. Debt amounts are calibrated to the fixture snapshot prices; the
+// risk service rejects a declared LTV more than 0.01 from the price-derived
+// one, so in live mode adjust the debt (or LTV) to current prices.
 export const POSITION_PRESETS: Record<string, PositionPreset> = {
   "belem-rwa-eurcv": { numeraire: "EURCV", lender_amount: "100000" },
   "mev-capital-weth": { numeraire: "WETH", lender_amount: "100" },
   "wsteth-weth-965": {
     numeraire: "WETH",
     lender_amount: "100",
-    borrower: { collateral_amount: "10", debt_amount: "10.8", ltv: "0.90" },
+    borrower: { collateral_amount: "10", debt_amount: "11.2", ltv: "0.90" },
   },
   "weth-usdc-860": {
     numeraire: "USDC",
     lender_amount: "100000",
-    borrower: { collateral_amount: "2.5", debt_amount: "3750", ltv: "0.75" },
+    borrower: { collateral_amount: "2.5", debt_amount: "4675", ltv: "0.75" },
   },
   "wbtc-usdc-860": {
     numeraire: "USDC",
     lender_amount: "100000",
-    borrower: { collateral_amount: "0.1", debt_amount: "4500", ltv: "0.75" },
+    borrower: { collateral_amount: "0.1", debt_amount: "6200", ltv: "0.75" },
   },
 }
 

@@ -28,3 +28,6 @@ dev = [
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+markers = [
+    "live: opt-in smoke tests against public Morpho data and the configured Ethereum RPC (RISK0_DATA_MODE=live and ETHEREUM_RPC_URL)",
+]

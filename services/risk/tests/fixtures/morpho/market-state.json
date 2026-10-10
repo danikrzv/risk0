@@ -1,0 +1,179 @@
+{
+  "_meta": {
+    "recorded_at": "2026-10-10T09:10:52+00:00",
+    "source": "https://api.morpho.org",
+    "sanitization": "Public, unauthenticated Morpho API responses. GraphQL extensions removed. No credentials, RPC URLs, or user positions."
+  },
+  "rest": {
+    "/v0/blue/markets/1:0xb8fc70e82bc5bb53e773626fcc6a23f7eefa036918d7ef216ecfb1950a94a85e": {
+      "data": {
+        "chain_id": 1,
+        "market_id": "0xb8fc70e82bc5bb53e773626fcc6a23f7eefa036918d7ef216ecfb1950a94a85e",
+        "loan_token": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+        "collateral_token": "0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0",
+        "oracle_address": "0xbD60A6770b27E084E8617335ddE769241B0e71D8",
+        "irm_address": "0x870aC11D48B15DB9a138Cf899d20F13F79Ba00BC",
+        "lltv_wad": "965000000000000000",
+        "creation_block_number": "19434096"
+      }
+    },
+    "/v0/blue/markets/1:0xb8fc70e82bc5bb53e773626fcc6a23f7eefa036918d7ef216ecfb1950a94a85e/state": {
+      "data": {
+        "chain_id": 1,
+        "market_id": "0xb8fc70e82bc5bb53e773626fcc6a23f7eefa036918d7ef216ecfb1950a94a85e",
+        "last_indexed_block": "26161049",
+        "last_accrual_timestamp": 1791622475,
+        "total_supply_assets": "33740063099650389784169",
+        "total_supply_shares": "32075251658308073859481323566",
+        "total_borrow_assets": "28328629178065263301630",
+        "total_borrow_shares": "26748896826019250996843047150",
+        "fee_wad": "0"
+      }
+    },
+    "/v0/blue/markets/1:0x94b823e6bd8ea533b4e33fbc307faea0b307301bc48763acc4d4aa4def7636cd": {
+      "data": {
+        "chain_id": 1,
+        "market_id": "0x94b823e6bd8ea533b4e33fbc307faea0b307301bc48763acc4d4aa4def7636cd",
+        "loan_token": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+        "collateral_token": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+        "oracle_address": "0x0F948CBa8231Db7898ef36A4212581Ad7b1B4580",
+        "irm_address": "0x870aC11D48B15DB9a138Cf899d20F13F79Ba00BC",
+        "lltv_wad": "860000000000000000",
+        "creation_block_number": "24368919"
+      }
+    },
+    "/v0/blue/markets/1:0x94b823e6bd8ea533b4e33fbc307faea0b307301bc48763acc4d4aa4def7636cd/state": {
+      "data": {
+        "chain_id": 1,
+        "market_id": "0x94b823e6bd8ea533b4e33fbc307faea0b307301bc48763acc4d4aa4def7636cd",
+        "last_indexed_block": "26161049",
+        "last_accrual_timestamp": 1791622991,
+        "total_supply_assets": "9408096071094",
+        "total_supply_shares": "9115639263208093403",
+        "total_borrow_assets": "8362152970156",
+        "total_borrow_shares": "8067654364000818329",
+        "fee_wad": "0"
+      }
+    },
+    "/v0/blue/markets/1:0x3a85e619751152991742810df6ec69ce473daef99e28a64ab2340d7b7ccfee49": {
+      "data": {
+        "chain_id": 1,
+        "market_id": "0x3a85e619751152991742810df6ec69ce473daef99e28a64ab2340d7b7ccfee49",
+        "loan_token": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+        "collateral_token": "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599",
+        "oracle_address": "0xDddd770BADd886dF3864029e4B377B5F6a2B6b83",
+        "irm_address": "0x870aC11D48B15DB9a138Cf899d20F13F79Ba00BC",
+        "lltv_wad": "860000000000000000",
+        "creation_block_number": "19025154"
+      }
+    },
+    "/v0/blue/markets/1:0x3a85e619751152991742810df6ec69ce473daef99e28a64ab2340d7b7ccfee49/state": {
+      "data": {
+        "chain_id": 1,
+        "market_id": "0x3a85e619751152991742810df6ec69ce473daef99e28a64ab2340d7b7ccfee49",
+        "last_indexed_block": "26161049",
+        "last_accrual_timestamp": 1791622991,
+        "total_supply_assets": "129606518239766",
+        "total_supply_shares": "113061635905383782115",
+        "total_borrow_assets": "116080136885640",
+        "total_borrow_shares": "99334130691924512940",
+        "fee_wad": "0"
+      }
+    }
+  },
+  "graphql": {
+    "market:0xb8fc70e82bc5bb53e773626fcc6a23f7eefa036918d7ef216ecfb1950a94a85e": {
+      "data": {
+        "marketById": {
+          "marketId": "0xb8fc70e82bc5bb53e773626fcc6a23f7eefa036918d7ef216ecfb1950a94a85e",
+          "listed": true,
+          "lltv": "965000000000000000",
+          "loanAsset": {
+            "address": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+            "symbol": "WETH",
+            "decimals": 18,
+            "price": {
+              "usd": 2492.8486759318967
+            }
+          },
+          "collateralAsset": {
+            "address": "0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0",
+            "symbol": "wstETH",
+            "decimals": 18,
+            "price": {
+              "usd": 3105.783093939451
+            }
+          },
+          "state": {
+            "supplyAssetsUsd": 84098174.4655612,
+            "borrowAssetsUsd": 70610002.07266043,
+            "liquidityAssetsUsd": 13489885.886316435,
+            "utilization": 0.8396139692850971
+          }
+        }
+      }
+    },
+    "market:0x94b823e6bd8ea533b4e33fbc307faea0b307301bc48763acc4d4aa4def7636cd": {
+      "data": {
+        "marketById": {
+          "marketId": "0x94b823e6bd8ea533b4e33fbc307faea0b307301bc48763acc4d4aa4def7636cd",
+          "listed": true,
+          "lltv": "860000000000000000",
+          "loanAsset": {
+            "address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+            "symbol": "USDC",
+            "decimals": 6,
+            "price": {
+              "usd": 0.9997496425860051
+            }
+          },
+          "collateralAsset": {
+            "address": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+            "symbol": "WETH",
+            "decimals": 18,
+            "price": {
+              "usd": 2492.8486759318967
+            }
+          },
+          "state": {
+            "supplyAssetsUsd": 9405598.688924348,
+            "borrowAssetsUsd": 8359932.852536926,
+            "liquidityAssetsUsd": 1045681.2413280633,
+            "utilization": 0.8888251698832574
+          }
+        }
+      }
+    },
+    "market:0x3a85e619751152991742810df6ec69ce473daef99e28a64ab2340d7b7ccfee49": {
+      "data": {
+        "marketById": {
+          "marketId": "0x3a85e619751152991742810df6ec69ce473daef99e28a64ab2340d7b7ccfee49",
+          "listed": true,
+          "lltv": "860000000000000000",
+          "loanAsset": {
+            "address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+            "symbol": "USDC",
+            "decimals": 6,
+            "price": {
+              "usd": 0.9997496425860051
+            }
+          },
+          "collateralAsset": {
+            "address": "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599",
+            "symbol": "WBTC",
+            "decimals": 8,
+            "price": {
+              "usd": 82661.74013862094
+            }
+          },
+          "state": {
+            "supplyAssetsUsd": 129572109.95207371,
+            "borrowAssetsUsd": 116049314.24810758,
+            "liquidityAssetsUsd": 13522994.924269473,
+            "utilization": 0.8956349811007327
+          }
+        }
+      }
+    }
+  }
+}

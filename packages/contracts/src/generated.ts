@@ -2,6 +2,7 @@
 
 export const CATALOG_ENTITY_TYPES = ["morpho_vault_v2","morpho_vault_v1","morpho_market"] as const;
 export const CATALOG_PROVENANCE = ["verified_belem","belem_distributed","representative_proxy"] as const;
+export const CATALOG_AVAILABILITIES = ["available","catalog_inactive","not_found","delisted","data_conflict","critical_data_missing","provider_unavailable"] as const;
 export const POSITION_MODES = ["lender","borrower"] as const;
 export const SCENARIO_IDS = ["stablecoin-depeg","collateral-shock","oracle-failure","liquidity-collapse","protocol-impairment"] as const;
 export const RISK_NODE_TYPES = ["position","vault","market","protocol","asset","oracle","pool","chain"] as const;
@@ -13,6 +14,7 @@ export const RECOMMENDATION_DECISIONS = ["STAY","EXIT","UNAVAILABLE"] as const;
 
 export type CatalogEntityType = "morpho_vault_v2" | "morpho_vault_v1" | "morpho_market";
 export type CatalogProvenance = "verified_belem" | "belem_distributed" | "representative_proxy";
+export type CatalogAvailability = "available" | "catalog_inactive" | "not_found" | "delisted" | "data_conflict" | "critical_data_missing" | "provider_unavailable";
 export type PositionMode = "lender" | "borrower";
 export type ScenarioId = "stablecoin-depeg" | "collateral-shock" | "oracle-failure" | "liquidity-collapse" | "protocol-impairment";
 export type RiskNodeType = "position" | "vault" | "market" | "protocol" | "asset" | "oracle" | "pool" | "chain";
@@ -38,8 +40,36 @@ export interface CatalogEntry {
   lltv: DecimalString | null;
 }
 
-export interface CatalogResponse {
+export interface CatalogDocument {
   entries: CatalogEntry[];
+}
+
+export interface CatalogMetrics {
+  asset_symbol: string;
+  collateral_symbol: string | null;
+  total_assets: DecimalString;
+  total_assets_usd: DecimalString | null;
+  liquidity_assets: DecimalString;
+  liquidity_usd: DecimalString | null;
+  utilization: DecimalString | null;
+}
+
+export interface HydratedCatalogEntry extends CatalogEntry {
+  analysis_available: boolean;
+  availability: CatalogAvailability;
+  metrics: CatalogMetrics | null;
+  source: string | null;
+  fetched_at: string | null;
+  freshness: FreshnessStatus | null;
+  age_seconds: number | null;
+  block_number: number | null;
+  warnings: string[];
+}
+
+export interface CatalogResponse {
+  schema_version: "1.0.0";
+  entries: HydratedCatalogEntry[];
+  generated_at: string;
 }
 
 interface PositionInputBase {

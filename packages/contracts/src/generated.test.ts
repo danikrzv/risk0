@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import {
+  CATALOG_AVAILABILITIES,
   CATALOG_ENTITY_TYPES,
   CATALOG_PROVENANCE,
   CONFIDENCE_LEVELS,
@@ -16,6 +17,7 @@ import {
   RISK_NODE_TYPES,
   SCENARIO_IDS,
   type AnalysisRequest,
+  type CatalogResponse,
   type ExitEstimate,
   type MetricValue,
   type PositionInput,
@@ -40,13 +42,17 @@ type DomainMetricsExcludeNumbers = Assert<
   Equal<MetricValue, string | boolean | null>
 >;
 type QuoteTimestampIsRequired = Assert<Equal<ExitEstimate["quoted_at"], string>>;
+type CatalogVersionIsFixed = Assert<
+  Equal<CatalogResponse["schema_version"], "1.0.0">
+>;
 
 const typeParityChecks: [
   RecommendationDecisionIsExact,
   ProbabilityHorizonIsFixed,
   DomainMetricsExcludeNumbers,
   QuoteTimestampIsRequired,
-] = [true, true, true, true];
+  CatalogVersionIsFixed,
+] = [true, true, true, true, true];
 
 const lenderPosition = {
   mode: "lender",
@@ -131,7 +137,7 @@ describe("generated contract parity", () => {
   });
 
   it("uses exact contract shapes", () => {
-    expect(typeParityChecks).toEqual([true, true, true, true]);
+    expect(typeParityChecks).toEqual([true, true, true, true, true]);
     expect(lenderPosition.mode).toBe("lender");
     expect(borrowerPosition.mode).toBe("borrower");
     expect(invalidLender).toBeDefined();
@@ -140,6 +146,7 @@ describe("generated contract parity", () => {
   });
 
   it.each([
+    ["CatalogAvailability", CATALOG_AVAILABILITIES],
     ["CatalogEntityType", CATALOG_ENTITY_TYPES],
     ["CatalogProvenance", CATALOG_PROVENANCE],
     ["PositionMode", POSITION_MODES],

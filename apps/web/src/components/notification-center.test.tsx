@@ -17,6 +17,7 @@ vi.mock("../lib/api", async (importOriginal) => {
   return {
     ...original,
     getNotifications: vi.fn(),
+    markAllNotificationsRead: vi.fn(),
     markNotificationRead: vi.fn(),
   }
 })
@@ -178,5 +179,100 @@ describe("NotificationCenter", () => {
     expect(screen.getByRole("button", { name: "Notifications, 2 unread" })).toBeInTheDocument()
     expect(screen.getAllByRole("status")).toHaveLength(2)
   })
-})
 
+  it("groups a burst of notifications into one summary toast", async () => {
+    const burst = Array.from({ length: 5 }, (_, index) => ({
+      ...unreadNotification,
+      notification_id: `notification-${index}`,
+      title: `Warning ${index}`,
+      severity: index === 2 ? ("CRITICAL" as const) : ("WARNING" as const),
+      created_at: `2026-10-10T10:0${index}:00Z`,
+    }))
+    vi.mocked(api.getNotifications).mockResolvedValue({
+      schema_version: "1.0.0", notifications: burst, next_cursor: null, generated_at: "2026-10-10T10:06:00Z",
+    })
+    vi.useFakeTimers()
+    render(<NotificationCenter toastDurationMs={3_000} />)
+    await act(async () => Promise.resolve())
+
+    const live = screen.getByLabelText("Live notifications")
+    expect(live.querySelectorAll("article")).toHaveLength(1)
+    // One critical entry makes the summary an alert.
+    const summary = within(live).getByRole("alert")
+    expect(summary).toHaveTextContent("5 new warnings")
+    expect(summary).toHaveTextContent("1 critical")
+    expect(summary).toHaveTextContent("Latest: Warning 4")
+
+    fireEvent.click(within(summary).getByRole("button", { name: "View notifications" }))
+    expect(screen.getByLabelText("Notification history")).toBeInTheDocument()
+    expect(live.querySelector("article")).toBeNull()
+  })
+
+  it("auto-dismisses the summary toast and keeps up to three individual toasts", async () => {
+    const few = Array.from({ length: 3 }, (_, index) => ({
+      ...unreadNotification, notification_id: `notification-${index}`, title: `Warning ${index}`,
+    }))
+    vi.mocked(api.getNotifications).mockResolvedValue({
+      schema_version: "1.0.0", notifications: few, next_cursor: null, generated_at: "2026-10-10T10:06:00Z",
+    })
+    vi.useFakeTimers()
+    render(<NotificationCenter toastDurationMs={3_000} />)
+    await act(async () => Promise.resolve())
+
+    expect(screen.getAllByRole("status")).toHaveLength(3)
+    act(() => vi.advanceTimersByTime(3_000))
+    expect(screen.queryByRole("status")).not.toBeInTheDocument()
+  })
+
+  it("caps the rendered history and reports more unread than the loaded page", async () => {
+    const many = Array.from({ length: 100 }, (_, index) => ({
+      ...unreadNotification, notification_id: `notification-${index}`, title: `Warning ${index}`,
+    }))
+    vi.mocked(api.getNotifications).mockResolvedValue({
+      schema_version: "1.0.0", notifications: many, next_cursor: "notification-100", generated_at: "2026-10-10T10:06:00Z",
+    })
+    render(<NotificationCenter />)
+
+    fireEvent.click(await screen.findByRole("button", { name: "Notifications, 100+ unread" }))
+    const history = screen.getByLabelText("Notification history")
+    expect(within(history).getAllByRole("listitem")).toHaveLength(20)
+    expect(history).toHaveTextContent("Showing 20 of 100 notifications")
+    fireEvent.click(within(history).getByRole("button", { name: "Show 20 more notifications" }))
+    expect(within(history).getAllByRole("listitem")).toHaveLength(40)
+  })
+
+  it("marks every notification read and clears pending toasts", async () => {
+    const second = { ...unreadNotification, notification_id: "notification-2", title: "Oracle critical" }
+    vi.mocked(api.getNotifications)
+      .mockResolvedValueOnce({ schema_version: "1.0.0", notifications: [unreadNotification, second], next_cursor: null, generated_at: "2026-10-10T10:01:00Z" })
+      .mockResolvedValue({
+        schema_version: "1.0.0",
+        notifications: [unreadNotification, second].map((item) => ({ ...item, read_at: "2026-10-10T10:02:00Z" })),
+        next_cursor: null,
+        generated_at: "2026-10-10T10:02:00Z",
+      })
+    vi.mocked(api.markAllNotificationsRead).mockResolvedValue({ schema_version: "1.0.0", updated: 2 })
+    render(<NotificationCenter />)
+
+    fireEvent.click(await screen.findByRole("button", { name: "Notifications, 2 unread" }))
+    expect(screen.getAllByRole("status")).toHaveLength(2)
+    fireEvent.click(screen.getByRole("button", { name: "Mark all read" }))
+
+    expect(await screen.findByRole("button", { name: "Notifications, 0 unread" })).toBeInTheDocument()
+    expect(api.markAllNotificationsRead).toHaveBeenCalledOnce()
+    expect(screen.queryByRole("status")).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Mark all read" })).toBeDisabled()
+    await waitFor(() => expect(api.getNotifications).toHaveBeenCalledTimes(2))
+  })
+
+  it("reports a failed mark-all without losing unread state", async () => {
+    vi.mocked(api.markAllNotificationsRead).mockRejectedValue(new api.ApiError("Risk service is busy — retrying", 503))
+    render(<NotificationCenter />)
+
+    fireEvent.click(await screen.findByRole("button", { name: "Notifications, 1 unread" }))
+    fireEvent.click(screen.getByRole("button", { name: "Mark all read" }))
+
+    expect(await screen.findByText("Notifications could not be marked as read.")).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Notifications, 1 unread" })).toBeInTheDocument()
+  })
+})

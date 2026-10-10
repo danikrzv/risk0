@@ -333,7 +333,7 @@ describe("Home", () => {
   }, 15_000)
 
   it("does not retry a non-retryable failure", async () => {
-    const fetchMock = vi.fn(async () => Response.json({ error: "Risk service unavailable" }, { status: 502 }))
+    const fetchMock = vi.fn(async (_url: string) => Response.json({ error: "Risk service unavailable" }, { status: 502 }))
     vi.stubGlobal("fetch", fetchMock)
     render(<Home />)
 

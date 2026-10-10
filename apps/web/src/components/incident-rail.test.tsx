@@ -91,4 +91,14 @@ describe("IncidentRail", () => {
 
     expect(screen.getByText("No active incidents.")).toBeInTheDocument()
   })
+
+  it("caps a large incident list and reveals more on request", () => {
+    const many = Array.from({ length: 120 }, (_, index) => ({ ...incidents[0], incident_id: `incident:${index}` }))
+    render(<IncidentRail incidents={many} entities={entities} selectedIncidentId={null} onSelectIncident={() => {}} />)
+
+    const list = screen.getByRole("list", { name: "Active incidents" })
+    expect(within(list).getAllByRole("button")).toHaveLength(50)
+    fireEvent.click(screen.getByRole("button", { name: "Show 50 more incidents" }))
+    expect(within(list).getAllByRole("button")).toHaveLength(100)
+  })
 })

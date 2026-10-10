@@ -1,3 +1,5 @@
+import sqlite3
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -5,7 +7,11 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from app.config import CachePolicy
-from app.infrastructure.cache import DEFAULT_MAX_BYTES, SQLiteCache
+from app.infrastructure.cache import (
+    DEFAULT_BUSY_TIMEOUT_SECONDS,
+    DEFAULT_MAX_BYTES,
+    SQLiteCache,
+)
 from app.infrastructure.freshness import Freshness
 
 
@@ -170,3 +176,149 @@ def test_cache_rejects_naive_datetimes_at_public_boundaries(tmp_path):
         cache.get("raw", "key", naive)
     with pytest.raises(ValueError, match="timezone-aware"):
         cache.prune(naive)
+
+
+@pytest.fixture
+def statements(monkeypatch):
+    """Every SQL statement the cache runs, in order."""
+    import app.infrastructure.cache as cache_module
+
+    recorded: list[str] = []
+    configure = cache_module.configure_connection
+
+    def traced(connection):
+        configure(connection)
+        connection.set_trace_callback(recorded.append)
+
+    monkeypatch.setattr(cache_module, "configure_connection", traced)
+    return recorded
+
+
+def pragma(path: Path, name: str):
+    connection = sqlite3.connect(path)
+    try:
+        return connection.execute(f"PRAGMA {name}").fetchone()[0]
+    finally:
+        connection.close()
+
+
+def use_rollback_journal(path: Path) -> None:
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute("PRAGMA journal_mode = DELETE")
+    finally:
+        connection.close()
+
+
+def test_new_cache_uses_wal_with_a_busy_timeout(tmp_path):
+    path = tmp_path / "cache.sqlite"
+    cache = SQLiteCache(path, timeout_seconds=2.5)
+
+    assert pragma(path, "journal_mode") == "wal"
+    with cache._connect() as connection:
+        assert connection.execute("PRAGMA busy_timeout").fetchone()[0] == 2500
+        assert connection.execute("PRAGMA synchronous").fetchone()[0] == 1  # NORMAL
+    # The last connection checkpoints and removes the WAL, so the cap stays exact.
+    assert not Path(f"{path}-wal").exists()
+    assert sqlite_footprint(path) == 1024
+
+
+def test_existing_rollback_journal_cache_is_converted_in_place(tmp_path):
+    path = tmp_path / "cache.sqlite"
+    SQLiteCache(path).set("raw", "kept", b"value", NOW, POLICY)
+    use_rollback_journal(path)
+    assert pragma(path, "journal_mode") == "delete"
+
+    cache = SQLiteCache(path)
+
+    assert pragma(path, "journal_mode") == "wal"
+    cached = cache.get("raw", "kept", NOW)
+    assert cached is not None and cached.payload == b"value"
+
+
+def test_cache_opens_when_another_connection_blocks_the_wal_switch(tmp_path):
+    path = tmp_path / "cache.sqlite"
+    SQLiteCache(path).set("raw", "kept", b"value", NOW, POLICY)
+    use_rollback_journal(path)
+    reader = sqlite3.connect(path, isolation_level=None)
+    reader.execute("BEGIN")
+    reader.execute("SELECT COUNT(*) FROM cache_entries").fetchone()
+    try:
+        cache = SQLiteCache(path, timeout_seconds=0.05)
+        assert pragma(path, "journal_mode") == "delete"
+    finally:
+        reader.execute("COMMIT")
+        reader.close()
+
+    cached = cache.get("raw", "kept", NOW)
+    assert cached is not None and cached.payload == b"value"
+    # The switch is retried on the next start.
+    SQLiteCache(path)
+    assert pragma(path, "journal_mode") == "wal"
+
+
+def test_set_under_the_cap_runs_no_prune_work(tmp_path, statements):
+    cache = SQLiteCache(tmp_path / "cache.sqlite")
+    statements.clear()
+
+    cache.set("raw", "small", b"x" * 100, NOW, POLICY)
+
+    assert not any(
+        statement.lstrip().upper().startswith(("DELETE", "VACUUM", "PRAGMA WAL"))
+        for statement in statements
+    )
+
+
+def test_prune_evicts_lru_entries_in_a_batch_and_vacuums_once(tmp_path, statements):
+    path = tmp_path / "cache.sqlite"
+    cache = SQLiteCache(path)
+    for index in range(40):
+        fetched_at = NOW + timedelta(seconds=index)
+        cache.set("raw", f"entry-{index:02}", b"x" * 400, fetched_at, POLICY)
+    full = sqlite_footprint(path)
+    statements.clear()
+
+    result = cache.prune(NOW + timedelta(seconds=40), max_bytes=full // 2)
+
+    assert sum(statement.strip() == "VACUUM" for statement in statements) == 1
+    batches = [
+        statement
+        for statement in statements
+        if "(last_accessed_at, namespace, key) <=" in statement
+    ]
+    # Deleting rarely frees whole pages before the VACUUM, so the page count
+    # lags and a few batches can run, but never one statement per entry.
+    assert 1 <= len(batches) < result.removed_entries / 2
+    assert result.remaining_bytes == sqlite_footprint(path) <= full // 2
+    assert result.removed_entries + result.remaining_entries == 40
+    assert result.remaining_entries >= 15
+    later = NOW + timedelta(seconds=41)
+    survivors = [
+        index for index in range(40) if cache.get("raw", f"entry-{index:02}", later)
+    ]
+    # Least recently used first: exactly the newest entries survive.
+    assert survivors == list(range(40 - result.remaining_entries, 40))
+
+
+def test_prune_terminates_while_a_reader_pins_the_wal(tmp_path):
+    path = tmp_path / "cache.sqlite"
+    cache = SQLiteCache(path)
+    for index in range(20):
+        cache.set("raw", f"entry-{index:02}", b"x" * 400, NOW, POLICY)
+    reader = sqlite3.connect(path, isolation_level=None)
+    reader.execute("BEGIN")
+    reader.execute("SELECT COUNT(*) FROM cache_entries").fetchone()
+    try:
+        started = time.monotonic()
+        result = cache.prune(NOW, max_bytes=8192)
+        elapsed = time.monotonic() - started
+    finally:
+        reader.execute("COMMIT")
+        reader.close()
+
+    # The checkpoint does not sit out the 10 s busy timeout behind the reader.
+    assert elapsed < DEFAULT_BUSY_TIMEOUT_SECONDS / 2
+    # Only enough entries for the live pages to fit are evicted, not all of
+    # them, and the file meets the cap once the reader lets go.
+    assert 0 < result.remaining_entries < 20
+    assert cache.prune(NOW, max_bytes=8192).remaining_bytes <= 8192

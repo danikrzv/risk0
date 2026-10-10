@@ -8,6 +8,8 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+from app.infrastructure.sqlite import configure_connection, enable_wal
+
 
 MIGRATIONS_DIRECTORY = Path(__file__).parent / "migrations"
 _DECIMAL_TAG = "$decimal"
@@ -46,6 +48,9 @@ class RadarDatabase:
 
     def migrate(self) -> None:
         with self._connection() as connection:
+            # Persistent; converts an existing rollback-journal file in place so
+            # readers no longer wait behind a long scheduler write.
+            enable_wal(connection)
             connection.execute(
                 "CREATE TABLE IF NOT EXISTS radar_schema_migrations ("
                 "version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)"
@@ -71,7 +76,7 @@ class RadarDatabase:
         self._bump_revision()
 
     def applied_migrations(self) -> tuple[str, ...]:
-        with self.transaction() as connection:
+        with self.read() as connection:
             rows = connection.execute(
                 "SELECT version FROM radar_schema_migrations ORDER BY version"
             ).fetchall()
@@ -100,6 +105,27 @@ class RadarDatabase:
                 self._local.connection = None
 
     @contextmanager
+    def read(self) -> Iterator[sqlite3.Connection]:
+        """Yield a read-only snapshot connection; nested calls join the outer one.
+
+        Unlike `transaction()` it takes no write lock, so in WAL mode it neither
+        waits for nor blocks a concurrent writer. Writes through it fail.
+        """
+        current = getattr(self._local, "connection", None)
+        if current is not None:
+            yield current
+            return
+        with self._connection() as connection:
+            connection.execute("PRAGMA query_only = ON")
+            connection.execute("BEGIN")
+            self._local.connection = connection
+            try:
+                yield connection
+            finally:
+                self._local.connection = None
+                connection.rollback()
+
+    @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
         connection = sqlite3.connect(
             self.path, timeout=self._timeout_seconds, isolation_level=None
@@ -107,6 +133,7 @@ class RadarDatabase:
         connection.row_factory = sqlite3.Row
         try:
             connection.execute("PRAGMA foreign_keys = ON")
+            configure_connection(connection)
             yield connection
         finally:
             connection.close()

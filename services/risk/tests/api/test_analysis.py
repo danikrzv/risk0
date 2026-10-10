@@ -805,10 +805,13 @@ def test_protocol_probability_is_model_estimated_and_labelled(morpho_client, clo
     assert "model-estimated" in assessment.estimate.explanation
 
 
-def test_default_wiring_without_rpc_url_degrades_to_unavailable_not_errors(monkeypatch):
+def test_default_wiring_without_rpc_url_degrades_to_unavailable_not_errors(
+    monkeypatch, tmp_path
+):
     from app.api.analysis import build_default_analysis_service
 
     monkeypatch.delenv("ETHEREUM_RPC_URL", raising=False)
+    monkeypatch.setenv("RISK0_CACHE_PATH", str(tmp_path / "cache.sqlite3"))
 
     service = build_default_analysis_service()
 

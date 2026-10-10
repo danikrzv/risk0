@@ -1,9 +1,12 @@
+import logging
 import os
+import sqlite3
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
+from fastapi.responses import JSONResponse
 
 from app.adapters.morpho import DEFAULT_BASE_URL, MorphoClient
 from app.adapters.rpc_registry import RpcRegistry
@@ -16,6 +19,7 @@ from app.catalog.repository import CatalogRepository
 from app.config import radar_chain_ids
 from app.fixture_mode import FIXTURE, data_mode, fixture_morpho_client
 from app.infrastructure.cache import SQLiteCache
+from app.infrastructure.sqlite import is_busy_error
 from app.radar.collectors import ChainStateCollector, MorphoStateCollector
 from app.radar.discovery import MorphoDiscovery
 from app.radar.repositories import (
@@ -30,6 +34,9 @@ from app.radar.service import RadarService
 SERVICE_ROOT = Path(__file__).resolve().parents[1]
 REPOSITORY_ROOT = SERVICE_ROOT.parents[1]
 RADAR_ENABLED_ENV = "RISK0_RADAR_ENABLED"
+DATABASE_BUSY_DETAIL = "Risk database busy"
+
+logger = logging.getLogger(__name__)
 
 
 def radar_enabled() -> bool:
@@ -124,6 +131,15 @@ app.include_router(analysis_router)
 app.include_router(radar_router)
 app.include_router(events_router)
 app.include_router(fixtures_router)
+
+
+@app.exception_handler(sqlite3.OperationalError)
+async def database_busy(request: Request, error: sqlite3.OperationalError) -> Response:
+    """Lock contention is transient: answer 503 so clients retry, not a 500 trace."""
+    if not is_busy_error(error):
+        raise error
+    logger.warning("%s %s: risk database busy", request.method, request.url.path)
+    return JSONResponse(status_code=503, content={"detail": DATABASE_BUSY_DETAIL})
 
 
 @app.get("/v1/health")

@@ -79,6 +79,76 @@ def test_snapshots_from_independent_sources_are_tracked_separately(states):
     assert states.latest_snapshot(CATALOG_VAULT, source_identity="rpc:1") == rpc
 
 
+def test_unchanged_snapshots_are_stored_only_at_the_heartbeat(states):
+    heartbeat = timedelta(hours=1)
+    metrics = {"utilization": Decimal("0.5"), "state_age_seconds": Decimal("10")}
+    # Only the clock-derived age moves between these cycles: not a state change.
+    cycles = [
+        snapshot(
+            observed_at=NOW + timedelta(minutes=5 * index),
+            metrics={**metrics, "state_age_seconds": Decimal(10 + 300 * index)},
+        )
+        for index in range(12)
+    ]
+    changed = {"utilization": Decimal("0.6")}
+
+    def at(minutes: int, values: dict) -> tuple:
+        observed = snapshot(observed_at=NOW + timedelta(minutes=minutes), metrics=values)
+        return states.append_snapshots([observed], heartbeat=heartbeat)
+
+    stored = states.append_snapshots(cycles, heartbeat=heartbeat)
+    assert [item.observed_at for item in stored] == [NOW]
+    assert at(60, metrics)  # heartbeat
+    assert at(61, changed)  # state change
+    assert at(66, changed) == ()
+    assert at(121, changed)  # heartbeat
+    assert len(states.history(CATALOG_VAULT).snapshots) == 4
+
+
+def test_snapshot_freshness_or_missing_fields_change_is_a_state_change(states):
+    heartbeat = timedelta(hours=1)
+    states.append_snapshots([snapshot(observed_at=NOW)], heartbeat=heartbeat)
+    expired = snapshot(observed_at=NOW + timedelta(minutes=5), freshness="expired")
+    missing = snapshot(
+        observed_at=NOW + timedelta(minutes=10),
+        freshness="expired",
+        missing_fields=("utilization",),
+    )
+
+    assert states.append_snapshots([expired, missing], heartbeat=heartbeat) == (expired, missing)
+
+
+def test_health_is_recorded_in_one_batch(states):
+    first = health(evaluated_at=NOW)
+    second = health(evaluated_at=NOW + timedelta(minutes=5), status=HealthStatus.WARNING)
+
+    assert states.record_health([first, second, first]) == 2
+    assert states.record_health([]) == 0
+
+    assert states.latest_health(CATALOG_VAULT) == second
+
+
+def test_completed_hours_are_aggregated_once_and_the_current_hour_is_left_open(states):
+    for minutes in (0, 30, 65, 130):
+        states.append_snapshot(snapshot(observed_at=NOW + timedelta(minutes=minutes)))
+
+    # Two completed hours (12:00, 13:00); 14:00 is still running.
+    assert states.aggregate_completed_hours(NOW + timedelta(minutes=135)) == 2
+    hours = states.hourly(CATALOG_VAULT, start=NOW, end=NOW + timedelta(hours=3))
+    assert [(item.hour_start, item.sample_count) for item in hours] == [
+        (NOW, 2),
+        (NOW + timedelta(hours=1), 1),
+    ]
+
+    # The next run rebuilds only the last aggregated hour onwards.
+    assert states.aggregate_completed_hours(NOW + timedelta(minutes=185)) == 2
+    assert len(states.hourly(CATALOG_VAULT, start=NOW, end=NOW + timedelta(hours=3))) == 3
+
+
+def test_completed_hours_without_snapshots_build_nothing(states):
+    assert states.aggregate_completed_hours(NOW) == 0
+
+
 def test_snapshots_require_a_known_entity(states):
     import sqlite3
 

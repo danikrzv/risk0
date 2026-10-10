@@ -206,3 +206,32 @@ def test_reusing_a_resolved_incident_id_is_rejected(incidents):
         incidents.upsert_active(incident(first_observed_at=NOW + timedelta(hours=1)))
 
     assert incidents.get("incident-1").status is IncidentStatus.RESOLVED
+
+
+def test_resolve_many_resolves_only_open_incidents_in_one_call(incidents):
+    incidents.upsert_active(incident("incident-1"))
+    incidents.upsert_active(incident("incident-2", source_entity_id=CATALOG_VAULT))
+    resolved_at = NOW + timedelta(minutes=5)
+
+    assert incidents.resolve_many(["incident-1", "incident-2", "missing"], resolved_at) == 2
+    assert incidents.resolve_many(["incident-1"], resolved_at + timedelta(minutes=1)) == 0
+    assert incidents.resolve_many([], resolved_at) == 0
+
+    assert incidents.active() == ()
+    assert incidents.get("incident-1").resolved_at == resolved_at
+
+
+def test_mark_incidents_read_marks_only_unread_notifications_of_those_incidents(incidents):
+    incidents.upsert_active(incident("incident-1"))
+    incidents.upsert_active(incident("incident-2", source_entity_id=CATALOG_VAULT))
+    incidents.add_notification(notification("n-1"))
+    incidents.add_notification(
+        notification("n-2", minutes=5).model_copy(update={"incident_id": "incident-2"})
+    )
+    read_at = NOW + timedelta(minutes=20)
+
+    assert incidents.mark_incidents_read(["incident-1", "incident-1"], read_at) == 1
+    assert incidents.mark_incidents_read(["incident-1"], read_at) == 0
+
+    assert incidents.get_notification("n-1").read_at == read_at
+    assert incidents.get_notification("n-2").read_at is None

@@ -38,6 +38,13 @@ class IncidentDetector:
     ) -> IncidentChanges:
         """Open, update, or resolve one incident per source entity.
 
+        Only observed deteriorations (WARNING/CRITICAL) open or update an
+        incident. UNKNOWN health means missing, incomplete, or expired data: it
+        never opens an incident and leaves an open one untouched, because losing
+        visibility is evidence of neither deterioration nor improvement. Open
+        incidents that were raised from such data gaps alone (by earlier rule
+        versions) are resolved.
+
         Several health states for one entity in a batch collapse to the latest
         (ties: the most severe). When ``monitored_entity_ids`` is given, open
         incidents whose source is no longer monitored are resolved instead of
@@ -84,6 +91,8 @@ class IncidentDetector:
                     current_by_source[entity_id] = item
                     resolved.append(item)
                 continue
+            if health.status is HealthStatus.UNKNOWN:
+                continue
 
             severity = (
                 IncidentSeverity.CRITICAL
@@ -109,10 +118,6 @@ class IncidentDetector:
                 current_by_source[entity_id] = item
                 opened.append(item)
                 continue
-            if health.status is HealthStatus.UNKNOWN:
-                # Losing visibility is not evidence of improvement: keep the
-                # established severity instead of downgrading a CRITICAL.
-                severity = prior.severity
             item = prior.model_copy(
                 update={
                     "severity": severity,
@@ -123,6 +128,17 @@ class IncidentDetector:
             )
             current_by_source[entity_id] = item
             updated.append(item)
+
+        for entity_id, item in sorted(current_by_source.items()):
+            if item.status is IncidentStatus.OPEN and is_data_gap_incident(item):
+                gap = item.model_copy(
+                    update={
+                        "status": IncidentStatus.RESOLVED,
+                        "resolved_at": max(now, item.last_observed_at),
+                    }
+                )
+                current_by_source[entity_id] = gap
+                resolved.append(gap)
 
         if monitored_entity_ids is not None:
             monitored = set(monitored_entity_ids)
@@ -152,3 +168,12 @@ class IncidentDetector:
         normalized to UTC, independent of when reconciliation ran."""
         first = health.evaluated_at.astimezone(UTC).isoformat().replace("+00:00", "Z")
         return f"incident:{health.entity_id}:{health.rule_version}:{first}"
+
+
+def is_data_gap_incident(incident: Incident) -> bool:
+    """Whether the incident's latest trigger was UNKNOWN health, i.e. a data gap.
+
+    Such incidents were opened (or last updated) by earlier rule versions from
+    expired or incomplete data, not from an observed deterioration.
+    """
+    return incident.trigger_metrics.get("health_status") == HealthStatus.UNKNOWN.value

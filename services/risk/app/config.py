@@ -94,3 +94,24 @@ def _validated_rpc_url(url: str, variable: str) -> str:
         # The value may embed a key, so only the variable name is reported.
         raise ValueError(f"{variable} must contain absolute HTTP(S) URLs")
     return url
+
+
+RADAR_CHAIN_IDS_ENV = "RISK0_RADAR_CHAIN_IDS"
+# Ethereum mainnet only, unless more chains are opted into explicitly.
+DEFAULT_RADAR_CHAIN_IDS: tuple[int, ...] = (1,)
+_CHAIN_ID = re.compile(r"^[1-9][0-9]*$")
+
+
+def radar_chain_ids(environ: Mapping[str, str] | None = None) -> tuple[int, ...]:
+    """Chains the radar discovers and monitors: RISK0_RADAR_CHAIN_IDS (comma-separated)."""
+    environ = os.environ if environ is None else environ
+    value = environ.get(RADAR_CHAIN_IDS_ENV, "").strip()
+    if not value:
+        return DEFAULT_RADAR_CHAIN_IDS
+    items = [item.strip() for item in value.split(",") if item.strip()]
+    if not items or any(_CHAIN_ID.match(item) is None for item in items):
+        raise ValueError(
+            f"{RADAR_CHAIN_IDS_ENV} must be a comma-separated list of positive "
+            "integer chain IDs (for example '1' or '1,8453')"
+        )
+    return tuple(sorted({int(item) for item in items}))

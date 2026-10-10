@@ -67,22 +67,74 @@ def test_delayed_health_observation_does_not_regress_incident():
     assert delayed.current == opened
 
 
-def test_unknown_health_opens_warning_incident_with_missing_data_reason():
+def test_unknown_health_never_opens_an_incident():
     changes = IncidentDetector().reconcile((), (health(HealthStatus.UNKNOWN),), NOW)
 
-    assert changes.current[0].severity is IncidentSeverity.WARNING
-    assert "unknown state" in changes.current[0].reasons
+    assert changes.opened == ()
+    assert changes.current == ()
 
 
-def test_unknown_does_not_downgrade_a_critical_incident():
+def test_unknown_health_leaves_an_open_incident_untouched():
     detector = IncidentDetector()
     opened = detector.reconcile((), (health(HealthStatus.CRITICAL),), NOW).current
 
     later = NOW + timedelta(minutes=5)
     changes = detector.reconcile(opened, (health(HealthStatus.UNKNOWN, later),), later)
 
-    assert changes.current[0].severity is IncidentSeverity.CRITICAL
-    assert changes.current[0].last_observed_at == later
+    assert changes.updated == ()
+    assert changes.resolved == ()
+    assert changes.current == opened
+
+
+def test_open_incident_raised_from_a_data_gap_is_resolved():
+    from app.radar.analysis.incidents import is_data_gap_incident
+    from app.radar.contracts import Incident
+
+    gap = Incident(
+        incident_id="incident:market:1:gap",
+        source_entity_id="market:1:gap",
+        severity=IncidentSeverity.WARNING,
+        status=IncidentStatus.OPEN,
+        trigger_metrics={"health_status": "UNKNOWN", "health_score": None},
+        rule_version="oracle-health-v1",
+        first_observed_at=NOW,
+        last_observed_at=NOW,
+        reasons=("snapshot is expired",),
+    )
+    real = IncidentDetector().reconcile((), (health(HealthStatus.WARNING),), NOW).current
+    later = NOW + timedelta(minutes=5)
+
+    changes = IncidentDetector().reconcile((gap, *real), (), later)
+
+    assert is_data_gap_incident(gap)
+    assert [item.incident_id for item in changes.resolved] == [gap.incident_id]
+    assert changes.resolved[0].resolved_at == later
+    assert {item.incident_id for item in changes.current if item.status is IncidentStatus.OPEN} == {
+        real[0].incident_id
+    }
+
+
+def test_data_gap_incident_that_now_observes_a_deterioration_stays_open():
+    from app.radar.contracts import Incident
+
+    gap = Incident(
+        incident_id="incident:oracle:1:test:gap",
+        source_entity_id="oracle:1:test",
+        severity=IncidentSeverity.WARNING,
+        status=IncidentStatus.OPEN,
+        trigger_metrics={"health_status": "UNKNOWN", "health_score": None},
+        rule_version="oracle-health-v1",
+        first_observed_at=NOW,
+        last_observed_at=NOW,
+        reasons=("snapshot is expired",),
+    )
+    later = NOW + timedelta(minutes=5)
+
+    changes = IncidentDetector().reconcile((gap,), (health(HealthStatus.CRITICAL, later),), later)
+
+    assert changes.resolved == ()
+    assert changes.updated[0].severity is IncidentSeverity.CRITICAL
+    assert changes.updated[0].trigger_metrics["health_status"] == "CRITICAL"
 
 
 def test_multiple_states_for_one_entity_in_a_batch_open_one_incident():

@@ -1,6 +1,6 @@
 import sqlite3
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, localcontext
@@ -25,6 +25,9 @@ from app.radar.repositories.database import (
 RAW_RETENTION = timedelta(days=30)
 HOURLY_RETENTION = timedelta(days=365)
 MAX_HISTORY_LIMIT = 1000
+# Ages computed from the collection clock (see the collectors): they change on
+# every read even when the source state has not, so they are not a state change.
+CLOCK_DERIVED_METRICS = frozenset({"state_age_seconds", "head_age_seconds"})
 _FRESHNESS_ORDER = (
     FreshnessStatus.FRESH,
     FreshnessStatus.STALE_USABLE,
@@ -67,38 +70,70 @@ class StateRepository:
 
     def append_snapshot(self, snapshot: StateSnapshot) -> bool:
         """Persist a snapshot unless it duplicates or predates the latest one."""
-        observed = encode_timestamp(snapshot.observed_at)
+        return bool(self.append_snapshots((snapshot,)))
+
+    def append_snapshots(
+        self,
+        snapshots: Iterable[StateSnapshot],
+        *,
+        heartbeat: timedelta | None = None,
+    ) -> tuple[StateSnapshot, ...]:
+        """Persist snapshots in one transaction and return the ones stored.
+
+        A snapshot that duplicates or predates the latest stored one of its
+        source is skipped. With ``heartbeat``, so is one whose observed state
+        equals the latest stored one (ignoring clock-derived ages), until that
+        one is ``heartbeat`` old: raw history becomes a change log with one
+        sample per heartbeat, so every hour still has a sample to aggregate.
+        """
+        stored: list[StateSnapshot] = []
         with self._db.transaction() as connection:
-            latest = connection.execute(
-                """
-                SELECT MAX(observed_at) FROM state_snapshots
-                WHERE entity_id = ? AND state_type = ? AND source_identity = ?
-                """,
-                (snapshot.entity_id, snapshot.state_type.value, snapshot.source_identity),
-            ).fetchone()[0]
-            if latest is not None and latest >= observed:
-                return False
-            cursor = connection.execute(
-                """
-                INSERT OR IGNORE INTO state_snapshots (
-                    snapshot_id, entity_id, state_type, observed_at, retrieved_at,
-                    source, source_identity, freshness, metrics, missing_fields
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    snapshot.snapshot_id,
-                    snapshot.entity_id,
-                    snapshot.state_type.value,
-                    observed,
-                    encode_timestamp(snapshot.retrieved_at),
-                    snapshot.source,
-                    snapshot.source_identity,
-                    snapshot.freshness.value,
-                    encode_json(snapshot.metrics),
-                    encode_strings(snapshot.missing_fields),
-                ),
-            )
-        return cursor.rowcount == 1
+            for snapshot in snapshots:
+                latest = connection.execute(
+                    """
+                    SELECT * FROM state_snapshots
+                    WHERE entity_id = ? AND state_type = ? AND source_identity = ?
+                    ORDER BY observed_at DESC LIMIT 1
+                    """,
+                    (
+                        snapshot.entity_id,
+                        snapshot.state_type.value,
+                        snapshot.source_identity,
+                    ),
+                ).fetchone()
+                if latest is not None:
+                    previous = _snapshot(latest)
+                    if previous.observed_at >= snapshot.observed_at:
+                        continue
+                    if (
+                        heartbeat is not None
+                        and snapshot.observed_at - previous.observed_at < heartbeat
+                        and _same_state(previous, snapshot)
+                    ):
+                        continue
+                cursor = connection.execute(
+                    """
+                    INSERT OR IGNORE INTO state_snapshots (
+                        snapshot_id, entity_id, state_type, observed_at, retrieved_at,
+                        source, source_identity, freshness, metrics, missing_fields
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        snapshot.snapshot_id,
+                        snapshot.entity_id,
+                        snapshot.state_type.value,
+                        encode_timestamp(snapshot.observed_at),
+                        encode_timestamp(snapshot.retrieved_at),
+                        snapshot.source,
+                        snapshot.source_identity,
+                        snapshot.freshness.value,
+                        encode_json(snapshot.metrics),
+                        encode_strings(snapshot.missing_fields),
+                    ),
+                )
+                if cursor.rowcount == 1:
+                    stored.append(snapshot)
+        return tuple(stored)
 
     def latest_snapshot(
         self,
@@ -128,25 +163,36 @@ class StateRepository:
 
     def set_health(self, state: HealthState) -> bool:
         """Record an evaluation; delayed ones join history but never become latest."""
+        return self.record_health((state,)) == 1
+
+    def record_health(self, states: Iterable[HealthState]) -> int:
+        """Record evaluations in one transaction; returns how many were new."""
+        rows = [
+            (
+                state.entity_id,
+                encode_timestamp(state.evaluated_at),
+                state.status.value,
+                encode_decimal(state.score),
+                encode_strings(state.reasons),
+                encode_strings(state.missing_fields),
+                state.rule_version,
+            )
+            for state in states
+        ]
+        if not rows:
+            return 0
         with self._db.transaction() as connection:
-            cursor = connection.execute(
+            before = connection.total_changes
+            connection.executemany(
                 """
                 INSERT OR IGNORE INTO health_states (
                     entity_id, evaluated_at, status, score, reasons, missing_fields,
                     rule_version
                 ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (
-                    state.entity_id,
-                    encode_timestamp(state.evaluated_at),
-                    state.status.value,
-                    encode_decimal(state.score),
-                    encode_strings(state.reasons),
-                    encode_strings(state.missing_fields),
-                    state.rule_version,
-                ),
+                rows,
             )
-        return cursor.rowcount == 1
+            return connection.total_changes - before
 
     def latest_health(self, entity_id: str) -> HealthState | None:
         with self._db.transaction() as connection:
@@ -257,6 +303,35 @@ class StateRepository:
             )
         return len(groups)
 
+    def aggregate_completed_hours(self, now: datetime) -> int:
+        """Aggregate every completed UTC hour not yet aggregated; returns hours built.
+
+        The last aggregated hour is rebuilt in case a delayed observation landed
+        in it. The current, still incomplete hour is left for a later call.
+        """
+        end = _floor_hour(now)
+        with self._db.transaction() as connection:
+            last = connection.execute(
+                "SELECT MAX(hour_start) FROM state_hourly_aggregates"
+            ).fetchone()[0]
+            first = connection.execute(
+                "SELECT MIN(observed_at) FROM state_snapshots"
+            ).fetchone()[0]
+        if first is None:
+            return 0
+        start = max(
+            _floor_hour(decode_timestamp(last if last is not None else first)),
+            # Older raw rows are summarized by `prune` just before deletion.
+            _floor_hour(now - RAW_RETENTION),
+        )
+        built = 0
+        hour = start
+        while hour < end:
+            if self.aggregate_hour(hour):
+                built += 1
+            hour += timedelta(hours=1)
+        return built
+
     def hourly(
         self, entity_id: str, *, start: datetime, end: datetime
     ) -> tuple[HourlyAggregate, ...]:
@@ -350,6 +425,22 @@ def _health(row: sqlite3.Row) -> HealthState:
         rule_version=row["rule_version"],
     )
 
+
+def _same_state(previous: StateSnapshot, current: StateSnapshot) -> bool:
+    return (
+        previous.freshness is current.freshness
+        and previous.source == current.source
+        and set(previous.missing_fields) == set(current.missing_fields)
+        and _observed_metrics(previous) == _observed_metrics(current)
+    )
+
+
+def _observed_metrics(snapshot: StateSnapshot) -> dict[str, MetricValue]:
+    return {
+        name: value
+        for name, value in snapshot.metrics.items()
+        if name not in CLOCK_DERIVED_METRICS
+    }
 
 
 def _floor_hour(value: datetime) -> datetime:

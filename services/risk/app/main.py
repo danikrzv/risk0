@@ -13,6 +13,7 @@ from app.api.events import get_event_broker, router as events_router
 from app.api.fixtures import router as fixtures_router
 from app.api.radar import get_radar_context, router as radar_router
 from app.catalog.repository import CatalogRepository
+from app.config import radar_chain_ids
 from app.fixture_mode import FIXTURE, data_mode, fixture_morpho_client
 from app.infrastructure.cache import SQLiteCache
 from app.radar.collectors import ChainStateCollector, MorphoStateCollector
@@ -73,9 +74,12 @@ def build_radar_scheduler() -> RadarScheduler:
         database = RadarDatabase(database_path)
         database.migrate()
     runs = SchedulerRunRepository(database)
+    chain_ids = radar_chain_ids()
     service = RadarService(
         discovery=MorphoDiscovery(
-            morpho, catalog=CatalogRepository(catalog_path).list_entries()
+            morpho,
+            catalog=CatalogRepository(catalog_path).list_entries(),
+            chain_ids=chain_ids,
         ),
         morpho_collector=MorphoStateCollector(morpho),
         chain_collector=(
@@ -88,15 +92,17 @@ def build_radar_scheduler() -> RadarScheduler:
         incidents=radar_context.incidents,
         exposures=radar_context.exposures,
         events=get_event_broker(),
+        chain_ids=chain_ids,
     )
     return RadarScheduler(service, runs)
 
 
 @asynccontextmanager
 async def lifespan(application: FastAPI) -> AsyncIterator[None]:
-    # Fail fast on a mistyped RISK0_DATA_MODE rather than serving a healthy
-    # /v1/health while every catalog and analysis request fails.
+    # Fail fast on a mistyped RISK0_DATA_MODE (or radar chain allowlist) rather
+    # than serving a healthy /v1/health while every request or cycle fails.
     mode = data_mode()
+    radar_chain_ids()
     if mode == FIXTURE and os.environ.get("RISK0_RADAR_SEED_FIXTURES") == "1":
         from app.fixture_mode import seed_fixture_radar
 

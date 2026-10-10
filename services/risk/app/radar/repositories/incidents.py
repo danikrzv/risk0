@@ -28,6 +28,8 @@ from app.radar.repositories.database import (
 
 MAX_PAGE_LIMIT = 500
 _SEVERITY_ORDER = (IncidentSeverity.WARNING, IncidentSeverity.CRITICAL)
+# Below SQLite's default bound-parameter limit.
+_ID_CHUNK = 500
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,6 +139,41 @@ class IncidentRepository:
                 (encode_timestamp(resolved_at), incident_id),
             )
             return self.get(incident_id)
+
+    def resolve_many(self, incident_ids: Iterable[str], resolved_at: datetime) -> int:
+        """Resolve open incidents in one transaction; returns how many changed."""
+        rows = [(encode_timestamp(resolved_at), incident_id) for incident_id in incident_ids]
+        if not rows:
+            return 0
+        with self._db.transaction() as connection:
+            before = connection.total_changes
+            connection.executemany(
+                """
+                UPDATE incidents SET status = 'RESOLVED', resolved_at = ?
+                WHERE incident_id = ? AND status = 'OPEN'
+                """,
+                rows,
+            )
+            return connection.total_changes - before
+
+    def mark_incidents_read(self, incident_ids: Iterable[str], read_at: datetime) -> int:
+        """Mark the unread notifications of these incidents read; returns how many."""
+        ids = list(dict.fromkeys(incident_ids))
+        changed = 0
+        with self._db.transaction() as connection:
+            # notifications.incident_id is unindexed: one scan per chunk of IDs
+            # rather than one per ID.
+            for start in range(0, len(ids), _ID_CHUNK):
+                chunk = ids[start : start + _ID_CHUNK]
+                changed += connection.execute(
+                    f"""
+                    UPDATE notifications SET read_at = ?
+                    WHERE read_at IS NULL
+                    AND incident_id IN ({', '.join('?' for _ in chunk)})
+                    """,
+                    (encode_timestamp(read_at), *chunk),
+                ).rowcount
+        return changed
 
     def get(self, incident_id: str) -> Incident | None:
         with self._db.transaction() as connection:

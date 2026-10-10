@@ -1,5 +1,7 @@
 import type { AnalysisResponse, FreshnessStatus, ProbabilityEstimate } from "@risk0/contracts"
+import { memo, useMemo } from "react"
 
+import { useNow } from "../hooks/use-now"
 import { ageSeconds, elapsedSeconds, formatAge, formatProbabilityRange } from "../lib/format"
 
 const FRESHNESS_LABELS: Record<FreshnessStatus, string> = {
@@ -14,17 +16,24 @@ export function FreshnessBadge({
   freshness,
   observedAt,
   source,
-  now,
+  now: fixedNow,
   ageSeconds: serverAge,
+  receivedAt,
 }: {
   freshness: FreshnessStatus
   observedAt: string
   source: string
-  now: number
+  /** Fixed clock; when omitted the badge ticks on its own every second. */
+  now?: number
   /** Age reported by the risk service; preferred over the browser clock, which may be skewed. */
   ageSeconds?: number
+  /** When this device received `ageSeconds`; the age is advanced by the time since. */
+  receivedAt?: number
 }) {
-  const age = formatAge(serverAge ?? ageSeconds(observedAt, now))
+  const now = useNow(fixedNow)
+  const age = formatAge(
+    serverAge !== undefined ? serverAge + elapsedSeconds(receivedAt, now) : ageSeconds(observedAt, now),
+  )
   return (
     <span className={`badge badge--${freshness}`} title={observedAt}>
       {`${FRESHNESS_LABELS[freshness]} · ${age} old · ${source}`}
@@ -64,7 +73,7 @@ interface SourceRow {
   detail?: string
 }
 
-function sourceRows(analysis: AnalysisResponse, elapsed: number): SourceRow[] {
+function sourceRows(analysis: AnalysisResponse): SourceRow[] {
   const nodes = analysis.graph.nodes.map((node) => ({
     key: `node:${node.node_id}`,
     label: node.label,
@@ -79,7 +88,7 @@ function sourceRows(analysis: AnalysisResponse, elapsed: number): SourceRow[] {
     freshness: exit.freshness,
     observedAt: exit.quoted_at,
     source: exit.source,
-    ageSeconds: exit.quote_age_seconds + elapsed,
+    ageSeconds: exit.quote_age_seconds,
   }
   const probabilities = analysis.scenario_results.map((result) => ({
     key: `probability:${result.scenario_id}`,
@@ -92,17 +101,18 @@ function sourceRows(analysis: AnalysisResponse, elapsed: number): SourceRow[] {
   return [...nodes, quote, ...probabilities]
 }
 
-export function DataQualityPanel({
+export const DataQualityPanel = memo(function DataQualityPanel({
   analysis,
   now,
   receivedAt,
 }: {
   analysis: AnalysisResponse
-  now: number
+  /** Fixed clock for the age badges; when omitted they tick on their own. */
+  now?: number
   /** When this device received the analysis; server ages are advanced by the time since. */
   receivedAt?: number
 }) {
-  const rows = sourceRows(analysis, elapsedSeconds(receivedAt, now))
+  const rows = useMemo(() => sourceRows(analysis), [analysis])
   const degraded = rows.filter((row) => row.freshness !== "fresh")
   const warnings = [...analysis.graph.completeness_warnings, ...analysis.exit_estimate.warnings]
 
@@ -131,6 +141,7 @@ export function DataQualityPanel({
               source={row.source}
               now={now}
               ageSeconds={row.ageSeconds}
+              receivedAt={receivedAt}
             />
             {row.detail && <span className="sources__detail">{row.detail}</span>}
           </li>
@@ -138,4 +149,4 @@ export function DataQualityPanel({
       </ul>
     </section>
   )
-}
+})

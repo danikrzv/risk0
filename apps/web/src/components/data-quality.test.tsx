@@ -1,13 +1,16 @@
 import "@testing-library/jest-dom/vitest"
 
 import type { AnalysisResponse } from "@risk0/contracts"
-import { cleanup, render, screen, within } from "@testing-library/react"
-import { afterEach, describe, expect, it } from "vitest"
+import { act, cleanup, render, screen, within } from "@testing-library/react"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { NOW, analysisResponse, empiricalProbability, modelProbability } from "../test-fixtures"
 import { DataQualityPanel, FreshnessBadge, ProbabilityMethodLabel, modelVersion } from "./data-quality"
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  vi.useRealTimers()
+})
 
 describe("FreshnessBadge", () => {
   it("shows exact age and source for stale data", () => {
@@ -29,6 +32,22 @@ describe("FreshnessBadge", () => {
     )
 
     expect(screen.getByText("Fresh · 2 min 5 s old · rpc")).toBeInTheDocument()
+  })
+
+  it("ticks on its own when no clock is passed, advancing a server age by the time since receipt", () => {
+    vi.useFakeTimers({ now: NOW })
+    render(
+      <>
+        <FreshnessBadge freshness="fresh" observedAt="2026-10-10T11:59:58Z" source="rpc" />
+        <FreshnessBadge freshness="fresh" observedAt="2026-10-10T11:59:00Z" source="quoter" ageSeconds={4} receivedAt={NOW} />
+      </>,
+    )
+    expect(screen.getByText("Fresh · 2 s old · rpc")).toBeInTheDocument()
+    expect(screen.getByText("Fresh · 4 s old · quoter")).toBeInTheDocument()
+
+    act(() => vi.advanceTimersByTime(3_000))
+    expect(screen.getByText("Fresh · 5 s old · rpc")).toBeInTheDocument()
+    expect(screen.getByText("Fresh · 7 s old · quoter")).toBeInTheDocument()
   })
 
   it("labels fresh and expired data", () => {

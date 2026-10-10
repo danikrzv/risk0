@@ -1,6 +1,7 @@
 import type { CatalogAvailability, CatalogEntry, CatalogProvenance, HydratedCatalogEntry } from "@risk0/contracts"
+import { memo } from "react"
 
-import { elapsedSeconds, formatPercent, formatQuantity } from "../lib/format"
+import { formatPercent, formatQuantity } from "../lib/format"
 import { FreshnessBadge } from "./data-quality"
 
 const PROVENANCE_BADGES: Record<CatalogProvenance, string> = {
@@ -59,7 +60,7 @@ export function entityTypeLabel(entry: CatalogEntry): string {
   }
 }
 
-export function CatalogSelector({
+export const CatalogSelector = memo(function CatalogSelector({
   entries,
   selectedId,
   onSelect,
@@ -69,11 +70,11 @@ export function CatalogSelector({
   entries: HydratedCatalogEntry[]
   selectedId: string | null
   onSelect: (entityId: string) => void
-  now: number
+  /** Fixed clock for the age badges; when omitted they tick on their own. */
+  now?: number
   /** When this device received the catalog; server ages are advanced by the time since. */
   receivedAt?: number
 }) {
-  const elapsed = elapsedSeconds(receivedAt, now)
   return (
     <fieldset className="panel catalog">
       <legend>1. Choose a curated vault or market</legend>
@@ -114,7 +115,8 @@ export function CatalogSelector({
                   observedAt={entry.fetched_at}
                   source={entry.source}
                   now={now}
-                  ageSeconds={entry.age_seconds != null ? entry.age_seconds + elapsed : undefined}
+                  ageSeconds={entry.age_seconds ?? undefined}
+                  receivedAt={receivedAt}
                 />
               )}
               {!canAnalyze(entry) && <span className="catalog__unavailable">{unavailableLabel(entry)}</span>}
@@ -132,4 +134,4 @@ export function CatalogSelector({
       </div>
     </fieldset>
   )
-}
+})

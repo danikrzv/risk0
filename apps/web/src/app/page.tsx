@@ -22,12 +22,28 @@ import {
 import { SystemTicker } from "../components/system-ticker"
 import { TerminalShell } from "../components/terminal-shell"
 import { useRadarEvents } from "../hooks/use-radar-events"
-import { createExposure, getCatalog, getExposureImpact, getIncidentGraph, getRadarGraph, runAnalysis } from "../lib/api"
+import { CatalogSkeleton, RadarSkeleton } from "../components/skeletons"
+import {
+  createExposure,
+  getCatalog,
+  getExposureImpact,
+  getIncidentGraph,
+  getRadarGraph,
+  isRetryableError,
+  retryDelayMs,
+  runAnalysis,
+} from "../lib/api"
 
 type CatalogState =
   | { status: "loading" }
-  | { status: "error"; message: string }
+  | { status: "error"; message: string; retrying: boolean }
   | { status: "ready"; entries: HydratedCatalogEntry[]; receivedAt: number }
+
+/** A load failure; `retrying` when it is retried automatically (busy or unreachable service). */
+interface LoadError {
+  message: string
+  retrying: boolean
+}
 
 type AnalysisState =
   | { status: "idle" }
@@ -43,6 +59,22 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Something went wrong"
 }
 
+function loadError(error: unknown): LoadError {
+  return { message: errorMessage(error), retrying: isRetryableError(error) }
+}
+
+function LoadErrorMessage({ error }: { error: LoadError }) {
+  // A retried failure is progress information, not an alert.
+  return error.retrying ? (
+    <p role="status" className="alert alert--retrying">
+      {error.message}
+      {/retrying/i.test(error.message) ? "" : " — retrying automatically"}
+    </p>
+  ) : (
+    <p role="alert" className="alert">{error.message}</p>
+  )
+}
+
 export default function Home() {
   const [catalog, setCatalog] = useState<CatalogState>({ status: "loading" })
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -51,7 +83,7 @@ export default function Home() {
   const [analysis, setAnalysis] = useState<AnalysisState>({ status: "idle" })
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   const [radarGraph, setRadarGraph] = useState<RadarGraphResponse | null>(null)
-  const [radarError, setRadarError] = useState<string | null>(null)
+  const [radarError, setRadarError] = useState<LoadError | null>(null)
   const [selectedIncident, setSelectedIncident] = useState<IncidentGraphResponse | null>(null)
   const [selectedRadarEntityId, setSelectedRadarEntityId] = useState<string | null>(null)
   // Read at fetch time (not captured in closures) so a just-recorded exposure is used.
@@ -59,22 +91,30 @@ export default function Home() {
   const [exposureImpacts, setExposureImpacts] = useState<IncidentImpact[]>([])
   const [exposureStatus, setExposureStatus] = useState<{ kind: "ok" | "error"; message: string } | null>(null)
   const [exposureBusy, setExposureBusy] = useState(false)
-  const [now, setNow] = useState(() => Date.now())
   // Identifies the latest analysis request; a response for an older one is dropped.
   const requestToken = useRef(0)
 
+  // Retried with backoff while the risk service is busy or starting.
   useEffect(() => {
     let active = true
-    getCatalog()
-      .then((response) => {
-        if (!active) return
-        const receivedAt = Date.now()
-        setNow(receivedAt)
-        setCatalog({ status: "ready", entries: response.entries, receivedAt })
-      })
-      .catch((error: unknown) => active && setCatalog({ status: "error", message: errorMessage(error) }))
+    let retryTimer: ReturnType<typeof setTimeout> | null = null
+    const load = (attempt: number) => {
+      getCatalog()
+        .then((response) => {
+          if (!active) return
+          setCatalog({ status: "ready", entries: response.entries, receivedAt: Date.now() })
+        })
+        .catch((error: unknown) => {
+          if (!active) return
+          const failure = loadError(error)
+          setCatalog({ status: "error", ...failure })
+          if (failure.retrying) retryTimer = setTimeout(() => load(attempt + 1), retryDelayMs(attempt))
+        })
+    }
+    load(0)
     return () => {
       active = false
+      if (retryTimer !== null) clearTimeout(retryTimer)
     }
   }, [])
 
@@ -82,27 +122,46 @@ export default function Home() {
   const radarToken = useRef(0)
   const incidentToken = useRef(0)
   const radarTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const radarRetryTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const radarRetryAttempt = useRef(0)
   const pendingIncidentId = useRef<string | null>(null)
   const requestedIncidentId = useRef<string | null>(null)
 
   const refreshRadar = useCallback(async () => {
     const token = ++radarToken.current
+    if (radarRetryTimer.current !== null) clearTimeout(radarRetryTimer.current)
+    radarRetryTimer.current = null
     try {
       const graph = await getRadarGraph()
       if (token !== radarToken.current) return
+      radarRetryAttempt.current = 0
       setRadarGraph(graph)
       setRadarError(null)
     } catch (error) {
       if (token !== radarToken.current) return
-      setRadarError(errorMessage(error))
+      const failure = loadError(error)
+      setRadarError(failure)
+      // Busy or starting service: retry with backoff instead of leaving a dead error.
+      if (failure.retrying) {
+        const delay = retryDelayMs(radarRetryAttempt.current)
+        radarRetryAttempt.current += 1
+        radarRetryTimer.current = setTimeout(() => {
+          radarRetryTimer.current = null
+          void refreshRadar()
+        }, delay)
+      }
     }
   }, [])
 
   useEffect(() => {
     void refreshRadar()
     return () => {
-      if (radarTimer.current !== null) clearTimeout(radarTimer.current)
-      radarTimer.current = null
+      // Invalidate in-flight requests so no retry is scheduled after unmount.
+      radarToken.current += 1
+      for (const timer of [radarTimer, radarRetryTimer]) {
+        if (timer.current !== null) clearTimeout(timer.current)
+        timer.current = null
+      }
     }
   }, [refreshRadar])
 
@@ -123,7 +182,7 @@ export default function Home() {
       setRadarError(null)
     } catch (error) {
       if (token !== incidentToken.current) return
-      setRadarError(errorMessage(error))
+      setRadarError({ message: errorMessage(error), retrying: false })
     }
   }, [])
 
@@ -166,18 +225,11 @@ export default function Home() {
     }
   }
 
-  // Keep displayed data ages exact while data is on screen.
-  useEffect(() => {
-    if (catalog.status !== "ready") return
-    const timer = setInterval(() => setNow(Date.now()), 1000)
-    return () => clearInterval(timer)
-  }, [catalog.status])
-
   const entry = catalog.status === "ready" ? catalog.entries.find((item) => item.entity_id === selectedId) : undefined
   const catalogEntries = catalog.status === "ready" ? catalog.entries.length : 0
   const supportedEntries =
     catalog.status === "ready" ? catalog.entries.filter((item) => item.analysis_available).length : 0
-  // Stable identity so the memoized radar graph skips the 1 s clock re-renders.
+  // Stable identity so the memoized radar graph skips unrelated page re-renders.
   const displayedImpacts = useMemo(() => (selectedIncident?.impacts ?? []).map((impact) => (
     exposureImpacts.find((item) => item.target_entity_id === impact.target_entity_id) ?? impact
   )), [exposureImpacts, selectedIncident])
@@ -196,13 +248,14 @@ export default function Home() {
   const catalogByRadarEntity = useMemo(() => {
     const matches = new Map<string, string>()
     if (catalog.status !== "ready" || !radarGraph) return matches
+    const byAddress = new Map<string, string>()
+    for (const item of catalog.entries) {
+      const key = `${item.chain_id}:${item.address_or_market_id.toLowerCase()}`
+      if (canAnalyze(item) && !byAddress.has(key)) byAddress.set(key, item.entity_id)
+    }
     for (const entity of radarGraph.entities) {
-      const match = catalog.entries.find((item) => (
-        canAnalyze(item)
-        && item.chain_id === entity.chain_id
-        && item.address_or_market_id.toLowerCase() === entity.address_or_key.toLowerCase()
-      ))
-      if (match) matches.set(entity.entity_id, match.entity_id)
+      const match = byAddress.get(`${entity.chain_id}:${entity.address_or_key.toLowerCase()}`)
+      if (match) matches.set(entity.entity_id, match)
     }
     return matches
   }, [catalog, radarGraph])
@@ -237,9 +290,7 @@ export default function Home() {
         scenarios: selections as [(typeof selections)[number], ...typeof selections],
       })
       if (token !== requestToken.current) return
-      const receivedAt = Date.now()
-      setNow(receivedAt)
-      setAnalysis({ status: "done", result, numeraire: position.numeraire, receivedAt })
+      setAnalysis({ status: "done", result, numeraire: position.numeraire, receivedAt: Date.now() })
     } catch (error) {
       if (token !== requestToken.current) return
       setAnalysis({ status: "error", message: errorMessage(error) })
@@ -275,8 +326,10 @@ export default function Home() {
       </header>
 
       <div className="terminal-actions"><NotificationCenter onIncidentClick={focusIncident} /></div>
-      {radarError && catalog.status !== "error" ? <p role="alert" className="alert">{radarError}</p> : null}
-      {radarGraph ? (
+      {radarError && catalog.status !== "error" ? <LoadErrorMessage error={radarError} /> : null}
+      {radarGraph && radarGraph.entities.length === 0 ? (
+        <RadarGraph graph={radarGraph} />
+      ) : radarGraph ? (
         <div className="radar-layout">
           <ExposureRail entities={radarGraph.entities} onSubmit={addExposure} busy={exposureBusy} />
           <RadarGraph
@@ -295,7 +348,7 @@ export default function Home() {
             onSelectIncident={focusIncident}
           />
         </div>
-      ) : radarError ? null : <p>Loading radar topology…</p>}
+      ) : radarError && !radarError.retrying ? null : <RadarSkeleton />}
       {exposureStatus?.kind === "ok" ? <p role="status" className="exposure-status">{exposureStatus.message}</p> : null}
       {exposureStatus?.kind === "error" ? <p role="alert" className="alert">{exposureStatus.message}</p> : null}
 
@@ -305,18 +358,13 @@ export default function Home() {
           <h2 id="position-analysis-heading">Position analysis</h2>
         </header>
 
-      {catalog.status === "loading" && <p>Loading curated catalog…</p>}
-      {catalog.status === "error" && (
-        <p role="alert" className="alert">
-          {catalog.message}
-        </p>
-      )}
+      {catalog.status === "error" && <LoadErrorMessage error={catalog} />}
+      {catalog.status === "loading" || (catalog.status === "error" && catalog.retrying) ? <CatalogSkeleton /> : null}
       {catalog.status === "ready" && (
         <CatalogSelector
           entries={catalog.entries}
           selectedId={selectedId}
           onSelect={selectEntry}
-          now={now}
           receivedAt={catalog.receivedAt}
         />
       )}
@@ -350,14 +398,13 @@ export default function Home() {
             graph={analysis.result.graph}
             selectedNodeId={selectedNodeId}
             onSelectNode={setSelectedNodeId}
-            now={now}
           />
           <ScenarioResults
             results={analysis.result.scenario_results}
             graph={analysis.result.graph}
             numeraire={analysis.numeraire}
           />
-          <DataQualityPanel analysis={analysis.result} now={now} receivedAt={analysis.receivedAt} />
+          <DataQualityPanel analysis={analysis.result} receivedAt={analysis.receivedAt} />
         </div>
       )}
       </section>

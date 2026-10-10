@@ -532,6 +532,73 @@ p {
   color: var(--color-danger);
 }
 
+.radar-graph__empty {
+  display: grid;
+  gap: 0.4rem;
+  place-content: center;
+  min-height: 14rem;
+  padding: 1.5rem;
+  border: 1px dashed var(--color-border-strong);
+  color: var(--color-muted);
+  text-align: center;
+}
+
+.radar-graph__empty strong { color: var(--color-text); }
+
+.radar-graph__note {
+  margin: 0 0 0.5rem;
+  color: var(--color-stale);
+  font-size: 0.75rem;
+}
+
+/* "Showing N of M" under capped lists. */
+.show-more {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 1rem;
+  align-items: baseline;
+  margin: 0.6rem 0 0.9rem;
+  color: var(--color-muted);
+  font-size: 0.75rem;
+}
+
+.alert--retrying {
+  border-left-color: var(--color-stale);
+  background: var(--color-stale-surface);
+}
+
+/* Loading skeletons */
+.skeleton-card {
+  display: grid;
+  align-content: start;
+  gap: 0.6rem;
+  cursor: default;
+}
+
+.skeleton-line,
+.skeleton-canvas {
+  display: block;
+  height: 0.7rem;
+  background: linear-gradient(90deg, var(--color-surface-raised) 0%, var(--color-border) 50%, var(--color-surface-raised) 100%);
+  background-size: 200% 100%;
+  animation: skeleton-pulse 1.4s ease-in-out infinite;
+}
+
+.skeleton-line:nth-child(3n + 2) { width: 85%; }
+.skeleton-line:nth-child(3n) { width: 60%; }
+.skeleton-line--title { width: 70%; height: 1rem; }
+.skeleton-canvas { height: 22rem; margin-top: 0.5rem; }
+
+@keyframes skeleton-pulse {
+  from { background-position: 100% 0; }
+  to { background-position: -100% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-line,
+  .skeleton-canvas { animation: none; }
+}
+
 .incident-rail li + li { margin-top: 0.5rem; }
 .incident-rail button {
   width: 100%;

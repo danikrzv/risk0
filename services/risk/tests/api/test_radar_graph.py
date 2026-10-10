@@ -230,6 +230,23 @@ def test_filters_narrow_the_pruned_view(client, context):
     assert len(footprint["active_incidents"]) == 1
 
 
+def test_graph_returns_only_entities_on_monitored_chains(client, context):
+    seed_radar(context)
+    base_vault = "vault:8453:0xbase"
+    context.topology.upsert_entities(
+        (_entity(base_vault, catalog=True, visible=True),), seen_at=NOW
+    )
+
+    unrestricted = client.get("/v1/graph").json()
+    object.__setattr__(context, "chain_ids", (1,))
+    context.graph_cache.invalidate()
+    restricted = client.get("/v1/graph").json()
+
+    assert base_vault in ids(unrestricted["entities"])
+    assert base_vault not in ids(restricted["entities"])
+    assert CATALOG_VAULT in ids(restricted["entities"])
+
+
 def test_active_incidents_are_capped_most_severe_then_focus_then_newest(
     client, context
 ):

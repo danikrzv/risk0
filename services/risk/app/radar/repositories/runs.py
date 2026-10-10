@@ -48,7 +48,7 @@ class SchedulerRunRepository:
     ) -> tuple[SchedulerRun, ...]:
         where = "WHERE loop = ?" if loop is not None else ""
         params: tuple[object, ...] = (loop,) if loop is not None else ()
-        with self._db.transaction() as connection:
+        with self._db.read() as connection:
             rows = connection.execute(
                 f"SELECT * FROM scheduler_runs {where} "
                 "ORDER BY started_at DESC, run_id DESC LIMIT ?",

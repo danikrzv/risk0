@@ -115,7 +115,7 @@ class TopologyRepository:
         return found[0] if found else None
 
     def first_seen_at(self, entity_id: str) -> datetime | None:
-        with self._db.transaction() as connection:
+        with self._db.read() as connection:
             row = connection.execute(
                 "SELECT first_seen_at FROM entities WHERE entity_id = ?", (entity_id,)
             ).fetchone()
@@ -152,7 +152,7 @@ class TopologyRepository:
                 return ()
             clauses.append(f"entity_id IN ({_placeholders(entity_ids)})")
             params.extend(entity_ids)
-        with self._db.transaction() as connection:
+        with self._db.read() as connection:
             rows = connection.execute(
                 f"SELECT * FROM entities {_where(clauses)} ORDER BY entity_id", params
             ).fetchall()
@@ -160,7 +160,7 @@ class TopologyRepository:
 
     def catalog_or_visible_ids(self) -> tuple[str, ...]:
         """Live entities the radar always shows: the catalog and what it relies on."""
-        with self._db.transaction() as connection:
+        with self._db.read() as connection:
             rows = connection.execute(
                 """
                 SELECT entity_id FROM entities
@@ -187,7 +187,7 @@ class TopologyRepository:
         """
         if not entity_ids:
             return ()
-        with self._db.transaction() as connection:
+        with self._db.read() as connection:
             rows = connection.execute(
                 """
                 WITH seeds (entity_id) AS (SELECT value FROM json_each(?)),
@@ -299,7 +299,7 @@ class TopologyRepository:
                 f"(source_entity_id IN ({marks}) OR target_entity_id IN ({marks}))"
             )
             params.extend((*entity_ids, *entity_ids))
-        with self._db.transaction() as connection:
+        with self._db.read() as connection:
             rows = connection.execute(
                 f"""
                 SELECT * FROM relationships {_where(clauses)}
@@ -315,7 +315,7 @@ class TopologyRepository:
         """Live relationships whose two ends are both in `entity_ids`."""
         if not entity_ids:
             return ()
-        with self._db.transaction() as connection:
+        with self._db.read() as connection:
             rows = connection.execute(
                 """
                 WITH ids (entity_id) AS (SELECT value FROM json_each(?))
@@ -382,7 +382,7 @@ class TopologyRepository:
         if candidate_entity_id is not None:
             clauses.append("candidate_entity_id = ?")
             params.append(candidate_entity_id)
-        with self._db.transaction() as connection:
+        with self._db.read() as connection:
             rows = connection.execute(
                 f"SELECT * FROM similarities {_where(clauses)}", params
             ).fetchall()
@@ -395,7 +395,7 @@ class TopologyRepository:
         """Similarities whose catalog vault and candidate are both in `entity_ids`."""
         if not entity_ids:
             return ()
-        with self._db.transaction() as connection:
+        with self._db.read() as connection:
             rows = connection.execute(
                 """
                 WITH ids (entity_id) AS (SELECT value FROM json_each(?))

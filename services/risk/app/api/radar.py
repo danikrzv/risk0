@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.api.events import RadarEventBroker, get_event_broker
+from app.config import radar_chain_ids
 from app.radar.analysis import ExposureImpactEstimator
 from app.radar.contracts import (
     EntityHistoryResponse,
@@ -152,6 +153,8 @@ class RadarContext:
     # When set, GET /v1/graph is cached (see GraphCache) and built from one
     # consistent read transaction.
     database: RadarDatabase | None = None
+    # When set, GET /v1/graph only returns entities on these chains.
+    chain_ids: tuple[int, ...] | None = None
     graph_cache: GraphCache = field(default_factory=GraphCache, compare=False)
 
 
@@ -168,6 +171,7 @@ def get_radar_context() -> RadarContext:
         incidents=IncidentRepository(database),
         exposures=ExposureRepository(database),
         database=database,
+        chain_ids=radar_chain_ids(),
     )
 
 
@@ -206,11 +210,11 @@ def graph(
 
 @contextmanager
 def _read_snapshot(context: RadarContext) -> Iterator[None]:
-    """Run the repositories' reads in one transaction when the database is known."""
+    """Run the repositories' reads in one read snapshot when the database is known."""
     if context.database is None:
         yield
         return
-    with context.database.transaction():
+    with context.database.read():
         yield
 
 
@@ -275,6 +279,8 @@ def _build_graph(
         visible=visible,
         entity_ids=sorted(entity_ids),
     )
+    if context.chain_ids is not None:
+        entities = tuple(entity for entity in entities if entity.chain_id in context.chain_ids)
     latest_health = context.states.latest_health_for(
         tuple(entity.entity_id for entity in entities)
     )

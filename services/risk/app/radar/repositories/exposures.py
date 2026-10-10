@@ -63,14 +63,14 @@ class ExposureRepository:
         return exposure
 
     def get(self, exposure_id: str) -> ManualExposure | None:
-        with self._db.transaction() as connection:
+        with self._db.read() as connection:
             row = connection.execute(
                 "SELECT * FROM manual_exposures WHERE exposure_id = ?", (exposure_id,)
             ).fetchone()
         return None if row is None else _exposure(row)
 
     def list_exposures(self) -> tuple[ManualExposure, ...]:
-        with self._db.transaction() as connection:
+        with self._db.read() as connection:
             rows = connection.execute(
                 "SELECT * FROM manual_exposures ORDER BY created_at, exposure_id"
             ).fetchall()
@@ -80,7 +80,7 @@ class ExposureRepository:
         self, incident_id: str
     ) -> tuple[ManualExposure, ...]:
         """Exposures with at least one stored impact of `incident_id`, in one query."""
-        with self._db.transaction() as connection:
+        with self._db.read() as connection:
             rows = connection.execute(
                 """
                 SELECT * FROM manual_exposures WHERE exposure_id IN (
@@ -108,7 +108,7 @@ class ExposureRepository:
         return len(values)
 
     def impacts(self, exposure_id: str) -> tuple[IncidentImpact, ...]:
-        with self._db.transaction() as connection:
+        with self._db.read() as connection:
             rows = connection.execute(
                 """
                 SELECT * FROM exposure_impacts WHERE exposure_id = ?

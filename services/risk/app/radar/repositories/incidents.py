@@ -182,7 +182,7 @@ class IncidentRepository:
         return changed
 
     def get(self, incident_id: str) -> Incident | None:
-        with self._db.transaction() as connection:
+        with self._db.read() as connection:
             row = connection.execute(
                 "SELECT * FROM incidents WHERE incident_id = ?", (incident_id,)
             ).fetchone()
@@ -208,7 +208,7 @@ class IncidentRepository:
             clauses.append("source_entity_id = ?")
             params.append(source_entity_id)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        with self._db.transaction() as connection:
+        with self._db.read() as connection:
             rows = connection.execute(
                 f"""
                 SELECT * FROM incidents {where}
@@ -237,7 +237,7 @@ class IncidentRepository:
             else "AND source_entity_id IN (SELECT value FROM json_each(?))"
         )
         params: list[object] = [] if source_ids is None else [json.dumps(list(source_ids))]
-        with self._db.transaction() as connection:
+        with self._db.read() as connection:
             rows = connection.execute(
                 f"""
                 SELECT * FROM incidents WHERE status = 'OPEN' {source_filter}
@@ -267,7 +267,7 @@ class IncidentRepository:
         """
         if not incident_ids:
             return ()
-        with self._db.transaction() as connection:
+        with self._db.read() as connection:
             rows = connection.execute(
                 """
                 WITH chosen (incident_id) AS (SELECT value FROM json_each(?)),
@@ -317,7 +317,7 @@ class IncidentRepository:
         return len(values)
 
     def impacts(self, incident_id: str) -> tuple[IncidentImpact, ...]:
-        with self._db.transaction() as connection:
+        with self._db.read() as connection:
             rows = connection.execute(
                 """
                 SELECT * FROM incident_impacts WHERE incident_id = ?
@@ -351,7 +351,7 @@ class IncidentRepository:
         return cursor.rowcount == 1
 
     def get_notification(self, notification_id: str) -> Notification | None:
-        with self._db.transaction() as connection:
+        with self._db.read() as connection:
             row = connection.execute(
                 "SELECT * FROM notifications WHERE notification_id = ?",
                 (notification_id,),
@@ -375,7 +375,7 @@ class IncidentRepository:
             clauses.append("(created_at, notification_id) < (?, ?)")
             params.extend(decode_cursor(cursor))
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        with self._db.transaction() as connection:
+        with self._db.read() as connection:
             rows = connection.execute(
                 f"""
                 SELECT * FROM notifications {where}

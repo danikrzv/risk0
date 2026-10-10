@@ -151,7 +151,7 @@ class StateRepository:
         if state_type is not None:
             clauses.append("state_type = ?")
             params.append(state_type.value)
-        with self._db.transaction() as connection:
+        with self._db.read() as connection:
             row = connection.execute(
                 f"""
                 SELECT * FROM state_snapshots WHERE {' AND '.join(clauses)}
@@ -196,7 +196,7 @@ class StateRepository:
             return connection.total_changes - before
 
     def latest_health(self, entity_id: str) -> HealthState | None:
-        with self._db.transaction() as connection:
+        with self._db.read() as connection:
             row = connection.execute(
                 """
                 SELECT * FROM health_states WHERE entity_id = ?
@@ -207,7 +207,7 @@ class StateRepository:
         return None if row is None else _health(row)
 
     def latest_health_all(self) -> dict[str, HealthState]:
-        with self._db.transaction() as connection:
+        with self._db.read() as connection:
             rows = connection.execute(
                 """
                 SELECT h.* FROM health_states h
@@ -224,7 +224,7 @@ class StateRepository:
         """Latest health of each given entity that has been evaluated."""
         if not entity_ids:
             return {}
-        with self._db.transaction() as connection:
+        with self._db.read() as connection:
             rows = connection.execute(
                 """
                 SELECT h.* FROM json_each(?) AS ids
@@ -252,7 +252,7 @@ class StateRepository:
             params.extend(upper)
         snapshot_sql += " ORDER BY observed_at DESC, snapshot_id DESC LIMIT ?"
         params.append(limit + 1)
-        with self._db.transaction() as connection:
+        with self._db.read() as connection:
             rows = connection.execute(snapshot_sql, params).fetchall()
             page = rows[:limit]
             has_more = len(rows) > limit
@@ -354,7 +354,7 @@ class StateRepository:
     def hourly(
         self, entity_id: str, *, start: datetime, end: datetime
     ) -> tuple[HourlyAggregate, ...]:
-        with self._db.transaction() as connection:
+        with self._db.read() as connection:
             rows = connection.execute(
                 """
                 SELECT * FROM state_hourly_aggregates

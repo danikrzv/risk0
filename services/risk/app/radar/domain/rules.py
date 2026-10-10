@@ -15,6 +15,8 @@ class RadarRuleSet:
     near_liquidation_warning_ratio: Decimal = Decimal("0.10")
     near_liquidation_critical_ratio: Decimal = Decimal("0.30")
     material_unmodelled_allocation: Decimal = Decimal("0.05")
+    # Share of a vault's assets above which a market's state drives vault health.
+    material_allocation: Decimal = Decimal("0.05")
 
     def __post_init__(self) -> None:
         if self.warning_cycles < 1 or self.recovery_cycles < 1:

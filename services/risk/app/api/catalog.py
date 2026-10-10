@@ -19,6 +19,10 @@ router = APIRouter(prefix="/v1")
 
 @lru_cache(maxsize=1)
 def get_catalog_service() -> CatalogService:
+    from app.fixture_mode import FIXTURE, build_fixture_catalog_service, data_mode
+
+    if data_mode() == FIXTURE:
+        return build_fixture_catalog_service()
     catalog_path = Path(
         os.environ.get(
             "RISK0_CATALOG_PATH", REPOSITORY_ROOT / "data" / "catalog" / "ethereum.json"

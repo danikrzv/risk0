@@ -57,6 +57,9 @@ class EthereumClient:
         path = Path(feed_catalog_path) if feed_catalog_path else _default_catalog_path()
         self._feeds = _load_feeds(path)
 
+    def get_chain_id(self) -> int:
+        return _hex_integer(self._call("eth_chainId", []))
+
     def get_block_number(self) -> int:
         return _hex_integer(self._call("eth_blockNumber", []))
 

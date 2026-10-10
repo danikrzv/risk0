@@ -1,22 +1,49 @@
+# Local startup: `docker compose up --build` (Docker Compose v2.24+).
+#
+# - risk: FastAPI risk service. It is the only service that reads `.env`, so the
+#   Ethereum RPC URL never reaches the web container or the browser. The SQLite
+#   cache lives on the `risk0-cache` named volume, outside the repository.
+#   RISK0_DATA_MODE selects `live` (default) or deterministic `fixture` data:
+#   `RISK0_DATA_MODE=fixture docker compose up --build`.
+# - web: Next.js production server. It starts only after the risk service's
+#   /v1/health check passes and reaches it over the Compose network.
 services:
   risk:
-    image: ghcr.io/astral-sh/uv:python3.12-bookworm-slim
-    working_dir: /workspace
+    build:
+      context: .
+      dockerfile: services/risk/Dockerfile
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      RISK0_DATA_MODE: ${RISK0_DATA_MODE:-live}
+      RISK0_CACHE_PATH: /var/cache/risk0/risk0.sqlite3
     volumes:
-      - .:/workspace
-    command: uv run --project services/risk uvicorn app.main:app --app-dir services/risk --host 0.0.0.0 --port 8000
+      - risk0-cache:/var/cache/risk0
     ports:
       - "8000:8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/v1/health', timeout=3)"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
   web:
-    image: node:22-bookworm-slim
-    working_dir: /workspace
-    volumes:
-      - .:/workspace
-    command: sh -c "corepack enable && pnpm install --frozen-lockfile && pnpm --filter @risk0/web dev --hostname 0.0.0.0"
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
     environment:
       RISK_API_URL: http://risk:8000
     depends_on:
-      - risk
+      risk:
+        condition: service_healthy
     ports:
       - "3000:3000"
+
+volumes:
+  risk0-cache:

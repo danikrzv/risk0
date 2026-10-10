@@ -29,3 +29,13 @@ venv/
 *.sqlite3-journal
 
 .DS_Store
+
+# Playwright
+playwright-report/
+test-results/
+blob-report/
+playwright/.cache/
+
+# Local caches and build info
+.cache/
+*.tsbuildinfo

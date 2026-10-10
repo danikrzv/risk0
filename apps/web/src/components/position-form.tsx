@@ -37,17 +37,17 @@ export const POSITION_PRESETS: Record<string, PositionPreset> = {
   "wsteth-weth-965": {
     numeraire: "WETH",
     lender_amount: "100",
-    borrower: { collateral_amount: "10", debt_amount: "10.8", ltv: "0.90" },
+    borrower: { collateral_amount: "10", debt_amount: "11.2", ltv: "0.90" },
   },
   "weth-usdc-860": {
     numeraire: "USDC",
     lender_amount: "100000",
-    borrower: { collateral_amount: "2.5", debt_amount: "3750", ltv: "0.75" },
+    borrower: { collateral_amount: "2.5", debt_amount: "4675", ltv: "0.75" },
   },
   "wbtc-usdc-860": {
     numeraire: "USDC",
     lender_amount: "100000",
-    borrower: { collateral_amount: "0.1", debt_amount: "4500", ltv: "0.75" },
+    borrower: { collateral_amount: "0.1", debt_amount: "6200", ltv: "0.75" },
   },
 }
 

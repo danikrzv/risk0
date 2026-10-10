@@ -88,6 +88,10 @@ def build_default_analysis_service() -> AnalysisService:
 
 @lru_cache(maxsize=1)
 def get_default_service() -> AnalysisService:
+    from app.fixture_mode import FIXTURE, build_fixture_analysis_service, data_mode
+
+    if data_mode() == FIXTURE:
+        return build_fixture_analysis_service()
     return build_default_analysis_service()
 
 

@@ -21,6 +21,12 @@ def reject_binary_float(value: object) -> object:
     return value
 
 
+def require_integer(value: object) -> object:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError("chain_id must be a JSON integer")
+    return value
+
+
 def serialize_fixed_point(value: Decimal) -> str:
     """Emit plain decimal notation; `str(Decimal)` would produce `0E-18` or `1E-7`."""
     if value.is_zero():
@@ -38,6 +44,9 @@ HexIdentifier = Annotated[
     str, StringConstraints(pattern=r"^0x[0-9A-Fa-f]+$")
 ]
 LltvValue = Annotated[DecimalValue, Field(ge=0, le=1)]
+# Ethereum mainnet and Base. Analysis remains mainnet-only; Base entries are listed.
+CatalogChainId = Literal[1, 8453]
+ChainIdValue = Annotated[CatalogChainId, BeforeValidator(require_integer)]
 
 
 class ContractModel(BaseModel):
@@ -54,6 +63,7 @@ class CatalogProvenance(StrEnum):
     VERIFIED_BELEM = "verified_belem"
     BELEM_DISTRIBUTED = "belem_distributed"
     REPRESENTATIVE_PROXY = "representative_proxy"
+    ROCKAWAYX_CURATED = "rockawayx_curated"
 
 
 class PositionMode(StrEnum):
@@ -128,7 +138,7 @@ class CatalogAvailability(StrEnum):
 
 class CatalogEntry(ContractModel):
     entity_id: NonEmptyString
-    chain_id: int = Field(ge=1, le=1)
+    chain_id: ChainIdValue
     entity_type: CatalogEntityType
     address_or_market_id: HexIdentifier
     name: NonEmptyString

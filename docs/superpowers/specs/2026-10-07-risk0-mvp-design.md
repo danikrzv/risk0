@@ -41,14 +41,14 @@ The MVP is successful when a user can:
 - Wallet connection or automatic wallet position discovery.
 - Transaction construction, signatures, approvals, or execution.
 - Automated portfolio rebalancing.
-- Chains other than Ethereum.
+- Chains other than Ethereum. A Base catalog entry may be listed and hydrated for display, but it is never analyzed.
 - Protocols other than Morpho and Uniswap except as graph dependencies or evidence sources.
 - A production-grade actuarial exploit probability model.
 - Persistent user profiles or simulation history.
 
 ## 4. Curated MVP Catalog
 
-The initial catalog contains five Ethereum entries. The UI must display each entry's provenance and must not imply that representative entries are confirmed Belem holdings.
+The catalog contains 17 entries. The UI must display each entry's provenance and must not imply that representative or RockawayX-curated entries are confirmed Belem holdings.
 
 | Entry | Type | Address or market ID | Provenance |
 | --- | --- | --- | --- |
@@ -58,7 +58,26 @@ The initial catalog contains five Ethereum entries. The UI must display each ent
 | WETH collateral / USDC debt | Morpho market, 86% LLTV | `0x94b823e6bd8ea533b4e33fbc307faea0b307301bc48763acc4d4aa4def7636cd` | Representative stablecoin borrowing market |
 | WBTC collateral / USDC debt | Morpho market, 86% LLTV | `0x3a85e619751152991742810df6ec69ce473daef99e28a64ab2340d7b7ccfee49` | Representative BTC-backed stablecoin borrowing market |
 
-The catalog is version-controlled data. Live metrics, allocations, and availability are fetched at runtime. If an entry becomes inactive or unsupported, the UI retains it for traceability but marks analysis unavailable until the catalog is updated.
+The RockawayX-curated Morpho vaults from the [RockawayX Dune dashboard](https://dune.com/rockawayxvault/rockawayx-dashboard) are listed after the five entries above, in this order. Belem RWA EURCV is also RockawayX-curated and is already listed above. All 12 were verified against the Morpho API on 2026-10-10 as listed Vault V2s curated by RockawayX. They use provenance `rockawayx_curated` ("RockawayX-curated Morpho vault (source: RockawayX Dune dashboard)"), lender mode only, and `lltv: null`. Names follow the on-chain Morpho vault name.
+
+| Entry ID | Name | Address | Asset | Chain |
+| --- | --- | --- | --- | --- |
+| `rockawayx-confidential-rwa-usdc` | RockawayX Confidential RWA USDC | `0xc207d3f66537D7F66456808379A0E560cF20Da36` | USDC | Ethereum |
+| `rockawayx-fx-protocol-usdc` | RockawayX f(x) Protocol Ecosystem USDC | `0x2cA22cb25558fa2018ecb1CE4eD8AF92Ee7ea423` | USDC | Ethereum |
+| `rockawayx-yield-usdc` | RockawayX USDC Yield | `0xE0181090c22579B6A217f1522cbf8c9f1F0C1965` | USDC | Ethereum |
+| `rockawayx-tori-ecosystem` | RockawayX Tori Ecosystem | `0x3BD9AdAE6643dDcddD02746b8B60075E56DF9478` | USDC | Ethereum |
+| `huma-usdc-main` | Huma USDC Main | `0x8aC91877b93330f52b2979a31a4879506021475c` | USDC | Ethereum |
+| `rockawayx-weth` | RockawayX wETH | `0x64C18DCC4Ccb3b8D27877a4aeBB4C3126CB39cB9` | WETH | Ethereum |
+| `rockawayx-nuva-ecosystem` | RockawayX NUVA Ecosystem | `0x93e0F9d502eEfce8D34924ab3478C7EA0CBC5a2E` | USDC | Ethereum |
+| `rockawayx-prime-usdc` | RockawayX USDC Prime | `0x5f829B1B473cBA86838E1B7BB7E144DbDE228e21` | USDC | Ethereum |
+| `midas-usdc-prime-ethereum` | RockawayX Midas USDC Prime (Ethereum) | `0xe99A27169c2aA26a8f2757949d09Fa3f9A8f0B3B` | USDC | Ethereum |
+| `figure-usdc-main` | Figure USDC Main | `0xd65d6E8dbC3Cd3D12418199E6f4014dB3aaa0097` | USDC | Ethereum |
+| `rockawayx-europ` | RockawayX EUROP | `0x9C57E02bC31e7e463f439353D97bd8f42F5a7F9c` | EUROP | Ethereum |
+| `midas-usdc-prime-base` | RockawayX Midas USDC Prime (Base) | `0xAE4181CFB5aaA08bbE77d269c6B595672b9F9Edc` | USDC | Base (8453) |
+
+`chain_id` accepts exactly `1` and `8453`. The Base vault is listed but unsupported: it has `chain_id: 8453` and `supported: false`. It is hydrated from Morpho on chain 8453 for display only. Its analysis stays disabled because the oracle, Uniswap exit, and Ethereum adapters are mainnet-only. Tiny vaults stay `supported: true`. The catalog never filters by TVL; runtime hydration decides availability from real data. The 20 non-Morpho RockawayX vaults are out of scope.
+
+The catalog is version-controlled data. Live metrics, allocations, and availability are fetched at runtime. If an entry becomes inactive or unsupported, the UI keeps it for traceability and still shows its hydrated metrics where available. Analysis stays unavailable until the catalog is updated.
 
 ## 5. Architecture
 

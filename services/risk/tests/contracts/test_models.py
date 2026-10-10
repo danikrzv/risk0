@@ -173,3 +173,27 @@ def test_catalog_entry_matches_schema_constraints(field, value):
 
     with pytest.raises(ValidationError):
         CatalogEntry.model_validate(payload)
+
+
+@pytest.mark.parametrize("chain_id", [1, 8453])
+def test_catalog_entry_accepts_supported_chain_ids(chain_id):
+    payload = valid_catalog_entry()
+    payload["chain_id"] = chain_id
+
+    assert CatalogEntry.model_validate(payload).chain_id == chain_id
+
+
+@pytest.mark.parametrize("chain_id", [0, 2, 10, 8452, 8454, 42161, "1", True, 1.0])
+def test_catalog_entry_rejects_unlisted_chain_ids(chain_id):
+    payload = valid_catalog_entry()
+    payload["chain_id"] = chain_id
+
+    with pytest.raises(ValidationError):
+        CatalogEntry.model_validate(payload)
+
+
+def test_catalog_entry_accepts_rockawayx_curated_provenance():
+    payload = valid_catalog_entry()
+    payload["provenance"] = "rockawayx_curated"
+
+    assert CatalogEntry.model_validate(payload).provenance == "rockawayx_curated"

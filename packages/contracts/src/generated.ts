@@ -12,6 +12,14 @@ export const RISK_EDGE_TYPES = ["allocated_to","lends","borrows","uses_collatera
 export const PROBABILITY_METHODS = ["empirical_rolling_window","model_estimated_protocol","unavailable"] as const;
 export const CONFIDENCE_LEVELS = ["high","medium","low","unavailable"] as const;
 export const RECOMMENDATION_DECISIONS = ["STAY","EXIT","UNAVAILABLE"] as const;
+export const HEALTH_STATUSES = ["HEALTHY","WARNING","CRITICAL","UNKNOWN"] as const;
+export const RADAR_ENTITY_TYPES = ["chain","protocol","vault","market","asset","oracle","irm","position"] as const;
+export const INCIDENT_SEVERITIES = ["WARNING","CRITICAL"] as const;
+export const INCIDENT_STATUSES = ["OPEN","RESOLVED"] as const;
+export const RADAR_RELATIONSHIP_TYPES = ["allocated_to","lends","borrows","uses_collateral","uses_oracle","uses_irm","backed_by","deployed_on","exits_through","similar_to"] as const;
+export const SIMILARITY_STORAGE_THRESHOLD = "0.33" as const;
+export const SIMILARITY_VISIBILITY_THRESHOLD = "0.60" as const;
+export const SIMILARITY_VISIBLE_LIMIT = 10 as const;
 
 export type CatalogChainId = 1 | 8453;
 export type CatalogEntityType = "morpho_vault_v2" | "morpho_vault_v1" | "morpho_market";
@@ -25,6 +33,11 @@ export type RiskEdgeType = "allocated_to" | "lends" | "borrows" | "uses_collater
 export type ProbabilityMethod = "empirical_rolling_window" | "model_estimated_protocol" | "unavailable";
 export type ConfidenceLevel = "high" | "medium" | "low" | "unavailable";
 export type RecommendationDecision = "STAY" | "EXIT" | "UNAVAILABLE";
+export type HealthStatus = "HEALTHY" | "WARNING" | "CRITICAL" | "UNKNOWN";
+export type RadarEntityType = "chain" | "protocol" | "vault" | "market" | "asset" | "oracle" | "irm" | "position";
+export type IncidentSeverity = "WARNING" | "CRITICAL";
+export type IncidentStatus = "OPEN" | "RESOLVED";
+export type RadarRelationshipType = "allocated_to" | "lends" | "borrows" | "uses_collateral" | "uses_oracle" | "uses_irm" | "backed_by" | "deployed_on" | "exits_through" | "similar_to";
 export type DecimalString = string;
 export type MetricValue = string | boolean | null;
 
@@ -190,4 +203,179 @@ export interface AnalysisResponse {
   exit_estimate: ExitEstimate;
   recommendation: Recommendation;
   analyzed_at: string;
+}
+
+export interface RadarEntity {
+  entity_id: string;
+  entity_type: RadarEntityType;
+  chain_id: number;
+  address_or_key: string;
+  label: string;
+  source: string;
+  catalog: boolean;
+  visible: boolean;
+  metadata: Record<string, MetricValue>;
+}
+
+export interface RadarRelationship {
+  source_entity_id: string;
+  target_entity_id: string;
+  relationship_type: RadarRelationshipType;
+  weight: DecimalString | null;
+  metadata: Record<string, MetricValue>;
+}
+
+export interface StateSnapshot {
+  snapshot_id: string;
+  entity_id: string;
+  state_type: RadarEntityType;
+  observed_at: string;
+  retrieved_at: string;
+  source: string;
+  source_identity: string;
+  freshness: FreshnessStatus;
+  metrics: Record<string, MetricValue>;
+  missing_fields: string[];
+}
+
+export interface HealthState {
+  entity_id: string;
+  status: HealthStatus;
+  score: DecimalString | null;
+  reasons: string[];
+  missing_fields: string[];
+  evaluated_at: string;
+  rule_version: string;
+}
+
+export interface SimilarityPolicy {
+  storage_threshold: typeof SIMILARITY_STORAGE_THRESHOLD;
+  visibility_threshold: typeof SIMILARITY_VISIBILITY_THRESHOLD;
+  visible_limit: typeof SIMILARITY_VISIBLE_LIMIT;
+}
+
+export interface SimilarityRecord {
+  catalog_entity_id: string;
+  candidate_entity_id: string;
+  score: DecimalString;
+  components: Record<string, DecimalString>;
+  missing_dimensions: string[];
+  model_version: "vault-similarity-v1";
+  stored: boolean;
+  normally_visible: boolean;
+  computed_at: string;
+}
+
+export interface Incident {
+  incident_id: string;
+  source_entity_id: string;
+  severity: IncidentSeverity;
+  status: IncidentStatus;
+  trigger_metrics: Record<string, MetricValue>;
+  rule_version: string;
+  first_observed_at: string;
+  last_observed_at: string;
+  resolved_at: string | null;
+  reasons: string[];
+}
+
+export interface IncidentImpact {
+  incident_id: string;
+  target_entity_id: string;
+  path: [string, ...string[]];
+  distance: number;
+  confidence: DecimalString;
+  estimated_affected_amount: DecimalString | null;
+  reasons: string[];
+  revealed: boolean;
+  alternate_path_count: number;
+}
+
+export interface Notification {
+  notification_id: string;
+  incident_id: string;
+  severity: IncidentSeverity;
+  title: string;
+  message: string;
+  created_at: string;
+  read_at: string | null;
+}
+
+interface ExposureFields {
+  entity_id: string;
+  mode: PositionMode;
+  amount: DecimalString;
+  numeraire: string;
+  collateral_amount: DecimalString | null;
+  debt_amount: DecimalString | null;
+  ltv: DecimalString | null;
+}
+
+export interface ManualExposure extends ExposureFields {
+  exposure_id: string;
+  created_at: string;
+}
+
+export interface SchedulerRun {
+  run_id: string;
+  loop: "fast" | "slow";
+  status: "running" | "completed" | "partial" | "failed" | "skipped";
+  started_at: string;
+  finished_at: string | null;
+  processed_count: number;
+  error_count: number;
+  message: string;
+}
+
+export interface RadarGraphResponse {
+  schema_version: "1.0.0";
+  entities: RadarEntity[];
+  relationships: RadarRelationship[];
+  similarities: SimilarityRecord[];
+  active_incidents: Incident[];
+  generated_at: string;
+}
+
+export interface IncidentGraphResponse {
+  schema_version: "1.0.0";
+  incident: Incident;
+  entities: RadarEntity[];
+  relationships: RadarRelationship[];
+  similarities: SimilarityRecord[];
+  exposures: ManualExposure[];
+  impacts: IncidentImpact[];
+  generated_at: string;
+}
+
+export interface EntityHistoryResponse {
+  schema_version: "1.0.0";
+  entity: RadarEntity;
+  snapshots: StateSnapshot[];
+  health_states: HealthState[];
+  next_cursor: string | null;
+  generated_at: string;
+}
+
+export interface SimilarityResponse {
+  schema_version: "1.0.0";
+  vault_id: string;
+  policy: SimilarityPolicy;
+  similarities: SimilarityRecord[];
+  generated_at: string;
+}
+
+export interface NotificationResponse {
+  schema_version: "1.0.0";
+  notifications: Notification[];
+  next_cursor: string | null;
+  generated_at: string;
+}
+
+export interface ExposureCreateRequest extends ExposureFields {}
+
+export interface ExposureImpactResponse {
+  schema_version: "1.0.0";
+  exposure: ManualExposure;
+  impacts: IncidentImpact[];
+  generated_at: string;
 }

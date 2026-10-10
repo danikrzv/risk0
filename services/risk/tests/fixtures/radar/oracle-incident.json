@@ -1,0 +1,168 @@
+{
+  "schema_version": "1.0.0",
+  "incident": {
+    "incident_id": "incident:oracle-deviation:2026-10-10T12:05:00Z",
+    "source_entity_id": "oracle:1:fixture-usdc-usd",
+    "severity": "CRITICAL",
+    "status": "OPEN",
+    "trigger_metrics": {
+      "deviation": "0.08",
+      "consensus_price": "1.00",
+      "observed_price": "0.92"
+    },
+    "rule_version": "oracle-health-v1",
+    "first_observed_at": "2026-10-10T12:05:00Z",
+    "last_observed_at": "2026-10-10T12:05:00Z",
+    "resolved_at": null,
+    "reasons": [
+      "Oracle deviation exceeded the critical threshold."
+    ]
+  },
+  "entities": [
+    {
+      "entity_id": "oracle:1:fixture-usdc-usd",
+      "entity_type": "oracle",
+      "chain_id": 1,
+      "address_or_key": "fixture-usdc-usd",
+      "label": "Fixture USDC / USD Oracle",
+      "source": "fixture:oracle",
+      "catalog": false,
+      "visible": true,
+      "metadata": {}
+    },
+    {
+      "entity_id": "market:1:fixture-usdc-market",
+      "entity_type": "market",
+      "chain_id": 1,
+      "address_or_key": "fixture-usdc-market",
+      "label": "Fixture USDC Market",
+      "source": "fixture:morpho",
+      "catalog": false,
+      "visible": true,
+      "metadata": {}
+    },
+    {
+      "entity_id": "vault:1:0x1111111111111111111111111111111111111111",
+      "entity_type": "vault",
+      "chain_id": 1,
+      "address_or_key": "0x1111111111111111111111111111111111111111",
+      "label": "Fixture Catalog Vault",
+      "source": "fixture:morpho",
+      "catalog": true,
+      "visible": true,
+      "metadata": {}
+    },
+    {
+      "entity_id": "vault:1:0x3333333333333333333333333333333333333333",
+      "entity_type": "vault",
+      "chain_id": 1,
+      "address_or_key": "0x3333333333333333333333333333333333333333",
+      "label": "Fixture Revealed Neighbor",
+      "source": "fixture:morpho",
+      "catalog": false,
+      "visible": true,
+      "metadata": {
+        "visibility_reason": "incident_reveal"
+      }
+    },
+    {
+      "entity_id": "position:1:exposure-001",
+      "entity_type": "position",
+      "chain_id": 1,
+      "address_or_key": "exposure-001",
+      "label": "Fixture Manual Exposure",
+      "source": "fixture:manual",
+      "catalog": false,
+      "visible": true,
+      "metadata": {
+        "mode": "lender"
+      }
+    }
+  ],
+  "relationships": [
+    {
+      "source_entity_id": "market:1:fixture-usdc-market",
+      "target_entity_id": "oracle:1:fixture-usdc-usd",
+      "relationship_type": "uses_oracle",
+      "weight": null,
+      "metadata": {}
+    },
+    {
+      "source_entity_id": "vault:1:0x1111111111111111111111111111111111111111",
+      "target_entity_id": "market:1:fixture-usdc-market",
+      "relationship_type": "allocated_to",
+      "weight": "0.60",
+      "metadata": {}
+    },
+    {
+      "source_entity_id": "vault:1:0x3333333333333333333333333333333333333333",
+      "target_entity_id": "market:1:fixture-usdc-market",
+      "relationship_type": "allocated_to",
+      "weight": "0.48",
+      "metadata": {}
+    },
+    {
+      "source_entity_id": "position:1:exposure-001",
+      "target_entity_id": "vault:1:0x3333333333333333333333333333333333333333",
+      "relationship_type": "lends",
+      "weight": null,
+      "metadata": {}
+    }
+  ],
+  "similarities": [
+    {
+      "catalog_entity_id": "vault:1:0x1111111111111111111111111111111111111111",
+      "candidate_entity_id": "vault:1:0x3333333333333333333333333333333333333333",
+      "score": "0.48",
+      "components": {
+        "shared_markets": "0.25",
+        "asset_overlap": "0.10",
+        "oracle_overlap": "0.08",
+        "same_chain": "0.05"
+      },
+      "missing_dimensions": [
+        "irm_match",
+        "lltv_proximity",
+        "same_curator"
+      ],
+      "model_version": "vault-similarity-v1",
+      "stored": true,
+      "normally_visible": false,
+      "computed_at": "2026-10-10T12:00:00Z"
+    }
+  ],
+  "exposures": [
+    {
+      "entity_id": "vault:1:0x3333333333333333333333333333333333333333",
+      "mode": "lender",
+      "amount": "10000",
+      "numeraire": "USDC",
+      "collateral_amount": null,
+      "debt_amount": null,
+      "ltv": null,
+      "exposure_id": "exposure-001",
+      "created_at": "2026-10-10T11:00:00Z"
+    }
+  ],
+  "impacts": [
+    {
+      "incident_id": "incident:oracle-deviation:2026-10-10T12:05:00Z",
+      "target_entity_id": "position:1:exposure-001",
+      "path": [
+        "oracle:1:fixture-usdc-usd",
+        "market:1:fixture-usdc-market",
+        "vault:1:0x3333333333333333333333333333333333333333",
+        "position:1:exposure-001"
+      ],
+      "distance": 3,
+      "confidence": "0.95",
+      "estimated_affected_amount": "4800",
+      "reasons": [
+        "The exposure lends to a hidden neighbor allocated to the affected market."
+      ],
+      "revealed": true,
+      "alternate_path_count": 0
+    }
+  ],
+  "generated_at": "2026-10-10T12:05:00Z"
+}

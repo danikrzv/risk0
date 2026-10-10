@@ -13,10 +13,18 @@ import {
   FRESHNESS_STATUSES,
   POSITION_MODES,
   PROBABILITY_METHODS,
+  RADAR_ENTITY_TYPES,
+  RADAR_RELATIONSHIP_TYPES,
   RECOMMENDATION_DECISIONS,
   RISK_EDGE_TYPES,
   RISK_NODE_TYPES,
   SCENARIO_IDS,
+  HEALTH_STATUSES,
+  INCIDENT_SEVERITIES,
+  INCIDENT_STATUSES,
+  SIMILARITY_STORAGE_THRESHOLD,
+  SIMILARITY_VISIBILITY_THRESHOLD,
+  SIMILARITY_VISIBLE_LIMIT,
   type AnalysisRequest,
   type CatalogEntry,
   type CatalogResponse,
@@ -24,6 +32,7 @@ import {
   type MetricValue,
   type PositionInput,
   type ProbabilityEstimate,
+  type RadarGraphResponse,
   type RecommendationDecision,
 } from "./generated";
 
@@ -50,6 +59,9 @@ type CatalogVersionIsFixed = Assert<
 type CatalogChainIdsAreExact = Assert<
   Equal<CatalogEntry["chain_id"], 1 | 8453>
 >;
+type RadarTimestampIsString = Assert<
+  Equal<RadarGraphResponse["generated_at"], string>
+>;
 
 const typeParityChecks: [
   RecommendationDecisionIsExact,
@@ -58,7 +70,8 @@ const typeParityChecks: [
   QuoteTimestampIsRequired,
   CatalogVersionIsFixed,
   CatalogChainIdsAreExact,
-] = [true, true, true, true, true, true];
+  RadarTimestampIsString,
+] = [true, true, true, true, true, true, true];
 
 const lenderPosition = {
   mode: "lender",
@@ -89,10 +102,12 @@ const invalidBorrower: PositionInput = {
 // @ts-expect-error an analysis request requires at least one scenario
 const invalidRequest: AnalysisRequest = { position: lenderPosition, scenarios: [] };
 
-const pythonModels = readFileSync(
+const pythonModels = [
   new URL("../../../services/risk/app/contracts/models.py", import.meta.url),
-  "utf8",
-);
+  new URL("../../../services/risk/app/radar/contracts.py", import.meta.url),
+]
+  .map((url) => readFileSync(url, "utf8"))
+  .join("\n");
 
 function pythonEnumValues(enumName: string): string[] {
   const enumBlock = pythonModels.match(
@@ -151,7 +166,7 @@ describe("generated contract parity", () => {
   });
 
   it("uses exact contract shapes", () => {
-    expect(typeParityChecks).toEqual([true, true, true, true, true, true]);
+    expect(typeParityChecks).toEqual([true, true, true, true, true, true, true]);
     expect(lenderPosition.mode).toBe("lender");
     expect(borrowerPosition.mode).toBe("borrower");
     expect(invalidLender).toBeDefined();
@@ -176,7 +191,18 @@ describe("generated contract parity", () => {
     ["ConfidenceLevel", CONFIDENCE_LEVELS],
     ["ProbabilityMethod", PROBABILITY_METHODS],
     ["RecommendationDecision", RECOMMENDATION_DECISIONS],
+    ["HealthStatus", HEALTH_STATUSES],
+    ["RadarEntityType", RADAR_ENTITY_TYPES],
+    ["IncidentSeverity", INCIDENT_SEVERITIES],
+    ["IncidentStatus", INCIDENT_STATUSES],
+    ["RadarRelationshipType", RADAR_RELATIONSHIP_TYPES],
   ] as const)("matches the Python %s enum", (enumName, generatedValues) => {
     expect([...generatedValues]).toEqual(pythonEnumValues(enumName));
+  });
+
+  it("freezes decimal-string similarity policy thresholds", () => {
+    expect(SIMILARITY_STORAGE_THRESHOLD).toBe("0.33");
+    expect(SIMILARITY_VISIBILITY_THRESHOLD).toBe("0.60");
+    expect(SIMILARITY_VISIBLE_LIMIT).toBe(10);
   });
 });

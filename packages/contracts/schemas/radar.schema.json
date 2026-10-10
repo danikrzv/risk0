@@ -1,0 +1,311 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://risk0.local/schemas/v1/radar.schema.json",
+  "title": "RadarGraphResponse",
+  "$ref": "#/$defs/RadarGraphResponse",
+  "$defs": {
+    "DecimalString": {
+      "type": "string",
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$"
+    },
+    "NonNegativeDecimalString": {
+      "type": "string",
+      "pattern": "^(?:0|[1-9]\\d*)(?:\\.\\d+)?$"
+    },
+    "RatioString": {
+      "type": "string",
+      "pattern": "^(?:0(?:\\.\\d+)?|1(?:\\.0+)?)$"
+    },
+    "UtcTimestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "Z$"
+    },
+    "MetricValue": {
+      "type": ["string", "boolean", "null"]
+    },
+    "MetricMap": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/MetricValue" }
+    },
+    "HealthStatus": {
+      "enum": ["HEALTHY", "WARNING", "CRITICAL", "UNKNOWN"]
+    },
+    "RadarEntityType": {
+      "enum": ["chain", "protocol", "vault", "market", "asset", "oracle", "irm", "position"]
+    },
+    "IncidentSeverity": {
+      "enum": ["WARNING", "CRITICAL"]
+    },
+    "IncidentStatus": {
+      "enum": ["OPEN", "RESOLVED"]
+    },
+    "RadarRelationshipType": {
+      "enum": [
+        "allocated_to",
+        "lends",
+        "borrows",
+        "uses_collateral",
+        "uses_oracle",
+        "uses_irm",
+        "backed_by",
+        "deployed_on",
+        "exits_through",
+        "similar_to"
+      ]
+    },
+    "SimilarityPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["storage_threshold", "visibility_threshold", "visible_limit"],
+      "properties": {
+        "storage_threshold": { "const": "0.33" },
+        "visibility_threshold": { "const": "0.60" },
+        "visible_limit": { "const": 10 }
+      }
+    },
+    "RadarEntity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entity_id", "entity_type", "chain_id", "address_or_key", "label", "source", "catalog", "visible", "metadata"],
+      "properties": {
+        "entity_id": { "type": "string", "pattern": "^(?:chain|protocol|vault|market|asset|oracle|irm|position):[1-9]\\d*:.+$" },
+        "entity_type": { "$ref": "#/$defs/RadarEntityType" },
+        "chain_id": { "type": "integer", "minimum": 1 },
+        "address_or_key": { "type": "string", "minLength": 1 },
+        "label": { "type": "string", "minLength": 1 },
+        "source": { "type": "string", "minLength": 1 },
+        "catalog": { "type": "boolean" },
+        "visible": { "type": "boolean" },
+        "metadata": { "$ref": "#/$defs/MetricMap" }
+      }
+    },
+    "RadarRelationship": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_entity_id", "target_entity_id", "relationship_type", "weight", "metadata"],
+      "properties": {
+        "source_entity_id": { "type": "string", "minLength": 1 },
+        "target_entity_id": { "type": "string", "minLength": 1 },
+        "relationship_type": { "$ref": "#/$defs/RadarRelationshipType" },
+        "weight": { "oneOf": [{ "$ref": "#/$defs/RatioString" }, { "type": "null" }] },
+        "metadata": { "$ref": "#/$defs/MetricMap" }
+      }
+    },
+    "StateSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["snapshot_id", "entity_id", "state_type", "observed_at", "retrieved_at", "source", "source_identity", "freshness", "metrics", "missing_fields"],
+      "properties": {
+        "snapshot_id": { "type": "string", "minLength": 1 },
+        "entity_id": { "type": "string", "minLength": 1 },
+        "state_type": { "$ref": "#/$defs/RadarEntityType" },
+        "observed_at": { "$ref": "#/$defs/UtcTimestamp" },
+        "retrieved_at": { "$ref": "#/$defs/UtcTimestamp" },
+        "source": { "type": "string", "minLength": 1 },
+        "source_identity": { "type": "string", "minLength": 1 },
+        "freshness": { "enum": ["fresh", "stale_usable", "expired"] },
+        "metrics": { "$ref": "#/$defs/MetricMap" },
+        "missing_fields": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+      }
+    },
+    "HealthState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entity_id", "status", "score", "reasons", "missing_fields", "evaluated_at", "rule_version"],
+      "properties": {
+        "entity_id": { "type": "string", "minLength": 1 },
+        "status": { "$ref": "#/$defs/HealthStatus" },
+        "score": { "oneOf": [{ "$ref": "#/$defs/RatioString" }, { "type": "null" }] },
+        "reasons": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "missing_fields": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "evaluated_at": { "$ref": "#/$defs/UtcTimestamp" },
+        "rule_version": { "type": "string", "minLength": 1 }
+      }
+    },
+    "SimilarityRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["catalog_entity_id", "candidate_entity_id", "score", "components", "missing_dimensions", "model_version", "stored", "normally_visible", "computed_at"],
+      "properties": {
+        "catalog_entity_id": { "type": "string", "minLength": 1 },
+        "candidate_entity_id": { "type": "string", "minLength": 1 },
+        "score": { "$ref": "#/$defs/RatioString" },
+        "components": { "type": "object", "additionalProperties": { "$ref": "#/$defs/RatioString" } },
+        "missing_dimensions": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "model_version": { "const": "vault-similarity-v1" },
+        "stored": { "type": "boolean" },
+        "normally_visible": { "type": "boolean" },
+        "computed_at": { "$ref": "#/$defs/UtcTimestamp" }
+      }
+    },
+    "Incident": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["incident_id", "source_entity_id", "severity", "status", "trigger_metrics", "rule_version", "first_observed_at", "last_observed_at", "resolved_at", "reasons"],
+      "properties": {
+        "incident_id": { "type": "string", "minLength": 1 },
+        "source_entity_id": { "type": "string", "minLength": 1 },
+        "severity": { "$ref": "#/$defs/IncidentSeverity" },
+        "status": { "$ref": "#/$defs/IncidentStatus" },
+        "trigger_metrics": { "$ref": "#/$defs/MetricMap" },
+        "rule_version": { "type": "string", "minLength": 1 },
+        "first_observed_at": { "$ref": "#/$defs/UtcTimestamp" },
+        "last_observed_at": { "$ref": "#/$defs/UtcTimestamp" },
+        "resolved_at": { "oneOf": [{ "$ref": "#/$defs/UtcTimestamp" }, { "type": "null" }] },
+        "reasons": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+      }
+    },
+    "IncidentImpact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["incident_id", "target_entity_id", "path", "distance", "confidence", "estimated_affected_amount", "reasons", "revealed", "alternate_path_count"],
+      "properties": {
+        "incident_id": { "type": "string", "minLength": 1 },
+        "target_entity_id": { "type": "string", "minLength": 1 },
+        "path": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+        "distance": { "type": "integer", "minimum": 0 },
+        "confidence": { "$ref": "#/$defs/RatioString" },
+        "estimated_affected_amount": { "oneOf": [{ "$ref": "#/$defs/NonNegativeDecimalString" }, { "type": "null" }] },
+        "reasons": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "revealed": { "type": "boolean" },
+        "alternate_path_count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "Notification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["notification_id", "incident_id", "severity", "title", "message", "created_at", "read_at"],
+      "properties": {
+        "notification_id": { "type": "string", "minLength": 1 },
+        "incident_id": { "type": "string", "minLength": 1 },
+        "severity": { "$ref": "#/$defs/IncidentSeverity" },
+        "title": { "type": "string", "minLength": 1 },
+        "message": { "type": "string", "minLength": 1 },
+        "created_at": { "$ref": "#/$defs/UtcTimestamp" },
+        "read_at": { "oneOf": [{ "$ref": "#/$defs/UtcTimestamp" }, { "type": "null" }] }
+      }
+    },
+    "ExposureFields": {
+      "type": "object",
+      "required": ["entity_id", "mode", "amount", "numeraire", "collateral_amount", "debt_amount", "ltv"],
+      "properties": {
+        "entity_id": { "type": "string", "minLength": 1 },
+        "mode": { "enum": ["lender", "borrower"] },
+        "amount": { "$ref": "#/$defs/NonNegativeDecimalString" },
+        "numeraire": { "type": "string", "minLength": 1 },
+        "collateral_amount": { "oneOf": [{ "$ref": "#/$defs/NonNegativeDecimalString" }, { "type": "null" }] },
+        "debt_amount": { "oneOf": [{ "$ref": "#/$defs/NonNegativeDecimalString" }, { "type": "null" }] },
+        "ltv": { "oneOf": [{ "$ref": "#/$defs/RatioString" }, { "type": "null" }] }
+      }
+    },
+    "ManualExposure": {
+      "allOf": [
+        { "$ref": "#/$defs/ExposureFields" },
+        {
+          "type": "object",
+          "required": ["exposure_id", "created_at"],
+          "properties": {
+            "exposure_id": { "type": "string", "minLength": 1 },
+            "created_at": { "$ref": "#/$defs/UtcTimestamp" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "SchedulerRun": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "loop", "status", "started_at", "finished_at", "processed_count", "error_count", "message"],
+      "properties": {
+        "run_id": { "type": "string", "minLength": 1 },
+        "loop": { "enum": ["fast", "slow"] },
+        "status": { "enum": ["running", "completed", "partial", "failed", "skipped"] },
+        "started_at": { "$ref": "#/$defs/UtcTimestamp" },
+        "finished_at": { "oneOf": [{ "$ref": "#/$defs/UtcTimestamp" }, { "type": "null" }] },
+        "processed_count": { "type": "integer", "minimum": 0 },
+        "error_count": { "type": "integer", "minimum": 0 },
+        "message": { "type": "string" }
+      }
+    },
+    "RadarGraphResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "entities", "relationships", "similarities", "active_incidents", "generated_at"],
+      "properties": {
+        "schema_version": { "const": "1.0.0" },
+        "entities": { "type": "array", "items": { "$ref": "#/$defs/RadarEntity" } },
+        "relationships": { "type": "array", "items": { "$ref": "#/$defs/RadarRelationship" } },
+        "similarities": { "type": "array", "items": { "$ref": "#/$defs/SimilarityRecord" } },
+        "active_incidents": { "type": "array", "items": { "$ref": "#/$defs/Incident" } },
+        "generated_at": { "$ref": "#/$defs/UtcTimestamp" }
+      }
+    },
+    "IncidentGraphResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "incident", "entities", "relationships", "similarities", "exposures", "impacts", "generated_at"],
+      "properties": {
+        "schema_version": { "const": "1.0.0" },
+        "incident": { "$ref": "#/$defs/Incident" },
+        "entities": { "type": "array", "items": { "$ref": "#/$defs/RadarEntity" } },
+        "relationships": { "type": "array", "items": { "$ref": "#/$defs/RadarRelationship" } },
+        "similarities": { "type": "array", "items": { "$ref": "#/$defs/SimilarityRecord" } },
+        "exposures": { "type": "array", "items": { "$ref": "#/$defs/ManualExposure" } },
+        "impacts": { "type": "array", "items": { "$ref": "#/$defs/IncidentImpact" } },
+        "generated_at": { "$ref": "#/$defs/UtcTimestamp" }
+      }
+    },
+    "EntityHistoryResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "entity", "snapshots", "health_states", "next_cursor", "generated_at"],
+      "properties": {
+        "schema_version": { "const": "1.0.0" },
+        "entity": { "$ref": "#/$defs/RadarEntity" },
+        "snapshots": { "type": "array", "items": { "$ref": "#/$defs/StateSnapshot" } },
+        "health_states": { "type": "array", "items": { "$ref": "#/$defs/HealthState" } },
+        "next_cursor": { "type": ["string", "null"] },
+        "generated_at": { "$ref": "#/$defs/UtcTimestamp" }
+      }
+    },
+    "SimilarityResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "vault_id", "policy", "similarities", "generated_at"],
+      "properties": {
+        "schema_version": { "const": "1.0.0" },
+        "vault_id": { "type": "string", "minLength": 1 },
+        "policy": { "$ref": "#/$defs/SimilarityPolicy" },
+        "similarities": { "type": "array", "items": { "$ref": "#/$defs/SimilarityRecord" } },
+        "generated_at": { "$ref": "#/$defs/UtcTimestamp" }
+      }
+    },
+    "NotificationResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "notifications", "next_cursor", "generated_at"],
+      "properties": {
+        "schema_version": { "const": "1.0.0" },
+        "notifications": { "type": "array", "items": { "$ref": "#/$defs/Notification" } },
+        "next_cursor": { "type": ["string", "null"] },
+        "generated_at": { "$ref": "#/$defs/UtcTimestamp" }
+      }
+    },
+    "ExposureCreateRequest": {
+      "allOf": [{ "$ref": "#/$defs/ExposureFields" }],
+      "unevaluatedProperties": false
+    },
+    "ExposureImpactResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "exposure", "impacts", "generated_at"],
+      "properties": {
+        "schema_version": { "const": "1.0.0" },
+        "exposure": { "$ref": "#/$defs/ManualExposure" },
+        "impacts": { "type": "array", "items": { "$ref": "#/$defs/IncidentImpact" } },
+        "generated_at": { "$ref": "#/$defs/UtcTimestamp" }
+      }
+    }
+  }
+}

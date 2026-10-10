@@ -136,6 +136,15 @@ def test_default_cap_is_one_hundred_million_bytes_without_large_fixture(tmp_path
     assert cache.max_bytes == DEFAULT_MAX_BYTES == 100_000_000
 
 
+def test_cache_rejects_caps_below_sqlite_minimum_footprint(tmp_path):
+    with pytest.raises(ValueError, match="at least 1024 bytes"):
+        SQLiteCache(tmp_path / "too-small.sqlite", max_bytes=1023)
+
+    cache = SQLiteCache(tmp_path / "cache.sqlite")
+    with pytest.raises(ValueError, match="at least 1024 bytes"):
+        cache.prune(NOW, max_bytes=1023)
+
+
 def test_cache_normalizes_dst_fallback_before_duration_arithmetic(tmp_path):
     zurich = ZoneInfo("Europe/Zurich")
     fetched_at = datetime(2026, 10, 25, 2, 45, tzinfo=zurich, fold=0)

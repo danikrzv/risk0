@@ -10,6 +10,7 @@ from app.infrastructure.freshness import Freshness
 
 
 DEFAULT_MAX_BYTES = 100_000_000
+MINIMUM_DATABASE_BYTES = 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,8 +36,7 @@ class SQLiteCache:
         path: str | Path,
         max_bytes: int = DEFAULT_MAX_BYTES,
     ) -> None:
-        if max_bytes < 0:
-            raise ValueError("cache size cap cannot be negative")
+        _validate_max_bytes(max_bytes)
         self.path = Path(path)
         self.max_bytes = max_bytes
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -148,8 +148,7 @@ class SQLiteCache:
         now: datetime,
         max_bytes: int = DEFAULT_MAX_BYTES,
     ) -> PruneResult:
-        if max_bytes < 0:
-            raise ValueError("cache size cap cannot be negative")
+        _validate_max_bytes(max_bytes)
 
         now_value = _timestamp(now)
         initial_bytes = self._footprint()
@@ -247,3 +246,8 @@ def _utc(value: datetime) -> datetime:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError("cache timestamps must be timezone-aware")
     return value.astimezone(UTC)
+
+
+def _validate_max_bytes(max_bytes: int) -> None:
+    if max_bytes < MINIMUM_DATABASE_BYTES:
+        raise ValueError("cache size cap must be at least 1024 bytes")

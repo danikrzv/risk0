@@ -335,12 +335,20 @@ def test_each_entry_dispatches_to_its_own_type_version_and_chain(api, morpho_api
     rest_paths = {
         request.url.path for request in morpho_api.requests if request.method == "GET"
     }
-    graphql = morpho_api.graphql_requests()
+    # Entries hydrate concurrently, so requests are matched by identity, not order.
+    graphql = {
+        (
+            body["variables"].get("marketId") or body["variables"].get("address"),
+            body["variables"]["chainId"],
+        ): body
+        for body in morpho_api.graphql_requests()
+    }
 
-    assert len(graphql) == len(catalog)
-    for entry, body in zip(catalog, graphql, strict=True):
+    assert len(graphql) == len(morpho_api.graphql_requests()) == len(catalog)
+    for entry in catalog:
         identifier = entry["address_or_market_id"]
         selector = f"{entry['chain_id']}:{identifier}"
+        body = graphql[(identifier, entry["chain_id"])]
         if entry["entity_type"] == "morpho_market":
             expected_paths = {f"/v0/blue/markets/{selector}"}
             root, variable = "marketById(", "marketId"

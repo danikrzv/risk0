@@ -251,7 +251,7 @@ class MorphoClient:
         self, market_id: str, *, chain_id: int = CHAIN_ID
     ) -> DataEnvelope[MarketSnapshot]:
         return self._load(
-            f"market:{chain_id}:{market_id.lower()}",
+            _market_key(market_id, chain_id),
             DataEnvelope[MarketSnapshot],
             lambda: self._fetch_market(market_id, chain_id),
         )
@@ -260,9 +260,25 @@ class MorphoClient:
         self, address: str, version: VaultVersion, *, chain_id: int = CHAIN_ID
     ) -> DataEnvelope[VaultSnapshot]:
         return self._load(
-            f"vault_{version}:{chain_id}:{address.lower()}",
+            _vault_key(address, version, chain_id),
             DataEnvelope[VaultSnapshot],
             lambda: self._fetch_vault(address, version, chain_id),
+        )
+
+    def cached_market(
+        self, market_id: str, *, chain_id: int = CHAIN_ID
+    ) -> DataEnvelope[MarketSnapshot] | None:
+        """The cached `get_market` snapshot while usable (fresh or stale); no request."""
+        return self._cached(
+            _market_key(market_id, chain_id), DataEnvelope[MarketSnapshot]
+        )
+
+    def cached_vault(
+        self, address: str, version: VaultVersion, *, chain_id: int = CHAIN_ID
+    ) -> DataEnvelope[VaultSnapshot] | None:
+        """The cached `get_vault` snapshot while usable (fresh or stale); no request."""
+        return self._cached(
+            _vault_key(address, version, chain_id), DataEnvelope[VaultSnapshot]
         )
 
     def get_allocations(
@@ -312,6 +328,14 @@ class MorphoClient:
             DataEnvelope[MarketPositions],
             lambda: self._fetch_positions(market_id, chain_id),
         )
+
+    def _cached(self, key: str, envelope_type: type[ModelT]) -> ModelT | None:
+        if self._cache is None:
+            return None
+        cached = self._cache.get(CACHE_NAMESPACE, key, self._clock())
+        if cached is None or cached.freshness is Freshness.EXPIRED:
+            return None
+        return _restore(envelope_type, cached.payload, cached.freshness)
 
     def _load(
         self,
@@ -1189,6 +1213,14 @@ def _decode(content: bytes) -> dict[str, Any]:
     if not isinstance(body, dict):
         raise _ProviderError("Morpho returned an unexpected JSON document")
     return body
+
+
+def _market_key(market_id: str, chain_id: int) -> str:
+    return f"market:{chain_id}:{market_id.lower()}"
+
+
+def _vault_key(address: str, version: VaultVersion, chain_id: int) -> str:
+    return f"vault_{version}:{chain_id}:{address.lower()}"
 
 
 def _restore(

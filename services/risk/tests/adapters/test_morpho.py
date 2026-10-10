@@ -178,6 +178,31 @@ def test_provider_failure_returns_stale_cache_with_original_metadata(
     assert stale.value == first.value
 
 
+def test_cached_snapshots_are_read_without_requests_until_they_expire(
+    morpho_client, morpho_api, clock
+):
+    assert morpho_client.cached_market(WETH_USDC) is None
+    assert morpho_client.cached_vault(MEV_CAPITAL_WETH, "v1") is None
+    market = morpho_client.get_market(WETH_USDC)
+    vault = morpho_client.get_vault(MEV_CAPITAL_WETH, "v1")
+    requests = len(morpho_api.requests)
+
+    fresh = morpho_client.cached_market(WETH_USDC)
+    clock.advance(timedelta(minutes=5))
+    stale = morpho_client.cached_vault(MEV_CAPITAL_WETH, "v1")
+    clock.advance(timedelta(hours=24))
+    expired = morpho_client.cached_market(WETH_USDC)
+
+    assert len(morpho_api.requests) == requests
+    assert fresh is not None and fresh.freshness == "fresh"
+    assert fresh.value == market.value
+    assert stale is not None and stale.freshness == "stale_usable"
+    assert stale.value == vault.value
+    assert expired is None
+    # Keyed by version and chain like get_vault, so nothing else matches.
+    assert morpho_client.cached_vault(MEV_CAPITAL_WETH, "v2") is None
+
+
 def test_provider_failure_after_24_hour_retention_raises_unavailable(
     morpho_client, morpho_api, clock
 ):

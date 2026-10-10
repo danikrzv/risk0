@@ -8,6 +8,7 @@ from pydantic import (
     BeforeValidator,
     ConfigDict,
     Field,
+    PlainSerializer,
     StringConstraints,
     field_validator,
     model_validator,
@@ -26,7 +27,18 @@ def require_integer(value: object) -> object:
     return value
 
 
-DecimalValue = Annotated[Decimal, BeforeValidator(reject_binary_float)]
+def serialize_fixed_point(value: Decimal) -> str:
+    """Emit plain decimal notation; `str(Decimal)` would produce `0E-18` or `1E-7`."""
+    if value.is_zero():
+        value = abs(value)
+    return format(value, "f")
+
+
+DecimalValue = Annotated[
+    Decimal,
+    BeforeValidator(reject_binary_float),
+    PlainSerializer(serialize_fixed_point, return_type=str, when_used="json"),
+]
 NonEmptyString = Annotated[str, StringConstraints(min_length=1)]
 HexIdentifier = Annotated[
     str, StringConstraints(pattern=r"^0x[0-9A-Fa-f]+$")

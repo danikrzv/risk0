@@ -55,12 +55,14 @@ class DataQuality:
         conflicts: Iterable[DataConflict],
     ) -> "DataQuality":
         source_values = tuple(sources)
-        critical = frozenset(critical_sources)
-        missing = tuple(
+        critical = tuple(dict.fromkeys(critical_sources))
+        usable = frozenset(
             source
             for source, freshness in source_values
-            if source in critical and freshness is Freshness.EXPIRED
+            if freshness is not Freshness.EXPIRED
         )
+        # A critical source is missing when it is absent or only present as expired.
+        missing = tuple(source for source in critical if source not in usable)
         return cls(
             freshness=tuple(freshness for _, freshness in source_values),
             conflicts=tuple(conflicts),

@@ -7,7 +7,16 @@ const PROVENANCE_BADGES: Record<CatalogProvenance, string> = {
   verified_belem: "Verified Belem",
   belem_distributed: "Belem-distributed",
   representative_proxy: "Representative",
+  rockawayx_curated: "RockawayX-curated",
 }
+
+// Entries the UI must never present as confirmed Belem holdings (spec §4).
+const NOT_BELEM_NOTES: Partial<Record<CatalogProvenance, string>> = {
+  representative_proxy: "Representative proxy — not a confirmed Belem holding",
+  rockawayx_curated: "RockawayX-curated — not a confirmed Belem holding",
+}
+
+const MAINNET_CHAIN_ID = 1
 
 const AVAILABILITY_REASONS: Record<Exclude<CatalogAvailability, "available">, string> = {
   catalog_inactive: "Inactive in catalog",
@@ -19,7 +28,7 @@ const AVAILABILITY_REASONS: Record<Exclude<CatalogAvailability, "available">, st
 }
 
 export function canAnalyze(entry: HydratedCatalogEntry): boolean {
-  return entry.supported && entry.analysis_available
+  return entry.chain_id === MAINNET_CHAIN_ID && entry.supported && entry.analysis_available
 }
 
 function unavailableLabel(entry: HydratedCatalogEntry): string {
@@ -90,8 +99,13 @@ export function CatalogSelector({
                 {PROVENANCE_BADGES[entry.provenance]}
               </span>
               <span className="catalog__provenance">{entry.provenance_label}</span>
-              {entry.provenance === "representative_proxy" && (
-                <span className="catalog__note">Representative proxy — not a confirmed Belem holding</span>
+              {NOT_BELEM_NOTES[entry.provenance] && (
+                <span className="catalog__note">{NOT_BELEM_NOTES[entry.provenance]}</span>
+              )}
+              {entry.chain_id !== MAINNET_CHAIN_ID && (
+                <span className="catalog__note">
+                  {entry.chain_id === 8453 ? "Base" : `Chain ${entry.chain_id}`} · listed for reference, never analyzed
+                </span>
               )}
               <span className="catalog__metrics">{summary ?? "Live metrics unavailable"}</span>
               {entry.freshness && entry.fetched_at && entry.source && (

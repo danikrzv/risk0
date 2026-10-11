@@ -103,6 +103,11 @@ class RadarService:
         # Latest observation evaluated per (entity, source): a re-read of the same
         # observation must not advance the health hysteresis counters again.
         self._observed_at: dict[tuple[str, str], datetime] = {}
+        # Entities whose evaluation (with its derivation) was persisted since this
+        # process started. Rows written before derivations existed have none, and
+        # change detection ignores derivations, so each entity is written once
+        # after start; the change-only rule applies from then on.
+        self._derivation_recorded: set[str] = set()
         # Propagation inputs are incidents (changed only by health updates) and
         # topology/similarities (changed only by discovery). Exposures created
         # through the API are propagated at creation. Until either input changes,
@@ -315,10 +320,15 @@ class RadarService:
             latest[state.entity_id] = state
             evaluated.append(state)
             self._health_history[state.entity_id] = _next_history(history, state)
-        changes = self._states.record_health(
+        to_record = [
             state
             for state in evaluated
             if _health_changed(persisted.get(state.entity_id), state)
+            or (state.derivation is not None and state.entity_id not in self._derivation_recorded)
+        ]
+        changes = self._states.record_health(to_record)
+        self._derivation_recorded.update(
+            state.entity_id for state in to_record if state.derivation is not None
         )
         return tuple(evaluated), changes, errors
 

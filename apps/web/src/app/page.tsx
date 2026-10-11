@@ -9,6 +9,7 @@ import { CatalogSelector, canAnalyze } from "../components/catalog-selector"
 import { DataQualityPanel } from "../components/data-quality"
 import { ExposureImpactPanel } from "../components/exposure-impact"
 import { ExposureRail } from "../components/exposure-rail"
+import { HealthJustification } from "../components/health-justification"
 import { PanelResizer } from "../components/panel-resizer"
 import { IncidentRail } from "../components/incident-rail"
 import { NotificationCenter } from "../components/notification-center"
@@ -403,6 +404,7 @@ export default function Home() {
     () => new Map((radarGraph?.entities ?? []).map((entity) => [entity.entity_id, entity.label])),
     [radarGraph],
   )
+  const radarLabelFor = useCallback((entityId: string) => radarLabels.get(entityId) ?? entityId, [radarLabels])
 
   const showNeighbours = useCallback(async (entityId: string) => {
     setLoadingNeighboursId(entityId)
@@ -755,6 +757,7 @@ export default function Home() {
                     <code>{catalogEntry.address_or_market_id}</code>
                     <small>Chain {catalogEntry.chain_id}</small>
                   </button>
+                  <HealthJustification entity={radarEntity} status={status} labelFor={radarLabelFor} />
                 </li>
               )
             })}

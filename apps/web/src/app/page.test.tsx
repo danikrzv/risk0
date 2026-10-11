@@ -252,6 +252,23 @@ describe("Home", () => {
     window.localStorage.removeItem("risk0.sidePanelWidth")
   })
 
+  it("justifies each Position Analysis entry's health state", async () => {
+    stubApi()
+    render(<Home />)
+    await screen.findByRole("heading", { name: "Morpho radar graph" })
+    openPositionAnalysis()
+
+    const list = await screen.findByRole("list", { name: "Position analysis health" })
+    const rows = within(list).getAllByRole("listitem")
+    expect(rows.length).toBeGreaterThan(0)
+    // The fixture radar has none of the catalog's addresses: every entry is UNKNOWN, and says why.
+    const belem = rows.find((row) => row.textContent?.includes("Belem RWA EURCV"))!
+    const details = within(belem).getByText("Why UNKNOWN?").parentElement as HTMLDetailsElement
+    details.open = true
+    fireEvent(details, new Event("toggle"))
+    expect(within(belem).getByText(/not in the radar topology/)).toBeInTheDocument()
+  })
+
   it("shows that no active incident reaches a recorded exposure", async () => {
     stubApi()
     render(<Home />)

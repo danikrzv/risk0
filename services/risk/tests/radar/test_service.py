@@ -616,6 +616,38 @@ def test_changing_metric_values_alone_do_not_rewrite_health(database):
     assert latest.derivation.final_status is HealthStatus.WARNING
 
 
+def test_a_row_recorded_without_derivation_gets_one_once_after_start(database):
+    """Rows written before derivations existed are rewritten once, not every cycle."""
+    from app.radar.contracts import HealthState
+
+    states = StateRepository(database)
+    healthy = {**CRITICAL_MARKET_METRICS, "bad_debt": Decimal("0")}
+    service = build_service(
+        database,
+        PerCycleCollector(lambda now: (snapshot(MARKET, now, metrics=healthy),)),
+        discovery=FixedDiscovery(markets_batch(entity(RadarEntityType.MARKET, "market-a"))),
+        chain_collector=AnyTimeChainCollector(),
+        states=states,
+        events=RecordingEvents(),
+    )
+    service.run_discovery(NOW)
+    states.record_health([
+        HealthState(
+            entity_id=MARKET, status=HealthStatus.HEALTHY, score=Decimal("1"),
+            reasons=("market metrics normal",), missing_fields=(),
+            evaluated_at=NOW - timedelta(minutes=1), rule_version="radar-health-v1",
+        )
+    ])
+
+    service.run_monitoring(NOW)
+    service.run_monitoring(NOW + FIVE_MINUTES)
+
+    latest = states.latest_health(MARKET)
+    assert latest.derivation is not None
+    assert latest.evaluated_at == NOW
+    assert len(states.history(MARKET).health_states) == 2
+
+
 def test_one_cycle_emits_one_graph_update_and_a_bounded_number_of_incident_events(database):
     from app.radar.service import MAX_INCIDENT_EVENTS, MAX_NOTIFICATION_EVENTS
 

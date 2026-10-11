@@ -218,7 +218,7 @@ p {
   list-style: none;
 }
 
-.category-list button {
+.category-list > li > button {
   width: 100%;
   display: grid;
   grid-template-columns: minmax(8rem, 0.55fr) minmax(12rem, 1fr) minmax(14rem, 1.5fr) minmax(12rem, 1fr);
@@ -234,13 +234,13 @@ p {
   cursor: pointer;
 }
 
-.category-list button:hover,
-.category-list button[aria-pressed="true"] {
+.category-list > li > button:hover,
+.category-list > li > button[aria-pressed="true"] {
   border-color: currentColor;
   background: var(--color-surface-raised);
 }
 
-.category-list button:disabled {
+.category-list > li > button:disabled {
   cursor: not-allowed;
   opacity: 0.6;
 }
@@ -253,6 +253,30 @@ p {
 .category-list small {
   overflow-wrap: anywhere;
   color: var(--color-muted);
+}
+
+.health-justification {
+  margin: 0.25rem 0 0 0.85rem;
+  color: var(--color-muted);
+}
+
+.health-justification > summary {
+  width: fit-content;
+  padding: 0.25rem 0;
+  color: var(--color-accent);
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.health-justification[open] {
+  padding: 0.5rem 0.85rem 0.75rem;
+  border: 1px solid var(--color-border);
+  border-top: 0;
+  background: var(--color-surface);
+}
+
+.health-justification__none {
+  margin: 0.5rem 0 0;
 }
 
 .category-list__status {
@@ -1636,7 +1660,7 @@ fieldset.panel legend,
     grid-template-columns: 1fr;
   }
 
-  .category-list button {
+  .category-list > li > button {
     grid-template-columns: 1fr;
     gap: 0.35rem;
   }

@@ -115,6 +115,106 @@ class StateSnapshot(RadarContractModel):
     missing_fields: tuple[NonEmptyString, ...] = ()
 
 
+class HealthDerivationStage(StrEnum):
+    DEPENDENCIES = "dependencies"
+    FRESHNESS = "freshness"
+    METRICS = "metrics"
+    HYSTERESIS = "hysteresis"
+
+
+class HealthCheckOutcome(StrEnum):
+    BREACH = "breach"
+    WITHIN = "within"
+    MISSING = "missing"
+    INFO = "info"
+
+
+class HealthCheck(RadarContractModel):
+    """One rule as evaluated: ``metric operator threshold`` is the breach condition."""
+
+    stage: HealthDerivationStage
+    rule: NonEmptyString
+    metric: NonEmptyString | None = None
+    observed: DecimalValue | None = None
+    # Non-numeric observation (freshness, explicit status, missing field names).
+    note: NonEmptyString | None = None
+    operator: Literal[">", ">=", "<", "<="] | None = None
+    threshold: DecimalValue | None = None
+    outcome: HealthCheckOutcome
+    # The status this rule produces when it breaches; null for informational rows.
+    leads_to: HealthStatus | None = None
+    # True when this rule decided the raw status, or when hysteresis held it.
+    decisive: bool = False
+
+
+class HealthDependencyContribution(RadarContractModel):
+    entity_id: NonEmptyString
+    status: HealthStatus
+    # "weighted" dependencies count by allocation share; "full" ones by status alone.
+    counted: Literal["weighted", "full"]
+    weight: DecimalValue | None = None
+
+    @model_validator(mode="after")
+    def validate_weight(self) -> "HealthDependencyContribution":
+        if (self.counted == "weighted") != (self.weight is not None):
+            raise ValueError("only weighted dependencies carry a weight")
+        return self
+
+
+class HealthStatusTotals(RadarContractModel):
+    HEALTHY: DecimalValue
+    WARNING: DecimalValue
+    CRITICAL: DecimalValue
+    UNKNOWN: DecimalValue
+
+
+class HealthDependencyAggregation(RadarContractModel):
+    dependencies: tuple[HealthDependencyContribution, ...]
+    # Allocation share held in dependencies of each status (weighted ones only).
+    weighted_totals: HealthStatusTotals
+    material_allocation: RatioValue
+    status: HealthStatus
+    reason: NonEmptyString
+
+
+class HealthHysteresis(RadarContractModel):
+    previous_status: HealthStatus | None
+    raw_status: HealthStatus
+    rule: Literal[
+        "immediate", "already_abnormal", "warning_confirmation", "recovery_confirmation", "none"
+    ]
+    consecutive_abnormal: int = Field(ge=0)
+    consecutive_normal: int = Field(ge=0)
+    # Consecutive cycles counted including this evaluation, for confirmation rules.
+    counter: int | None = Field(default=None, ge=1)
+    cycles_required: int | None = Field(default=None, ge=1)
+    held: bool
+    final_status: HealthStatus
+
+
+class HealthScoreMapping(RadarContractModel):
+    HEALTHY: RatioValue = Decimal("1")
+    WARNING: RatioValue = Decimal("0.5")
+    CRITICAL: RatioValue = Decimal("0")
+    UNKNOWN: None = None
+
+
+class HealthDerivation(RadarContractModel):
+    """How a health state was computed, in evaluation order."""
+
+    entity_type: RadarEntityType
+    freshness: FreshnessStatus
+    checks: tuple[HealthCheck, ...]
+    dependencies: HealthDependencyAggregation | None
+    raw_status: HealthStatus
+    raw_reasons: tuple[NonEmptyString, ...]
+    hysteresis: HealthHysteresis
+    final_status: HealthStatus
+    score: RatioValue | None
+    score_mapping: HealthScoreMapping = HealthScoreMapping()
+    rule_version: NonEmptyString
+
+
 class HealthState(RadarContractModel):
     entity_id: NonEmptyString
     status: HealthStatus
@@ -123,6 +223,8 @@ class HealthState(RadarContractModel):
     missing_fields: tuple[NonEmptyString, ...]
     evaluated_at: UtcDateTime
     rule_version: NonEmptyString
+    # Explanation of this evaluation; null for states recorded without one.
+    derivation: HealthDerivation | None = None
 
 
 class SimilarityPolicy(RadarContractModel):
@@ -290,6 +392,14 @@ class EntityHistoryResponse(RadarContractModel):
     snapshots: tuple[StateSnapshot, ...]
     health_states: tuple[HealthState, ...]
     next_cursor: str | None
+    generated_at: UtcDateTime
+
+
+class EntityHealthResponse(RadarContractModel):
+    schema_version: Literal["1.0.0"] = "1.0.0"
+    entity_id: NonEmptyString
+    # Latest recorded evaluation, or null before the entity is first evaluated.
+    health: HealthState | None
     generated_at: UtcDateTime
 
 

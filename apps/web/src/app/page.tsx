@@ -1,7 +1,8 @@
 "use client"
 
 import type { AnalysisResponse, ExposureCreateRequest, HealthStatus, HydratedCatalogEntry, IncidentGraphResponse, IncidentImpact, PositionInput, RadarEntity, RadarGraphResponse } from "@risk0/contracts"
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { createPortal } from "react-dom"
 
 import { CatalogSelector, canAnalyze } from "../components/catalog-selector"
 import { DataQualityPanel } from "../components/data-quality"
@@ -56,6 +57,9 @@ type AnalysisState =
 // notification events); refetches inside this window are coalesced.
 const RADAR_REFRESH_DELAY_MS = 250
 
+// Below this width the floating panels become near-full-width overlays.
+const NARROW_VIEWPORT_QUERY = "(max-width: 48rem)"
+
 const HEALTH_MARKERS: Record<HealthStatus, string> = {
   HEALTHY: "✓",
   WARNING: "!",
@@ -106,7 +110,14 @@ export default function Home() {
   const [radarGraph, setRadarGraph] = useState<RadarGraphResponse | null>(null)
   const [radarError, setRadarError] = useState<LoadError | null>(null)
   const [selectedIncident, setSelectedIncident] = useState<IncidentGraphResponse | null>(null)
-  const [incidentsOpen, setIncidentsOpen] = useState(true)
+  // The exposure and incident panels share the canvas's right edge, which is too
+  // short for both (a long incident list would squeeze the form away), so at
+  // most one is open. Both stay mounted while hidden so form values and list
+  // state survive.
+  const [exposureOpen, setExposureOpen] = useState(true)
+  const [incidentsOpen, setIncidentsOpen] = useState(false)
+  // Canvas overlay the panels are portalled into (a state setter, so stable for the memoized graph).
+  const [panelSlot, setPanelSlot] = useState<HTMLDivElement | null>(null)
   const [selectedRadarEntityId, setSelectedRadarEntityId] = useState<string | null>(null)
   // Neighborhoods fetched with `focus`, keyed by the expanded entity.
   const [focusGraphs, setFocusGraphs] = useState<ReadonlyMap<string, RadarGraphResponse>>(() => new Map())
@@ -119,6 +130,25 @@ export default function Home() {
   const [exposureBusy, setExposureBusy] = useState(false)
   // Identifies the latest analysis request; a response for an older one is dropped.
   const requestToken = useRef(0)
+
+  // Narrow screens start graph-first: a near-full-width panel would hide the graph.
+  useEffect(() => {
+    if (typeof window !== "undefined" && window.matchMedia?.(NARROW_VIEWPORT_QUERY).matches) setExposureOpen(false)
+  }, [])
+
+  function toggleExposure() {
+    if (!exposureOpen) setIncidentsOpen(false)
+    setExposureOpen(!exposureOpen)
+  }
+
+  function toggleIncidents() {
+    if (!incidentsOpen) setExposureOpen(false)
+    setIncidentsOpen(!incidentsOpen)
+  }
+
+  function placeFloatingPanels(panels: ReactNode) {
+    return panelSlot ? createPortal(panels, panelSlot) : panels
+  }
 
   // Retried with backoff while the risk service is busy or starting.
   useEffect(() => {
@@ -355,7 +385,18 @@ export default function Home() {
   const focusRadarEntity = useCallback((entityId: string) => {
     setSelectedRadarEntityId(entityId)
     setActiveCategory("graph")
+    // Move keyboard focus to the destination once the Graph view is shown.
+    requestAnimationFrame(() => document.getElementById("radar-heading")?.focus())
   }, [])
+
+  // The analyzed entry's radar entity, when the radar has it.
+  const analysisRadarEntityId = entry
+    ? radarEntitiesByAddress.get(`${entry.chain_id}:${entry.address_or_market_id.toLowerCase()}`)?.entity_id ?? null
+    : null
+  const viewAnalysisDependencies = useMemo(
+    () => (analysisRadarEntityId ? () => focusRadarEntity(analysisRadarEntityId) : undefined),
+    [analysisRadarEntityId, focusRadarEntity],
+  )
 
   function validateScenarios(): boolean {
     const { errors } = toScenarioSelections(scenarios)
@@ -411,11 +452,6 @@ export default function Home() {
         {focusError ? <p role="alert" className="alert">{focusError}</p> : null}
         {displayedGraph && radarGraph ? (
           <div className="radar-command-surface">
-            <div className="exposure-dock">
-              <ExposureRail entities={radarGraph.entities} onSubmit={addExposure} busy={exposureBusy} />
-              {exposureStatus?.kind === "ok" ? <p role="status" className="exposure-status">{exposureStatus.message}</p> : null}
-              {exposureStatus?.kind === "error" ? <p role="alert" className="alert">{exposureStatus.message}</p> : null}
-            </div>
             <div className="radar-stage">
               <RadarGraph
                 graph={displayedGraph}
@@ -429,28 +465,44 @@ export default function Home() {
                 expandedEntityIds={expandedEntityIds}
                 loadingNeighboursId={loadingNeighboursId}
                 onShowNeighbours={showNeighbours}
+                overlayRef={setPanelSlot}
               />
-              <aside className={`incident-drawer${incidentsOpen ? " incident-drawer--open" : ""}`} aria-label="Incident drawer">
-                <button
-                  type="button"
-                  className="incident-drawer__toggle"
-                  aria-expanded={incidentsOpen}
-                  aria-controls="incident-drawer-panel"
-                  onClick={() => setIncidentsOpen((open) => !open)}
-                >
-                  {incidentsOpen ? "Hide incidents" : `Incidents (${radarGraph.active_incidents.length})`}
-                </button>
-                {incidentsOpen ? (
-                  <div id="incident-drawer-panel" className="incident-drawer__panel">
-                    <IncidentRail
-                      incidents={radarGraph.active_incidents}
-                      entities={displayedGraph.entities}
-                      selectedIncidentId={selectedIncident?.incident.incident_id ?? null}
-                      onSelectIncident={focusIncident}
-                    />
-                  </div>
-                ) : null}
-              </aside>
+              {/* Over the canvas when it is drawn; in page flow otherwise (empty radar). */}
+              {placeFloatingPanels(<div className="floating-panels">
+                <div className="floating-panels__launchers">
+                  <button
+                    type="button"
+                    className="floating-panels__launcher"
+                    aria-expanded={exposureOpen}
+                    aria-controls="exposure-panel"
+                    onClick={toggleExposure}
+                  >
+                    {exposureOpen ? "Hide exposure" : "Exposure"}
+                  </button>
+                  <button
+                    type="button"
+                    className="floating-panels__launcher"
+                    aria-expanded={incidentsOpen}
+                    aria-controls="incident-drawer-panel"
+                    onClick={toggleIncidents}
+                  >
+                    {incidentsOpen ? "Hide incidents" : `Incidents (${radarGraph.active_incidents.length})`}
+                  </button>
+                </div>
+                <div id="exposure-panel" className="floating-panel" hidden={!exposureOpen}>
+                  <ExposureRail entities={radarGraph.entities} onSubmit={addExposure} busy={exposureBusy} />
+                  {exposureStatus?.kind === "ok" ? <p role="status" className="exposure-status">{exposureStatus.message}</p> : null}
+                  {exposureStatus?.kind === "error" ? <p role="alert" className="alert">{exposureStatus.message}</p> : null}
+                </div>
+                <aside id="incident-drawer-panel" className="floating-panel" aria-label="Incident drawer" hidden={!incidentsOpen}>
+                  <IncidentRail
+                    incidents={radarGraph.active_incidents}
+                    entities={displayedGraph.entities}
+                    selectedIncidentId={selectedIncident?.incident.incident_id ?? null}
+                    onSelectIncident={focusIncident}
+                  />
+                </aside>
+              </div>)}
             </div>
           </div>
         ) : radarError && !radarError.retrying ? null : <RadarSkeleton />}
@@ -624,6 +676,7 @@ export default function Home() {
             analysis={analysis.result}
             numeraire={analysis.numeraire}
             onSelectDependency={setSelectedNodeId}
+            onViewDependencies={viewAnalysisDependencies}
           />
           <RiskGraph
             graph={analysis.result.graph}

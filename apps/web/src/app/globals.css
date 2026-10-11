@@ -394,23 +394,7 @@ p {
 }
 
 .radar-command-surface {
-  display: grid;
-  grid-template-columns: minmax(18rem, 21rem) minmax(0, 1fr);
-  gap: 0.75rem;
   min-height: calc(100dvh - 8.5rem);
-  align-items: stretch;
-}
-
-.exposure-dock {
-  position: sticky;
-  top: 0.75rem;
-  align-self: start;
-  max-height: calc(100dvh - 4rem);
-  overflow: auto;
-}
-
-.exposure-dock > .panel {
-  margin: 0;
 }
 
 .radar-stage {
@@ -432,19 +416,52 @@ p {
   min-height: 34rem;
 }
 
-.incident-drawer {
-  position: absolute;
-  top: 5.25rem;
-  right: 0;
-  z-index: 30;
-  display: flex;
-  align-items: flex-start;
-  max-width: calc(100% - 1rem);
-  filter: drop-shadow(-0.8rem 0.8rem 1.5rem #000a);
+/* Exposure and incidents float over the canvas's right edge, one at a time,
+   clear of the graph controls (left side) and without shrinking the canvas.
+   Only the panels themselves take pointer events. */
+/* React Flow's minimap and controls default to a light theme. */
+.radar-graph__canvas .react-flow {
+  --xy-minimap-background-color-default: #08101a;
+  --xy-minimap-mask-background-color-default: rgb(5 8 13 / 0.65);
+  --xy-minimap-mask-stroke-color-default: var(--color-border-strong);
+  --xy-minimap-node-background-color-default: var(--color-border-strong);
+  --xy-controls-button-background-color-default: #08101a;
+  --xy-controls-button-background-color-hover-default: var(--color-surface-raised);
+  --xy-controls-button-color-default: var(--color-text);
+  --xy-controls-button-color-hover-default: var(--color-text);
+  --xy-controls-button-border-color-default: var(--color-border);
 }
 
-.incident-drawer__toggle {
-  padding: 0.65rem 0.75rem;
+.radar-graph__overlay {
+  position: absolute;
+  inset: 0.75rem 0.75rem 0.75rem auto;
+  z-index: 30;
+  display: flex;
+  width: min(22rem, calc(100% - 1.5rem));
+  pointer-events: none;
+}
+
+.floating-panels {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  width: 100%;
+  max-height: 100%;
+  pointer-events: none;
+}
+
+.floating-panels > * {
+  pointer-events: auto;
+}
+
+.floating-panels__launchers {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.4rem;
+}
+
+.floating-panels__launcher {
+  padding: 0.5rem 0.75rem;
   border: 1px solid var(--color-border-strong);
   background: #08111bea;
   color: var(--color-accent);
@@ -453,19 +470,23 @@ p {
   letter-spacing: 0.06em;
   text-transform: uppercase;
   cursor: pointer;
-  writing-mode: vertical-rl;
 }
 
-.incident-drawer__panel {
-  width: min(24rem, calc(100vw - 24rem));
-  max-height: calc(100dvh - 15rem);
+.floating-panels__launcher[aria-expanded="true"] {
+  background: var(--color-surface-raised);
+}
+
+.floating-panel {
+  flex: 0 1 auto;
+  min-height: 0;
   overflow: auto;
   border: 1px solid var(--color-border-strong);
   background: #070c13f2;
   backdrop-filter: blur(12px);
+  filter: drop-shadow(-0.8rem 0.8rem 1.5rem #000a);
 }
 
-.incident-drawer__panel > .incident-rail {
+.floating-panel > .panel {
   margin: 0;
   border: 0;
   box-shadow: none;
@@ -550,6 +571,7 @@ p {
 [data-health-status="UNKNOWN"] { color: var(--color-unavailable); }
 
 .radar-graph__canvas {
+  position: relative;
   height: clamp(34rem, 62vh, 48rem);
   border: 1px solid var(--color-border);
   background-image: linear-gradient(#101c2928 1px, transparent 1px), linear-gradient(90deg, #101c2928 1px, transparent 1px);
@@ -1418,29 +1440,22 @@ fieldset.panel legend,
   }
 
   .radar-command-surface {
-    grid-template-columns: 1fr;
     min-height: auto;
-  }
-
-  .exposure-dock {
-    position: static;
-    max-height: none;
   }
 
   .radar-stage {
     min-height: calc(100dvh - 7rem);
   }
 
-  .incident-drawer {
-    position: fixed;
-    top: 7rem;
-    right: 0.5rem;
-    max-width: calc(100vw - 1rem);
+  /* Near-full-width over the canvas (the page keeps one panel open at a time). */
+  .radar-graph__overlay {
+    inset: 0.5rem;
+    width: auto;
   }
 
-  .incident-drawer__panel {
-    width: min(24rem, calc(100vw - 3.5rem));
-    max-height: calc(100dvh - 9rem);
+  /* Too large for a phone-sized canvas; zoom and pan remain. */
+  .radar-graph__canvas .react-flow__minimap {
+    display: none;
   }
 
   .radar-filters {
@@ -1454,11 +1469,7 @@ fieldset.panel legend,
 }
 
 @media (min-width: 48.01rem) and (max-width: 75rem) {
-  .radar-command-surface {
-    grid-template-columns: minmax(17rem, 19rem) minmax(0, 1fr);
-  }
-
-  .incident-drawer__panel {
-    width: min(21rem, calc(100vw - 22rem));
+  .radar-graph__overlay {
+    width: min(19rem, calc(100% - 1.5rem));
   }
 }

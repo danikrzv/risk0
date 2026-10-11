@@ -150,6 +150,7 @@ export const RadarGraph = memo(function RadarGraph({
   expandedEntityIds = NO_IDS,
   loadingNeighboursId = null,
   onShowNeighbours,
+  overlayRef,
 }: {
   graph: RadarGraphResponse
   healthStates?: HealthState[]
@@ -167,6 +168,8 @@ export const RadarGraph = memo(function RadarGraph({
   loadingNeighboursId?: string | null
   /** Fetch and show an entity's neighbors. */
   onShowNeighbours?: (entityId: string) => void
+  /** Receives an element over the canvas's right edge that callers can portal floating panels into. */
+  overlayRef?: (element: HTMLDivElement | null) => void
 }) {
   const [chainFilter, setChainFilter] = useState("all")
   const [typeFilter, setTypeFilter] = useState("all")
@@ -307,7 +310,7 @@ export const RadarGraph = memo(function RadarGraph({
 
   const header = (
     <div className="radar-graph__header">
-      <div><span className="eyebrow">DEPENDENCY TOPOLOGY</span><h2 id="radar-heading">Morpho radar graph</h2></div>
+      <div><span className="eyebrow">DEPENDENCY TOPOLOGY</span><h2 id="radar-heading" tabIndex={-1}>Morpho radar graph</h2></div>
       <div className="radar-graph__header-actions">
         <ul className="radar-legend" aria-label="Health status legend">
           {HEALTH_STATUSES.map((status) => <li key={status} data-health-status={status}>{status}</li>)}
@@ -383,9 +386,11 @@ export const RadarGraph = memo(function RadarGraph({
           fitViewOptions={fitViewOptions}
         >
           <Background />
-          <MiniMap pannable zoomable />
-          <Controls showInteractive={false} />
+          {/* Left side: the right edge belongs to the floating panels. */}
+          <MiniMap position="bottom-left" pannable zoomable />
+          <Controls position="top-left" showInteractive={false} />
         </ReactFlow>
+        {overlayRef ? <div className="radar-graph__overlay" ref={overlayRef} /> : null}
       </div>
       {selectedEntity && onSelectEntity ? (
         <RadarEntityDetail

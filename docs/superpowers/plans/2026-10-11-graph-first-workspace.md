@@ -143,31 +143,31 @@ git commit -m "feat(web): focus and declutter radar topology"
 - `Home` owns `exposureOpen` and `incidentsOpen`; panels remain mounted to preserve form/list state.
 - `Home.focusRadarEntity(entityId)` switches to Graph and selects the matching radar node.
 
-- [ ] **Step 1: Write failing panel and handoff tests**
+- [x] **Step 1: Write failing panel and handoff tests**
 
 Test: Exposure floats right and is open by default; hiding/reopening preserves edited values; Incidents is independently foldable; narrow viewport makes large overlays mutually exclusive; Position Analysis result exposes View dependencies and returns to a focused Graph.
 
-- [ ] **Step 2: Add late-response category tests**
+- [x] **Step 2: Add late-response category tests**
 
 Extend existing race tests so category changes do not allow an older incident response to replace the latest selection and do not discard a valid completed analysis.
 
-- [ ] **Step 3: Verify RED**
+- [x] **Step 3: Verify RED**
 
 Run: `pnpm --filter @risk0/web test -- src/components/recommendation-card.test.tsx src/app/page.test.tsx`
 
 Expected: FAIL because panel persistence/exclusivity and graph handoff are incomplete.
 
-- [ ] **Step 4: Implement minimal floating controls and handoff**
+- [x] **Step 4: Implement minimal floating controls and handoff**
 
 Keep `ExposureRail` and `IncidentRail` mounted in CSS overlays, add compact launchers, close the competing overlay below 48rem, and wire View dependencies through `focusRadarEntity`. Preserve all existing risk calculations and form validation.
 
-- [ ] **Step 5: Verify GREEN**
+- [x] **Step 5: Verify GREEN**
 
 Run: `pnpm --filter @risk0/web test -- src/components/recommendation-card.test.tsx src/components/exposure-rail.test.tsx src/components/incident-rail.test.tsx src/app/page.test.tsx && pnpm --filter @risk0/web exec tsc --noEmit`
 
 Expected: selected tests pass and type-check exits 0.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add apps/web/src/components/recommendation-card.tsx apps/web/src/components/recommendation-card.test.tsx apps/web/src/app/page.tsx apps/web/src/app/page.test.tsx apps/web/src/app/globals.css

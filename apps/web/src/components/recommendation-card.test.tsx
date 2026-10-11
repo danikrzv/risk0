@@ -25,6 +25,25 @@ function card() {
 }
 
 describe("RecommendationCard", () => {
+  it("offers View dependencies only when a graph handoff is available", () => {
+    const onViewDependencies = vi.fn()
+    const { rerender } = render(
+      <RecommendationCard analysis={analysisResponse} numeraire="WETH" onSelectDependency={vi.fn()} />,
+    )
+    expect(within(card()).queryByRole("button", { name: "View dependencies" })).not.toBeInTheDocument()
+
+    rerender(
+      <RecommendationCard
+        analysis={analysisResponse}
+        numeraire="WETH"
+        onSelectDependency={vi.fn()}
+        onViewDependencies={onViewDependencies}
+      />,
+    )
+    fireEvent.click(within(card()).getByRole("button", { name: "View dependencies" }))
+    expect(onViewDependencies).toHaveBeenCalledTimes(1)
+  })
+
   it("renders EXIT with the numeric comparison, triggers, and dominant dependency", () => {
     const onSelectDependency = vi.fn()
     render(

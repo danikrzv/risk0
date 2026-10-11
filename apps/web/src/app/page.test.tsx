@@ -60,6 +60,11 @@ function stubApi(analysis: Response | (() => Promise<Response>) = Response.json(
   return fetchMock
 }
 
+/** The incident drawer starts closed: it shares the canvas edge with the exposure panel. */
+async function openIncidentDrawer() {
+  fireEvent.click(await screen.findByRole("button", { name: /^Incidents \(\d+\)$/ }))
+}
+
 function openPositionAnalysis() {
   fireEvent.click(screen.getByRole("button", { name: "Position Analysis" }))
 }
@@ -180,21 +185,136 @@ describe("Home", () => {
     expect(screen.getByRole("status")).toHaveTextContent("Exposure recorded")
   })
 
-  it("uses a full radar workspace with a foldable incident drawer", async () => {
+  it("uses a full radar workspace whose exposure and incident panels never cover each other", async () => {
     stubApi()
     render(<Home />)
 
     expect(await screen.findByRole("heading", { name: "Morpho radar graph" })).toBeInTheDocument()
     expect(screen.queryByText("Monitor dependencies, propagation, and portfolio impact")).not.toBeInTheDocument()
     expect(screen.getByRole("region", { name: "Exposure" })).toBeInTheDocument()
+    expect(screen.queryByRole("heading", { name: "Incidents" })).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Incidents (0)" })).toHaveAttribute("aria-controls", "incident-drawer-panel")
+
+    // Opening one panel closes the other, so a long incident list cannot squeeze the form.
+    fireEvent.click(screen.getByRole("button", { name: "Incidents (0)" }))
     expect(screen.getByRole("heading", { name: "Incidents" })).toBeInTheDocument()
+    expect(screen.queryByRole("region", { name: "Exposure" })).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole("button", { name: "Hide incidents" }))
     expect(screen.queryByRole("heading", { name: "Incidents" })).not.toBeInTheDocument()
-    expect(screen.getByRole("button", { name: "Incidents (0)" })).toHaveAttribute("aria-expanded", "false")
+    expect(screen.queryByRole("region", { name: "Exposure" })).not.toBeInTheDocument()
 
+    fireEvent.click(screen.getByRole("button", { name: "Exposure" }))
+    expect(screen.getByRole("region", { name: "Exposure" })).toBeInTheDocument()
+  })
+
+  it("floats an open-by-default exposure panel that keeps edited values while hidden", async () => {
+    stubApi()
+    render(<Home />)
+
+    const exposure = await screen.findByRole("region", { name: "Exposure" })
+    fireEvent.change(within(exposure).getByLabelText("Exposure amount"), { target: { value: "4200" } })
+    fireEvent.click(screen.getByRole("button", { name: "Hide exposure" }))
+
+    expect(screen.queryByRole("region", { name: "Exposure" })).not.toBeInTheDocument()
+    const launcher = screen.getByRole("button", { name: "Exposure" })
+    expect(launcher).toHaveAttribute("aria-expanded", "false")
+    expect(launcher).toHaveAttribute("aria-controls", "exposure-panel")
+    expect(screen.queryByRole("heading", { name: "Incidents" })).not.toBeInTheDocument()
+
+    fireEvent.click(launcher)
+    expect(within(screen.getByRole("region", { name: "Exposure" })).getByLabelText("Exposure amount")).toHaveValue("4200")
+  })
+
+  it("keeps exposure values and the last submission across category changes", async () => {
+    stubApi()
+    render(<Home />)
+
+    const exposure = await screen.findByRole("region", { name: "Exposure" })
+    fireEvent.change(within(exposure).getByLabelText("Exposure amount"), { target: { value: "4200" } })
+    fireEvent.click(within(exposure).getByRole("button", { name: "Add exposure" }))
+    expect(await screen.findByRole("status")).toHaveTextContent("Exposure recorded")
+
+    fireEvent.click(screen.getByRole("button", { name: "Markets" }))
+    fireEvent.click(screen.getByRole("button", { name: "Graph" }))
+
+    expect(within(screen.getByRole("region", { name: "Exposure" })).getByLabelText("Exposure amount")).toHaveValue("4200")
+    expect(screen.getByRole("status")).toHaveTextContent("Exposure recorded")
+  })
+
+  it("starts graph-first with both panels closed on narrow screens", async () => {
+    stubApi()
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: query.includes("max-width: 48rem"),
+      media: query,
+      onchange: null,
+      addEventListener() {},
+      removeEventListener() {},
+      addListener() {},
+      removeListener() {},
+      dispatchEvent: () => false,
+    }))
+    render(<Home />)
+
+    // Graph first: both near-full-width panels start closed.
+    expect(await screen.findByRole("button", { name: "Exposure" })).toHaveAttribute("aria-expanded", "false")
+    expect(screen.queryByRole("region", { name: "Exposure" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("heading", { name: "Incidents" })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole("button", { name: "Exposure" }))
     fireEvent.click(screen.getByRole("button", { name: "Incidents (0)" }))
     expect(screen.getByRole("heading", { name: "Incidents" })).toBeInTheDocument()
+    expect(screen.queryByRole("region", { name: "Exposure" })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole("button", { name: "Exposure" }))
+    expect(screen.getByRole("region", { name: "Exposure" })).toBeInTheDocument()
+    expect(screen.queryByRole("heading", { name: "Incidents" })).not.toBeInTheDocument()
+  })
+
+  it("hands a completed analysis off to the focused graph and keeps it on return", async () => {
+    const analyzedMarket = {
+      entity_id: "market:1:wsteth-weth", entity_type: "market", chain_id: 1,
+      address_or_key: "0xB8FC70E82BC5BB53E773626FCC6A23F7EEFA036918D7EF216ECFB1950A94A85E",
+      label: "wstETH / WETH radar market", source: "fixture:radar", catalog: true, visible: true,
+      metadata: { health_status: "WARNING" },
+    }
+    const base = stubApi()
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => (
+      url === "/api/graph"
+        ? Response.json({ ...radarGraph, entities: [...radarGraph.entities, analyzedMarket] })
+        : base(url)
+    )))
+    render(<Home />)
+    await screen.findByRole("heading", { name: "Morpho radar graph" })
+    openPositionAnalysis()
+
+    fireEvent.click(await screen.findByRole("radio", { name: /wstETH collateral \/ WETH debt/ }))
+    fireEvent.click(screen.getByRole("button", { name: "Run analysis" }))
+    const recommendation = await screen.findByRole("region", { name: "Recommendation" })
+    fireEvent.click(within(recommendation).getByRole("button", { name: "View dependencies" }))
+
+    expect(screen.getByRole("button", { name: "Graph" })).toHaveAttribute("aria-current", "page")
+    const detail = await screen.findByRole("region", { name: "Selected radar entity" })
+    expect(within(detail).getByRole("heading", { name: "wstETH / WETH radar market" })).toBeInTheDocument()
+
+    openPositionAnalysis()
+    expect(screen.getByRole("region", { name: "Recommendation" })).toBeInTheDocument()
+  })
+
+  it("keeps an analysis that completes while another category is open", async () => {
+    let release: ((response: Response) => void) | undefined
+    stubApi(() => new Promise<Response>((resolve) => { release = resolve }))
+    render(<Home />)
+    openPositionAnalysis()
+
+    fireEvent.click(await screen.findByRole("radio", { name: /wstETH collateral \/ WETH debt/ }))
+    fireEvent.click(screen.getByRole("button", { name: "Run analysis" }))
+    await waitFor(() => expect(release).toBeDefined())
+    fireEvent.click(screen.getByRole("button", { name: "Graph" }))
+    await act(async () => release?.(Response.json(analysisResponse)))
+
+    openPositionAnalysis()
+    expect(await screen.findByRole("region", { name: "Recommendation" })).toBeInTheDocument()
   })
 
   it("runs the select → inputs → scenarios → result flow", async () => {
@@ -400,6 +520,7 @@ describe("Home", () => {
       return base(url)
     }))
     render(<Home />)
+    await openIncidentDrawer()
     const rail = await screen.findByRole("list", { name: "Active incidents" })
     const button = (name: string) => within(rail).getByRole("button", { name })
 
@@ -411,6 +532,50 @@ describe("Home", () => {
 
     expect(button("Institutional USDC Peer CRITICAL")).toHaveAttribute("aria-pressed", "true")
     expect(button("Belem Sentinel USDC CRITICAL")).toHaveAttribute("aria-pressed", "false")
+  })
+
+  it("keeps the latest incident chosen from the Incidents category when an older response arrives late", async () => {
+    const incidentFor = (id: string, source: string, label: string) => ({
+      incident_id: id, source_entity_id: source, severity: "CRITICAL", status: "OPEN",
+      trigger_metrics: {}, rule_version: "v1", first_observed_at: "2026-10-10T12:00:00Z",
+      last_observed_at: "2026-10-10T12:00:00Z", resolved_at: null, reasons: [label],
+    })
+    const graphWithIncidents = {
+      ...radarGraph,
+      active_incidents: [incidentFor("incident:a", "vault:1:catalog", "Alpha"), incidentFor("incident:b", "vault:1:peer", "Beta")],
+    }
+    let releaseA: (() => void) | undefined
+    const base = stubApi()
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url === "/api/graph") return Response.json(graphWithIncidents)
+      if (url.startsWith("/api/graph?incident_graph_id=")) {
+        const id = decodeURIComponent(url.split("=")[1])
+        if (id === "incident:a") await new Promise<void>((resolve) => { releaseA = resolve })
+        return Response.json({
+          schema_version: "1.0.0", incident: graphWithIncidents.active_incidents.find((item) => item.incident_id === id),
+          entities: [], relationships: [], similarities: [], exposures: [], impacts: [], generated_at: "2026-10-10T12:00:00Z",
+        })
+      }
+      return base(url)
+    }))
+    render(<Home />)
+    await screen.findByRole("heading", { name: "Morpho radar graph" })
+    const chooseFromCategory = (label: string) => {
+      fireEvent.click(screen.getByRole("button", { name: "Incidents" }))
+      const list = screen.getByRole("list", { name: "Active incident categories" })
+      fireEvent.click(within(list).getByRole("button", { name: new RegExp(label) }))
+    }
+
+    chooseFromCategory("Belem Sentinel USDC")
+    await waitFor(() => expect(releaseA).toBeDefined())
+    chooseFromCategory("Institutional USDC Peer")
+    await openIncidentDrawer()
+    const rail = screen.getByRole("list", { name: "Active incidents" })
+    await waitFor(() => expect(within(rail).getByRole("button", { name: "Institutional USDC Peer CRITICAL" })).toHaveAttribute("aria-pressed", "true"))
+    await act(async () => releaseA?.())
+
+    expect(within(rail).getByRole("button", { name: "Institutional USDC Peer CRITICAL" })).toHaveAttribute("aria-pressed", "true")
+    expect(within(rail).getByRole("button", { name: "Belem Sentinel USDC CRITICAL" })).toHaveAttribute("aria-pressed", "false")
   })
 
   it("shows loading skeletons until the catalog and radar arrive", async () => {
@@ -515,15 +680,17 @@ describe("Home", () => {
     }))
     render(<Home />)
 
+    await openIncidentDrawer()
     const rail = await screen.findByRole("list", { name: "Active incidents" })
     expect(screen.queryByRole("button", { name: /Pruned Market/ })).not.toBeInTheDocument()
     // The pruned radar lacks the source entity, so the rail falls back to its id until merged.
     fireEvent.click(within(rail).getByRole("button", { name: "oracle:1:hidden CRITICAL" }))
     expect(await within(rail).findByRole("button", { name: "Pruned Oracle CRITICAL" })).toHaveAttribute("aria-pressed", "true")
 
-    const graph = screen.getByRole("region", { name: "Morpho radar graph" })
-    expect(await within(graph).findByRole("button", { name: /Pruned Market/ })).toHaveAttribute("data-incident-path", "true")
-    expect(within(graph).getByRole("button", { name: /Pruned Oracle CRITICAL/ })).toHaveAttribute("data-incident-path", "true")
+    // The node list, not the incident drawer floating over the same graph region.
+    const nodes = screen.getByRole("list", { name: "Radar nodes" })
+    expect(await within(nodes).findByRole("button", { name: /Pruned Market/ })).toHaveAttribute("data-incident-path", "true")
+    expect(within(nodes).getByRole("button", { name: /Pruned Oracle CRITICAL/ })).toHaveAttribute("data-incident-path", "true")
     expect(within(screen.getByRole("list", { name: "Radar relationships" })).getByText(/Pruned Market — uses oracle → Pruned Oracle/)).toBeInTheDocument()
   })
 

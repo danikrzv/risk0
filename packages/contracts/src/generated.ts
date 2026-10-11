@@ -20,6 +20,7 @@ export const RADAR_RELATIONSHIP_TYPES = ["allocated_to","lends","borrows","uses_
 export const SIMILARITY_STORAGE_THRESHOLD = "0.33" as const;
 export const SIMILARITY_VISIBILITY_THRESHOLD = "0.60" as const;
 export const SIMILARITY_VISIBLE_LIMIT = 10 as const;
+export const MAX_BOOK_POCKETS = 20 as const;
 
 export type CatalogChainId = 1 | 8453;
 export type CatalogEntityType = "morpho_vault_v2" | "morpho_vault_v1" | "morpho_market";
@@ -180,6 +181,33 @@ export interface ExitEstimate {
   warnings: string[];
 }
 
+/**
+ * break_even_probability = exit_cost / impact (this scenario alone);
+ * decision_flip_probability = (exit_cost - other_expected_loss) / impact
+ * (other scenarios held at their central estimates). Both are capped to
+ * [0, 1] and null, with reasons, when an input is unknown.
+ */
+export interface BreakEvenPoint {
+  scenario_id: string;
+  dependency: string | null;
+  impact: DecimalString;
+  other_expected_loss: DecimalString | null;
+  break_even_probability: DecimalString | null;
+  decision_flip_probability: DecimalString | null;
+  current_probability: DecimalString | null;
+  current_probability_low: DecimalString | null;
+  current_probability_high: DecimalString | null;
+  reasons: string[];
+}
+
+export interface BreakEven {
+  probability_dependent: boolean;
+  dominant_scenario_id: string | null;
+  exit_cost: DecimalString | null;
+  points: BreakEvenPoint[];
+  explanation: string;
+}
+
 export interface Recommendation {
   decision: RecommendationDecision;
   expected_loss: DecimalString;
@@ -190,6 +218,7 @@ export interface Recommendation {
   dominant_dependency: string | null;
   confidence: ConfidenceLevel;
   explanation: string;
+  break_even?: BreakEven | null;
 }
 
 export interface AnalysisRequest {
@@ -203,6 +232,83 @@ export interface AnalysisResponse {
   exit_estimate: ExitEstimate;
   recommendation: Recommendation;
   analyzed_at: string;
+}
+
+export interface BookPocketInput {
+  pocket_id?: string;
+  position: PositionInput;
+  scenarios?: [ScenarioSelection, ...ScenarioSelection[]];
+  /** Fraction of the book in (0, 1]; a book's weights sum to at most 1. */
+  weight: DecimalString;
+}
+
+interface BookRequestBase {
+  pockets: [BookPocketInput, ...BookPocketInput[]];
+  /** Shared scenarios for every pocket without its own. */
+  scenarios?: [ScenarioSelection, ...ScenarioSelection[]];
+}
+
+export type BookRequest = BookRequestBase &
+  (
+    | { book_value: DecimalString; numeraire: string }
+    | { book_value?: never; numeraire?: never }
+  );
+
+export interface BookAmount {
+  amount: DecimalString;
+  fraction_of_pocket: DecimalString | null;
+  fraction_of_book: DecimalString | null;
+}
+
+export interface BookPocketResult {
+  pocket_id: string;
+  rank: number;
+  entity_id: string;
+  mode: PositionMode;
+  numeraire: string;
+  weight: DecimalString;
+  decision: RecommendationDecision;
+  confidence: ConfidenceLevel;
+  dominant_dependency: string | null;
+  triggers: string[];
+  pocket_value: DecimalString | null;
+  expected_loss: BookAmount | null;
+  exit_cost: BookAmount | null;
+  exit_advantage: BookAmount | null;
+  break_even: BreakEven | null;
+  unavailable_reasons: string[];
+  explanation: string;
+  analyzed_at: string | null;
+}
+
+export interface BookTotal {
+  amount: DecimalString | null;
+  fraction_of_book: DecimalString | null;
+}
+
+export interface BookTotals {
+  numeraire: string | null;
+  expected_loss_staying: BookTotal;
+  exit_cost_exit_pockets: BookTotal;
+  expected_loss_stay_pockets: BookTotal;
+  recommended_cost: BookTotal;
+  net_benefit: BookTotal;
+  allocated_weight: DecimalString;
+  stay_weight: DecimalString;
+  exit_weight: DecimalString;
+  unavailable_weight: DecimalString;
+  stay_count: number;
+  exit_count: number;
+  unavailable_count: number;
+  complete: boolean;
+  warnings: string[];
+}
+
+export interface BookResponse {
+  schema_version: "1.0.0";
+  pockets: BookPocketResult[];
+  totals: BookTotals;
+  generated_at: string;
 }
 
 export interface RadarEntity {

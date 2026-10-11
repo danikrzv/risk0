@@ -39,7 +39,9 @@ test("Belem RWA EURCV lender with default scenarios is a fixture-defined STAY", 
   await expect(graph.getByRole("heading", { name: "Dependency graph" })).toBeVisible()
   const nodes = graph.getByRole("list", { name: "Dependency nodes" })
   await expect(nodes.getByRole("button", { name: /\(position\)$/ })).toHaveCount(1)
-  await expect(nodes.getByRole("button", { name: /\(protocol\)$/ })).toHaveCount(1)
+  await expect(nodes.getByRole("button", { name: "Morpho (protocol)", exact: true })).toHaveCount(1)
+  // The issuer layer: EURCV looks through to its custodial issuer.
+  await expect(nodes.getByRole("button", { name: "Societe Generale-FORGE (protocol)", exact: true })).toHaveCount(1)
   const vault = nodes.getByRole("button", { name: /Belem RWA EURCV.*\(vault\)$/ })
   await vault.click()
   await expect(vault).toHaveAttribute("aria-pressed", "true")

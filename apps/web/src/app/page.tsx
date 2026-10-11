@@ -1,7 +1,8 @@
 "use client"
 
-import type { AnalysisResponse, ExposureCreateRequest, HydratedCatalogEntry, IncidentGraphResponse, IncidentImpact, PositionInput, RadarGraphResponse } from "@risk0/contracts"
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import type { AnalysisResponse, ExposureCreateRequest, HealthStatus, HydratedCatalogEntry, IncidentGraphResponse, IncidentImpact, PositionInput, RadarEntity, RadarGraphResponse } from "@risk0/contracts"
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { createPortal } from "react-dom"
 
 import { CatalogSelector, canAnalyze } from "../components/catalog-selector"
 import { DataQualityPanel } from "../components/data-quality"
@@ -20,7 +21,7 @@ import {
   toScenarioSelections,
 } from "../components/scenario-panel"
 import { SystemTicker } from "../components/system-ticker"
-import { TerminalShell } from "../components/terminal-shell"
+import { TerminalShell, type WorkspaceCategory } from "../components/terminal-shell"
 import { useRadarEvents } from "../hooks/use-radar-events"
 import { mergeRadarGraphs, type RadarTopology } from "../lib/radar-graph-merge"
 import { CatalogSkeleton, RadarSkeleton } from "../components/skeletons"
@@ -56,6 +57,33 @@ type AnalysisState =
 // notification events); refetches inside this window are coalesced.
 const RADAR_REFRESH_DELAY_MS = 250
 
+// Below this width the floating panels become near-full-width overlays.
+const NARROW_VIEWPORT_QUERY = "(max-width: 48rem)"
+
+const HEALTH_MARKERS: Record<HealthStatus, string> = {
+  HEALTHY: "✓",
+  WARNING: "!",
+  CRITICAL: "×",
+  UNKNOWN: "?",
+}
+
+function entityHealthStatus(entity: RadarEntity | undefined): HealthStatus {
+  switch (entity?.metadata.health_status) {
+    case "HEALTHY":
+    case "WARNING":
+    case "CRITICAL":
+    case "UNKNOWN":
+      return entity.metadata.health_status
+    default:
+      return "UNKNOWN"
+  }
+}
+
+/** After a category handoff, move keyboard focus to the destination heading once it is shown. */
+function focusHeading(id: string) {
+  requestAnimationFrame(() => document.getElementById(id)?.focus())
+}
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Something went wrong"
 }
@@ -77,6 +105,7 @@ function LoadErrorMessage({ error }: { error: LoadError }) {
 }
 
 export default function Home() {
+  const [activeCategory, setActiveCategory] = useState<WorkspaceCategory>("graph")
   const [catalog, setCatalog] = useState<CatalogState>({ status: "loading" })
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [scenarios, setScenarios] = useState(defaultScenarioDrafts)
@@ -86,6 +115,14 @@ export default function Home() {
   const [radarGraph, setRadarGraph] = useState<RadarGraphResponse | null>(null)
   const [radarError, setRadarError] = useState<LoadError | null>(null)
   const [selectedIncident, setSelectedIncident] = useState<IncidentGraphResponse | null>(null)
+  // The exposure and incident panels share the canvas's right edge, which is too
+  // short for both (a long incident list would squeeze the form away), so at
+  // most one is open. Both stay mounted while hidden so form values and list
+  // state survive.
+  const [exposureOpen, setExposureOpen] = useState(true)
+  const [incidentsOpen, setIncidentsOpen] = useState(false)
+  // Canvas overlay the panels are portalled into (a state setter, so stable for the memoized graph).
+  const [panelSlot, setPanelSlot] = useState<HTMLDivElement | null>(null)
   const [selectedRadarEntityId, setSelectedRadarEntityId] = useState<string | null>(null)
   // Neighborhoods fetched with `focus`, keyed by the expanded entity.
   const [focusGraphs, setFocusGraphs] = useState<ReadonlyMap<string, RadarGraphResponse>>(() => new Map())
@@ -98,6 +135,25 @@ export default function Home() {
   const [exposureBusy, setExposureBusy] = useState(false)
   // Identifies the latest analysis request; a response for an older one is dropped.
   const requestToken = useRef(0)
+
+  // Narrow screens start graph-first: a near-full-width panel would hide the graph.
+  useEffect(() => {
+    if (typeof window !== "undefined" && window.matchMedia?.(NARROW_VIEWPORT_QUERY).matches) setExposureOpen(false)
+  }, [])
+
+  function toggleExposure() {
+    if (!exposureOpen) setIncidentsOpen(false)
+    setExposureOpen(!exposureOpen)
+  }
+
+  function toggleIncidents() {
+    if (!incidentsOpen) setExposureOpen(false)
+    setIncidentsOpen(!incidentsOpen)
+  }
+
+  function placeFloatingPanels(panels: ReactNode) {
+    return panelSlot ? createPortal(panels, panelSlot) : panels
+  }
 
   // Retried with backoff while the risk service is busy or starting.
   useEffect(() => {
@@ -247,7 +303,34 @@ export default function Home() {
     () => new Set([...focusGraphs.values()].flatMap((graph) => graph.entities.map((entity) => entity.entity_id))),
     [focusGraphs],
   )
+  const displayedPinnedEntityIds = useMemo(() => {
+    if (!selectedRadarEntityId) return pinnedEntityIds
+    return new Set([...pinnedEntityIds, selectedRadarEntityId])
+  }, [pinnedEntityIds, selectedRadarEntityId])
   const expandedEntityIds = useMemo(() => new Set(focusGraphs.keys()), [focusGraphs])
+  const marketEntities = useMemo(
+    () => radarGraph?.entities.filter((entity) => entity.entity_type === "market") ?? [],
+    [radarGraph],
+  )
+  const oracleEntities = useMemo(
+    () => radarGraph?.entities.filter((entity) => entity.entity_type === "oracle") ?? [],
+    [radarGraph],
+  )
+  const activeIncidents = useMemo(
+    () => radarGraph?.active_incidents.filter((incident) => incident.status === "OPEN") ?? [],
+    [radarGraph],
+  )
+  const radarEntitiesByAddress = useMemo(() => {
+    const entities = new Map<string, RadarEntity>()
+    for (const entity of radarGraph?.entities ?? []) {
+      entities.set(`${entity.chain_id}:${entity.address_or_key.toLowerCase()}`, entity)
+    }
+    return entities
+  }, [radarGraph])
+  const radarLabels = useMemo(
+    () => new Map((radarGraph?.entities ?? []).map((entity) => [entity.entity_id, entity.label])),
+    [radarGraph],
+  )
 
   const showNeighbours = useCallback(async (entityId: string) => {
     setLoadingNeighboursId(entityId)
@@ -297,11 +380,29 @@ export default function Home() {
   const analyzeRadarEntity = useCallback((radarEntityId: string) => {
     const catalogId = catalogByRadarEntity.get(radarEntityId)
     if (!catalogId) return
-    selectEntry(catalogId)
+    // Returning to the entry already analysed keeps its completed result.
+    if (catalogId !== selectedId) selectEntry(catalogId)
+    setActiveCategory("position-analysis")
     requestAnimationFrame(() => {
       document.getElementById("position-analysis")?.scrollIntoView({ behavior: "smooth", block: "start" })
     })
-  }, [catalogByRadarEntity, selectEntry])
+    focusHeading("position-analysis-heading")
+  }, [catalogByRadarEntity, selectEntry, selectedId])
+
+  const focusRadarEntity = useCallback((entityId: string) => {
+    setSelectedRadarEntityId(entityId)
+    setActiveCategory("graph")
+    focusHeading("radar-heading")
+  }, [])
+
+  // The analyzed entry's radar entity, when the radar has it.
+  const analysisRadarEntityId = entry
+    ? radarEntitiesByAddress.get(`${entry.chain_id}:${entry.address_or_market_id.toLowerCase()}`)?.entity_id ?? null
+    : null
+  const viewAnalysisDependencies = useMemo(
+    () => (analysisRadarEntityId ? () => focusRadarEntity(analysisRadarEntityId) : undefined),
+    [analysisRadarEntityId, focusRadarEntity],
+  )
 
   function validateScenarios(): boolean {
     const { errors } = toScenarioSelections(scenarios)
@@ -332,6 +433,8 @@ export default function Home() {
 
   return (
     <TerminalShell
+      activeCategory={activeCategory}
+      onCategoryChange={setActiveCategory}
       status={
         catalog.status === "error" || radarError
           ? "degraded"
@@ -349,62 +452,209 @@ export default function Home() {
         />
       }
     >
-      <header className="masthead">
-        <span className="eyebrow">CURRENT MODULE / CONTINUOUS RISK RADAR</span>
-        <h2>Monitor dependencies, propagation, and portfolio impact</h2>
-        <p>
-          Compare Morpho vaults, markets, assets, oracles, and chains every five minutes. Hidden similar vaults are
-          revealed when an incident propagates through a shared dependency.
-        </p>
-      </header>
+      <div className="workspace-view workspace-view--graph" hidden={activeCategory !== "graph"}>
+        <div className="terminal-actions"><NotificationCenter onIncidentClick={focusIncident} /></div>
+        {radarError ? <LoadErrorMessage error={radarError} /> : null}
+        {focusError ? <p role="alert" className="alert">{focusError}</p> : null}
+        {displayedGraph && radarGraph ? (
+          <div className="radar-command-surface">
+            <div className="radar-stage">
+              <RadarGraph
+                graph={displayedGraph}
+                selectedIncident={selectedIncident?.incident ?? null}
+                impacts={displayedImpacts}
+                selectedEntityId={selectedRadarEntityId}
+                onSelectEntity={setSelectedRadarEntityId}
+                analyzableEntityIds={analyzableEntityIds}
+                onAnalyzeEntity={analyzeRadarEntity}
+                pinnedEntityIds={displayedPinnedEntityIds}
+                expandedEntityIds={expandedEntityIds}
+                loadingNeighboursId={loadingNeighboursId}
+                onShowNeighbours={showNeighbours}
+                overlayRef={setPanelSlot}
+              />
+              {/* Over the canvas when it is drawn; in page flow otherwise (empty radar). */}
+              {placeFloatingPanels(<div className="floating-panels">
+                <div className="floating-panels__launchers">
+                  <button
+                    type="button"
+                    className="floating-panels__launcher"
+                    aria-expanded={exposureOpen}
+                    aria-controls="exposure-panel"
+                    onClick={toggleExposure}
+                  >
+                    {exposureOpen ? "Hide exposure" : "Exposure"}
+                  </button>
+                  <button
+                    type="button"
+                    className="floating-panels__launcher"
+                    aria-expanded={incidentsOpen}
+                    aria-controls="incident-drawer-panel"
+                    onClick={toggleIncidents}
+                  >
+                    {incidentsOpen ? "Hide incidents" : `Incidents (${radarGraph.active_incidents.length})`}
+                  </button>
+                </div>
+                <div id="exposure-panel" className="floating-panel" hidden={!exposureOpen}>
+                  <ExposureRail entities={radarGraph.entities} onSubmit={addExposure} busy={exposureBusy} />
+                  {exposureStatus?.kind === "ok" ? <p role="status" className="exposure-status">{exposureStatus.message}</p> : null}
+                  {exposureStatus?.kind === "error" ? <p role="alert" className="alert">{exposureStatus.message}</p> : null}
+                </div>
+                <aside id="incident-drawer-panel" className="floating-panel" aria-label="Incident drawer" hidden={!incidentsOpen}>
+                  <IncidentRail
+                    incidents={radarGraph.active_incidents}
+                    entities={displayedGraph.entities}
+                    selectedIncidentId={selectedIncident?.incident.incident_id ?? null}
+                    onSelectIncident={focusIncident}
+                  />
+                </aside>
+              </div>)}
+            </div>
+          </div>
+        ) : radarError && !radarError.retrying ? null : <RadarSkeleton />}
+      </div>
 
-      <div className="terminal-actions"><NotificationCenter onIncidentClick={focusIncident} /></div>
-      {radarError && catalog.status !== "error" ? <LoadErrorMessage error={radarError} /> : null}
-      {focusError ? <p role="alert" className="alert">{focusError}</p> : null}
-      {displayedGraph && radarGraph && displayedGraph.entities.length === 0 ? (
-        <RadarGraph graph={displayedGraph} />
-      ) : displayedGraph && radarGraph ? (
-        <div className="radar-layout">
-          <ExposureRail entities={radarGraph.entities} onSubmit={addExposure} busy={exposureBusy} />
-          <RadarGraph
-            graph={displayedGraph}
-            selectedIncident={selectedIncident?.incident ?? null}
-            impacts={displayedImpacts}
-            selectedEntityId={selectedRadarEntityId}
-            onSelectEntity={setSelectedRadarEntityId}
-            analyzableEntityIds={analyzableEntityIds}
-            onAnalyzeEntity={analyzeRadarEntity}
-            pinnedEntityIds={pinnedEntityIds}
-            expandedEntityIds={expandedEntityIds}
-            loadingNeighboursId={loadingNeighboursId}
-            onShowNeighbours={showNeighbours}
-          />
-          <IncidentRail
-            incidents={radarGraph.active_incidents}
-            entities={displayedGraph.entities}
-            selectedIncidentId={selectedIncident?.incident.incident_id ?? null}
-            onSelectIncident={focusIncident}
-          />
-        </div>
-      ) : radarError && !radarError.retrying ? null : <RadarSkeleton />}
-      {exposureStatus?.kind === "ok" ? <p role="status" className="exposure-status">{exposureStatus.message}</p> : null}
-      {exposureStatus?.kind === "error" ? <p role="alert" className="alert">{exposureStatus.message}</p> : null}
+      {activeCategory === "markets" ? (
+        <section className="category-view" aria-labelledby="markets-heading">
+          <header className="module-heading">
+            <span className="eyebrow">RADAR ENTITIES</span>
+            <h2 id="markets-heading">Markets</h2>
+          </header>
+          {!radarGraph ? (
+            radarError
+              ? <LoadErrorMessage error={radarError} />
+              : <p role="status" className="category-view__empty">Loading radar topology…</p>
+          ) : marketEntities.length === 0 ? <p className="category-view__empty">No markets are currently available.</p> : (
+            <ul className="category-list" aria-label="Market health">
+              {marketEntities.map((entity) => {
+                const status = entityHealthStatus(entity)
+                const incidentCount = activeIncidents.filter((incident) => incident.source_entity_id === entity.entity_id).length
+                return (
+                  <li key={entity.entity_id}>
+                    <button type="button" data-health-status={status} onClick={() => focusRadarEntity(entity.entity_id)}>
+                      <strong>{entity.label}</strong>
+                      <span className="category-list__status"><span aria-hidden="true">{HEALTH_MARKERS[status]}</span> {status}</span>
+                      <code>{entity.entity_id}</code>
+                      <small>Chain {entity.chain_id} · {incidentCount} active incident{incidentCount === 1 ? "" : "s"}</small>
+                    </button>
+                  </li>
+                )
+              })}
+            </ul>
+          )}
+        </section>
+      ) : null}
 
-      <section id="position-analysis" className="position-analysis-module" aria-labelledby="position-analysis-heading">
+      {activeCategory === "oracles" ? (
+        <section className="category-view" aria-labelledby="oracles-heading">
+          <header className="module-heading">
+            <span className="eyebrow">RADAR ENTITIES</span>
+            <h2 id="oracles-heading">Oracles</h2>
+          </header>
+          {!radarGraph ? (
+            radarError
+              ? <LoadErrorMessage error={radarError} />
+              : <p role="status" className="category-view__empty">Loading radar topology…</p>
+          ) : oracleEntities.length === 0 ? <p className="category-view__empty">No oracles are currently available.</p> : (
+            <ul className="category-list" aria-label="Oracle health">
+              {oracleEntities.map((entity) => {
+                const status = entityHealthStatus(entity)
+                const affectedMarkets = radarGraph?.relationships.filter(
+                  (relationship) => relationship.target_entity_id === entity.entity_id && relationship.relationship_type === "uses_oracle",
+                ).length ?? 0
+                const incidentCount = activeIncidents.filter((incident) => incident.source_entity_id === entity.entity_id).length
+                return (
+                  <li key={entity.entity_id}>
+                    <button type="button" data-health-status={status} onClick={() => focusRadarEntity(entity.entity_id)}>
+                      <strong>{entity.label}</strong>
+                      <span className="category-list__status"><span aria-hidden="true">{HEALTH_MARKERS[status]}</span> {status}</span>
+                      <code>{entity.entity_id}</code>
+                      <small>Chain {entity.chain_id} · {affectedMarkets} affected market{affectedMarkets === 1 ? "" : "s"} · {incidentCount} active incident{incidentCount === 1 ? "" : "s"}</small>
+                    </button>
+                  </li>
+                )
+              })}
+            </ul>
+          )}
+        </section>
+      ) : null}
+
+      {activeCategory === "incidents" ? (
+        <section className="category-view" aria-labelledby="incidents-heading">
+          <header className="module-heading">
+            <span className="eyebrow">ACTIVE SIGNALS</span>
+            <h2 id="incidents-heading">Incidents</h2>
+          </header>
+          {!radarGraph ? (
+            radarError
+              ? <LoadErrorMessage error={radarError} />
+              : <p role="status" className="category-view__empty">Loading radar topology…</p>
+          ) : activeIncidents.length === 0 ? <p className="category-view__empty">No active incidents.</p> : (
+            <ul className="category-list" aria-label="Active incident categories">
+              {activeIncidents.map((incident) => {
+                const label = radarLabels.get(incident.source_entity_id) ?? incident.source_entity_id
+                return (
+                  <li key={incident.incident_id}>
+                    <button
+                      type="button"
+                      data-health-status={incident.severity}
+                      onClick={() => {
+                        focusRadarEntity(incident.source_entity_id)
+                        void focusIncident(incident.incident_id)
+                      }}
+                    >
+                      <strong>{label}</strong>
+                      <span className="category-list__status"><span aria-hidden="true">{HEALTH_MARKERS[incident.severity]}</span> {incident.severity}</span>
+                      <code>{incident.incident_id}</code>
+                      <small>{incident.reasons.join(" ")}</small>
+                    </button>
+                  </li>
+                )
+              })}
+            </ul>
+          )}
+        </section>
+      ) : null}
+
+      <section id="position-analysis" className="position-analysis-module" aria-labelledby="position-analysis-heading" hidden={activeCategory !== "position-analysis"}>
         <header className="module-heading">
           <span className="eyebrow">30-DAY DECISION SUPPORT</span>
-          <h2 id="position-analysis-heading">Position analysis</h2>
+          <h2 id="position-analysis-heading" tabIndex={-1}>Position analysis</h2>
         </header>
 
       {catalog.status === "error" && <LoadErrorMessage error={catalog} />}
       {catalog.status === "loading" || (catalog.status === "error" && catalog.retrying) ? <CatalogSkeleton /> : null}
       {catalog.status === "ready" && (
-        <CatalogSelector
-          entries={catalog.entries}
-          selectedId={selectedId}
-          onSelect={selectEntry}
-          receivedAt={catalog.receivedAt}
-        />
+        <>
+          <ul className="category-list category-list--catalog" aria-label="Position analysis health">
+            {catalog.entries.map((catalogEntry) => {
+              const radarEntity = radarEntitiesByAddress.get(`${catalogEntry.chain_id}:${catalogEntry.address_or_market_id.toLowerCase()}`)
+              const status = entityHealthStatus(radarEntity)
+              return (
+                <li key={catalogEntry.entity_id}>
+                  <button
+                    type="button"
+                    data-health-status={status}
+                    aria-pressed={selectedId === catalogEntry.entity_id}
+                    disabled={!canAnalyze(catalogEntry)}
+                    onClick={() => selectEntry(catalogEntry.entity_id)}
+                  >
+                    <strong>{catalogEntry.name}</strong>
+                    <span className="category-list__status"><span aria-hidden="true">{HEALTH_MARKERS[status]}</span> {status}</span>
+                    <code>{catalogEntry.address_or_market_id}</code>
+                    <small>Chain {catalogEntry.chain_id}</small>
+                  </button>
+                </li>
+              )
+            })}
+          </ul>
+          <CatalogSelector
+            entries={catalog.entries}
+            selectedId={selectedId}
+            onSelect={selectEntry}
+            receivedAt={catalog.receivedAt}
+          />
+        </>
       )}
 
       {entry && (
@@ -431,6 +681,7 @@ export default function Home() {
             analysis={analysis.result}
             numeraire={analysis.numeraire}
             onSelectDependency={setSelectedNodeId}
+            onViewDependencies={viewAnalysisDependencies}
           />
           <RiskGraph
             graph={analysis.result.graph}

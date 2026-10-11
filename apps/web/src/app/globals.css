@@ -83,7 +83,7 @@ p {
 
 .terminal-brand,
 .terminal-runtime,
-.terminal-nav span {
+.terminal-nav button {
   display: flex;
   align-items: center;
 }
@@ -103,18 +103,24 @@ p {
 .terminal-nav {
   display: flex;
   min-width: 0;
+  overflow-x: auto;
 }
 
-.terminal-nav span {
+.terminal-nav button {
+  flex: 0 0 auto;
   padding: 0 1.1rem;
+  border: 0;
   border-right: 1px solid #111d29;
+  background: transparent;
   color: var(--color-muted);
+  font: inherit;
   font-size: 0.68rem;
   letter-spacing: 0.09em;
   text-transform: uppercase;
+  cursor: pointer;
 }
 
-.terminal-nav span[aria-current="page"] {
+.terminal-nav button[aria-current="page"] {
   color: var(--color-accent);
   background: #0b1520;
   box-shadow: inset 0 -2px var(--color-accent);
@@ -188,9 +194,82 @@ p {
 }
 
 .terminal-workspace {
-  width: min(100%, 96rem);
+  width: 100%;
   margin: 0 auto;
-  padding: 1.25rem 1rem 4rem;
+  padding: 0.75rem 0.75rem 4rem;
+}
+
+.workspace-view[hidden],
+.position-analysis-module[hidden] {
+  display: none;
+}
+
+.category-view,
+.position-analysis-module {
+  width: min(100%, 96rem);
+  margin-inline: auto;
+}
+
+.category-list {
+  display: grid;
+  gap: 0.55rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.category-list button {
+  width: 100%;
+  display: grid;
+  grid-template-columns: minmax(8rem, 0.55fr) minmax(12rem, 1fr) minmax(14rem, 1.5fr) minmax(12rem, 1fr);
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 0.85rem;
+  border: 1px solid var(--color-border);
+  border-left: 3px solid currentColor;
+  background: var(--color-surface);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.category-list button:hover,
+.category-list button[aria-pressed="true"] {
+  border-color: currentColor;
+  background: var(--color-surface-raised);
+}
+
+.category-list button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.category-list strong {
+  color: var(--color-text);
+}
+
+.category-list code,
+.category-list small {
+  overflow-wrap: anywhere;
+  color: var(--color-muted);
+}
+
+.category-list__status {
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+.category-view__empty {
+  min-height: 12rem;
+  display: grid;
+  place-items: center;
+  border: 1px dashed var(--color-border-strong);
+  color: var(--color-muted);
+}
+
+.category-list--catalog {
+  margin-bottom: 1.5rem;
 }
 
 .terminal-statusbar {
@@ -225,18 +304,13 @@ p {
   white-space: nowrap;
 }
 
-.masthead p {
-  max-width: 48rem;
-  color: var(--color-muted);
-  margin-bottom: 0;
-}
-
 .terminal-actions {
   position: relative;
   z-index: 20;
   display: flex;
   justify-content: flex-end;
-  margin-top: -2.6rem;
+  min-height: 2.25rem;
+  margin-bottom: 0.5rem;
 }
 
 .terminal-actions > section > button {
@@ -315,26 +389,117 @@ p {
   background: #17090df2;
 }
 
-.radar-layout > * {
+.radar-command-surface > * {
   min-width: 0;
 }
 
-.radar-layout {
-  display: grid;
-  grid-template-areas:
-    "graph graph"
-    "exposure incidents";
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.75rem;
-  align-items: start;
+.radar-command-surface {
+  min-height: calc(100dvh - 8.5rem);
 }
 
-.radar-layout > .radar-graph { grid-area: graph; }
-.radar-layout > .exposure-rail { grid-area: exposure; }
-.radar-layout > .incident-rail { grid-area: incidents; }
+.radar-stage {
+  position: relative;
+  min-width: 0;
+  min-height: calc(100dvh - 8.5rem);
+}
 
-.radar-layout > .panel {
-  margin-top: 1.25rem;
+.radar-stage > .radar-graph {
+  min-height: 100%;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.radar-stage .radar-graph__canvas {
+  flex: 1 1 34rem;
+  height: auto;
+  min-height: 34rem;
+}
+
+/* Exposure and incidents float over the canvas's right edge, one at a time,
+   clear of the graph controls (left side) and without shrinking the canvas.
+   Only the panels themselves take pointer events. */
+/* React Flow's minimap and controls default to a light theme. */
+.radar-graph__canvas .react-flow {
+  --xy-minimap-background-color-default: #08101a;
+  --xy-minimap-mask-background-color-default: rgb(5 8 13 / 0.65);
+  --xy-minimap-mask-stroke-color-default: var(--color-border-strong);
+  --xy-minimap-node-background-color-default: var(--color-border-strong);
+  --xy-controls-button-background-color-default: #08101a;
+  --xy-controls-button-background-color-hover-default: var(--color-surface-raised);
+  --xy-controls-button-color-default: var(--color-text);
+  --xy-controls-button-color-hover-default: var(--color-text);
+  --xy-controls-button-border-color-default: var(--color-border);
+}
+
+.radar-graph__overlay {
+  position: absolute;
+  inset: 0.75rem 0.75rem 0.75rem auto;
+  z-index: 30;
+  display: flex;
+  width: min(22rem, calc(100% - 1.5rem));
+  pointer-events: none;
+}
+
+.floating-panels {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  width: 100%;
+  max-height: 100%;
+  pointer-events: none;
+}
+
+.floating-panels > * {
+  pointer-events: auto;
+}
+
+.floating-panels__launchers {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.4rem;
+}
+
+/* The row spans the overlay; only its buttons may take clicks, so the graph
+   and its zoom controls stay usable beside them. */
+.floating-panels > .floating-panels__launchers {
+  pointer-events: none;
+}
+
+.floating-panels__launcher {
+  pointer-events: auto;
+}
+
+.floating-panels__launcher {
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--color-border-strong);
+  background: #08111bea;
+  color: var(--color-accent);
+  font: inherit;
+  font-size: 0.68rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.floating-panels__launcher[aria-expanded="true"] {
+  background: var(--color-surface-raised);
+}
+
+.floating-panel {
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--color-border-strong);
+  background: #070c13f2;
+  backdrop-filter: blur(12px);
+  filter: drop-shadow(-0.8rem 0.8rem 1.5rem #000a);
+}
+
+.floating-panel > .panel {
+  margin: 0;
+  border: 0;
+  box-shadow: none;
 }
 
 .exposure-rail form,
@@ -385,9 +550,17 @@ p {
 
 .radar-graph__header-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   justify-content: flex-end;
   gap: 0.75rem;
+}
+
+.radar-graph__focus-controls {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.35rem;
 }
 
 .radar-legend {
@@ -408,6 +581,7 @@ p {
 [data-health-status="UNKNOWN"] { color: var(--color-unavailable); }
 
 .radar-graph__canvas {
+  position: relative;
   height: clamp(34rem, 62vh, 48rem);
   border: 1px solid var(--color-border);
   background-image: linear-gradient(#101c2928 1px, transparent 1px), linear-gradient(90deg, #101c2928 1px, transparent 1px);
@@ -416,7 +590,8 @@ p {
 
 .radar-filters {
   display: grid;
-  grid-template-columns: 1.4fr repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(9rem, 1fr));
+  align-items: end;
   gap: 0.5rem;
   margin-bottom: 0.75rem;
 }
@@ -432,6 +607,66 @@ p {
   width: 100%;
   box-sizing: border-box;
 }
+
+.radar-graph__focus-controls > button,
+.radar-search__results button {
+  min-height: 2.35rem;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.radar-graph__focus-controls > button[aria-pressed="true"] {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+.radar-graph__focus-controls > button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.radar-search {
+  position: relative;
+  width: min(19rem, 100%);
+}
+
+.radar-search label { display: grid; gap: 0.3rem; }
+.radar-search input { width: 100%; box-sizing: border-box; }
+
+.radar-search__results,
+.radar-search__empty {
+  position: absolute;
+  top: calc(100% + 0.25rem);
+  right: 0;
+  z-index: 40;
+  width: min(28rem, 90vw);
+  margin: 0;
+  padding: 0.35rem;
+  border: 1px solid var(--color-border-strong);
+  background: #070c13f7;
+  box-shadow: 0 0.8rem 1.8rem #000a;
+}
+
+.radar-search__results {
+  display: grid;
+  gap: 0.25rem;
+  list-style: none;
+}
+
+.radar-search__results button {
+  width: 100%;
+  display: grid;
+  gap: 0.2rem;
+  padding: 0.5rem 0.65rem;
+  text-align: left;
+}
+
+.radar-search__results button:hover { border-color: var(--color-accent); }
+.radar-search__results small { color: var(--color-muted); overflow-wrap: anywhere; }
+.radar-search__empty { color: var(--color-muted); }
 
 .radar-graph--expanded {
   position: fixed;
@@ -473,6 +708,10 @@ p {
 .radar-flow-node--critical { border-color: var(--color-danger) !important; }
 .radar-flow-node--incident { box-shadow: 0 0 1rem #f0656570; }
 .radar-flow-edge--incident path { stroke: var(--color-danger); stroke-width: 2; }
+.radar-flow-node--focused { filter: saturate(1.2); }
+.radar-flow-node--faded { opacity: 0.16; }
+.radar-flow-edge--focused path { stroke-width: 2; }
+.radar-flow-edge--faded { opacity: 0.1; }
 
 .radar-nodes {
   display: grid;
@@ -683,9 +922,7 @@ p {
 .incident-rail__empty { color: var(--color-safe); }
 
 .position-analysis-module {
-  margin-top: 2.5rem;
-  padding-top: 1.5rem;
-  border-top: 1px solid var(--color-border-strong);
+  padding-top: 0;
 }
 
 .panel {
@@ -1171,7 +1408,14 @@ fieldset.panel legend,
   }
 
   .terminal-nav {
-    display: none;
+    grid-column: 1 / -1;
+    grid-row: 2;
+    border-top: 1px solid var(--color-border);
+  }
+
+  .terminal-nav button {
+    min-height: 2.5rem;
+    padding-inline: 0.85rem;
   }
 
   .system-ticker {
@@ -1192,6 +1436,11 @@ fieldset.panel legend,
     grid-template-columns: 1fr;
   }
 
+  .category-list button {
+    grid-template-columns: 1fr;
+    gap: 0.35rem;
+  }
+
   .graph__canvas {
     height: 20rem;
   }
@@ -1200,9 +1449,23 @@ fieldset.panel legend,
     margin-top: 1rem;
   }
 
-  .radar-layout {
-    grid-template-areas: "exposure" "graph" "incidents";
-    grid-template-columns: 1fr;
+  .radar-command-surface {
+    min-height: auto;
+  }
+
+  .radar-stage {
+    min-height: calc(100dvh - 7rem);
+  }
+
+  /* Near-full-width over the canvas (the page keeps one panel open at a time). */
+  .radar-graph__overlay {
+    inset: 0.5rem;
+    width: auto;
+  }
+
+  /* Too large for a phone-sized canvas; zoom and pan remain. */
+  .radar-graph__canvas .react-flow__minimap {
+    display: none;
   }
 
   .radar-filters {
@@ -1216,8 +1479,7 @@ fieldset.panel legend,
 }
 
 @media (min-width: 48.01rem) and (max-width: 75rem) {
-  .radar-layout {
-    grid-template-areas: "graph graph" "exposure incidents";
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .radar-graph__overlay {
+    width: min(19rem, calc(100% - 1.5rem));
   }
 }

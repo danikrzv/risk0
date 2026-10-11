@@ -14,10 +14,13 @@ export function RecommendationCard({
   analysis,
   numeraire,
   onSelectDependency,
+  onViewDependencies,
 }: {
   analysis: AnalysisResponse
   numeraire: string
   onSelectDependency: (nodeId: string) => void
+  /** Present when the analyzed entry is on the radar: shows its dependencies there. */
+  onViewDependencies?: () => void
 }) {
   const { recommendation, exit_estimate: exit, graph } = analysis
   const tone = TONES[recommendation.decision]
@@ -53,6 +56,11 @@ export function RecommendationCard({
       )}
       <p>{recommendation.explanation}</p>
       <p className="recommendation__confidence">{`Confidence: ${recommendation.confidence}`}</p>
+      {onViewDependencies && (
+        <button type="button" className="button button--secondary" onClick={onViewDependencies}>
+          View dependencies
+        </button>
+      )}
 
       <div role="group" aria-label="Stay versus exit" className="comparison">
         <dl>

@@ -109,6 +109,8 @@ test("a live-sized radar stays small on the wire and interactive in the browser"
   })
 
   await test.step("the incident rail is capped and an incident highlights its path", async () => {
+    // The incident drawer starts closed; it shares the canvas edge with the exposure panel.
+    await page.getByRole("button", { name: /^Incidents \(\d+\)$/ }).click()
     const incidents = page.getByRole("list", { name: "Active incidents" }).getByRole("button")
     await expect(incidents.first()).toBeVisible()
     const listed = await incidents.count()
@@ -130,27 +132,27 @@ test("a live-sized radar stays small on the wire and interactive in the browser"
     expect(await canvasNodes.count()).toBeLessThanOrEqual(MAX_CANVAS_NODES)
   })
 
-  await test.step("searching the graph filters without hanging the page", async () => {
+  await test.step("searching the graph ranks matches without hanging the page", async () => {
     const search = graph.getByLabel("Search graph")
-    const nodeList = graph.getByRole("list", { name: "Radar nodes" })
+    const results = graph.getByRole("list", { name: "Graph search results" })
     await takeLongTasks(page)
     const started = Date.now()
     await search.pressSequentially(SEARCHED_VAULT_LABEL)
-    // The selected incident's path stays listed; everything else must match.
-    const offPath = nodeList.locator('button[data-incident-path="false"]')
-    await expect(offPath).toHaveCount(1)
-    await expect(offPath).toHaveAccessibleName(new RegExp(`^${SEARCHED_VAULT_LABEL} `))
+    // Search ranks matches without changing the drawn graph; the exact match leads.
+    await expect(results.getByRole("button").first()).toContainText(SEARCHED_VAULT_LABEL)
     const searchMs = Date.now() - started
     const longest = Math.max(0, ...(await takeLongTasks(page)))
-    record("typing search to filtered list", searchMs, "ms")
+    record("typing search to ranked results", searchMs, "ms")
     record("longest main-thread task while typing", longest, "ms")
     expect(searchMs).toBeLessThan(SEARCH_LATENCY_BUDGET_MS)
     expect(longest).toBeLessThan(LONGEST_TASK_BUDGET_MS)
-    // The page still answers immediately once filtering settles.
+    // The page still answers immediately once ranking settles.
     await expect(page.evaluate(() => document.readyState)).resolves.toBe("complete")
     await search.fill("")
+    await expect(results).toHaveCount(0)
   })
 
+  let hubFootprint: { entities: Array<{ entity_id: string; entity_type: string; label: string }> } = { entities: [] }
   await test.step("the hub incident's 5,000 propagated vaults stay capped and selectable", async () => {
     await page.getByRole("button", { name: "Notifications, 1 unread" }).click()
     await takeLongTasks(page)
@@ -164,7 +166,9 @@ test("a live-sized radar stays small on the wire and interactive in the browser"
     const shownMs = Date.now() - started
     const longest = Math.max(0, ...(await takeLongTasks(page)))
     record("hub incident click to drawn path", shownMs, "ms")
-    record("hub incident graph payload", (await (await incidentGraph).body()).byteLength, "bytes")
+    const hubBody = await (await incidentGraph).body()
+    hubFootprint = JSON.parse(hubBody.toString()) as { entities: Array<{ entity_id: string; entity_type: string; label: string }> }
+    record("hub incident graph payload", hubBody.byteLength, "bytes")
     record("longest main-thread task drawing the hub incident", longest, "ms")
     expect(shownMs).toBeLessThan(INCIDENT_LATENCY_BUDGET_MS)
     expect(longest).toBeLessThan(LONGEST_TASK_BUDGET_MS)
@@ -181,5 +185,26 @@ test("a live-sized radar stays small on the wire and interactive in the browser"
     const selectionMs = Date.now() - selected
     record("node click to detail with the hub incident", selectionMs, "ms")
     expect(selectionMs).toBeLessThan(SELECTION_LATENCY_BUDGET_MS)
+  })
+
+  await test.step("search reaches a vault beyond the 400-node canvas cap and focuses it", async () => {
+    const drawnIds = new Set(await canvasNodes.evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-id"))))
+    const beyondCap = hubFootprint.entities.find((entity) => entity.entity_type === "vault" && !drawnIds.has(entity.entity_id))
+    expect(beyondCap, "the hub incident reveals more vaults than the canvas draws").toBeDefined()
+    const target = beyondCap!
+
+    const search = graph.getByLabel("Search graph")
+    await search.fill(target.label)
+    const started = Date.now()
+    await graph.getByRole("list", { name: "Graph search results" })
+      .getByRole("button", { name: new RegExp(`^${target.label}\\b`) }).first().click()
+    const promoted = canvasNodes.and(page.locator(`[data-id="${target.entity_id}"]`))
+    await expect(promoted).toBeVisible()
+    await expect(promoted).toHaveClass(/\bselected\b/)
+    await expect(detail.getByRole("heading", { level: 3 })).toHaveText(target.label)
+    const promotedMs = Date.now() - started
+    record("search result beyond the cap to focused node", promotedMs, "ms")
+    expect(promotedMs).toBeLessThan(SELECTION_LATENCY_BUDGET_MS)
+    expect(await canvasNodes.count()).toBeLessThanOrEqual(MAX_CANVAS_NODES)
   })
 })

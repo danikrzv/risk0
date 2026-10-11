@@ -4,6 +4,10 @@ import { expect, test } from "@playwright/test"
 // scenarios stays, and the graph shows the vault's dependencies.
 test("Belem RWA EURCV lender with default scenarios is a fixture-defined STAY", async ({ page }) => {
   await page.goto("/")
+  await page.getByRole("button", { name: "Position Analysis", exact: true }).click()
+  await expect(page.getByRole("button", { name: "Position Analysis", exact: true })).toHaveAttribute("aria-current", "page")
+  // Entries without radar health are marked UNKNOWN, never healthy.
+  await expect(page.getByRole("list", { name: "Position analysis health" }).getByRole("button", { name: /Belem RWA EURCV.*UNKNOWN/ })).toBeVisible()
 
   const belem = page.getByRole("radio", { name: /Belem RWA EURCV/ })
   await expect(belem).toBeEnabled()

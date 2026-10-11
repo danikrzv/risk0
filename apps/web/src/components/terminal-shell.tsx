@@ -1,6 +1,15 @@
 import type { ReactNode } from "react"
 
 export type TerminalStatus = "connecting" | "live" | "degraded"
+export type WorkspaceCategory = "graph" | "markets" | "oracles" | "incidents" | "position-analysis"
+
+const WORKSPACE_CATEGORIES: ReadonlyArray<{ id: WorkspaceCategory; label: string }> = [
+  { id: "graph", label: "Graph" },
+  { id: "markets", label: "Markets" },
+  { id: "oracles", label: "Oracles" },
+  { id: "incidents", label: "Incidents" },
+  { id: "position-analysis", label: "Position Analysis" },
+]
 
 const STATUS_LABELS: Record<TerminalStatus, string> = {
   connecting: "CONNECTING",
@@ -12,10 +21,14 @@ export function TerminalShell({
   children,
   status,
   ticker,
+  activeCategory,
+  onCategoryChange,
 }: {
   children: ReactNode
   status: TerminalStatus
   ticker?: ReactNode
+  activeCategory: WorkspaceCategory
+  onCategoryChange: (category: WorkspaceCategory) => void
 }) {
   return (
     <div className="terminal-shell">
@@ -25,11 +38,16 @@ export function TerminalShell({
           <span>MORPHO RISK TERMINAL</span>
         </div>
         <nav className="terminal-nav" aria-label="Primary">
-          <span aria-current="page">Analysis</span>
-          <span aria-disabled="true">Graph</span>
-          <span aria-disabled="true">Markets</span>
-          <span aria-disabled="true">Oracles</span>
-          <span aria-disabled="true">Incidents</span>
+          {WORKSPACE_CATEGORIES.map((category) => (
+            <button
+              key={category.id}
+              type="button"
+              aria-current={activeCategory === category.id ? "page" : undefined}
+              onClick={() => onCategoryChange(category.id)}
+            >
+              {category.label}
+            </button>
+          ))}
         </nav>
         <div className={`terminal-runtime terminal-runtime--${status}`}>
           <span className="terminal-runtime__dot" aria-hidden="true" />

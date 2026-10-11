@@ -30,6 +30,8 @@ test("oracle incident opens, propagates to exposure, and resolves", async ({ pag
   await expect(hidden).toHaveAttribute("data-revealed", "true")
   await expect(graph.getByRole("button", { name: /WETH \/ USDC Oracle CRITICAL/ })).toHaveAttribute("data-incident-path", "true")
   await expect(graph.getByLabel("Incident impact summary")).toContainText("60,000")
+  await page.getByRole("button", { name: "Incidents (1)" }).click()
+  await expect(page.getByRole("list", { name: "Active incidents" }).getByRole("button", { name: "WETH / USDC Oracle CRITICAL" })).toHaveAttribute("aria-pressed", "true")
 
   const resolved = await request.post(`${riskUrl}/v1/fixtures/radar/oracle-incident/resolve`)
   expect(resolved.ok()).toBe(true)

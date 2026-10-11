@@ -457,6 +457,11 @@ def _annotate_position(
         notes.warn(
             "W_pool is unknown: the position amount could not be expressed in the pool's asset."
         )
+    elif lender.w_pool is not None and lender.w_pool > ONE:
+        notes.warn(
+            f"The hypothetical position is larger than the pool it lends to (W_pool "
+            f"{_value(lender.w_pool)}); its edge loss share is capped at 1."
+        )
 
 
 # Helpers

@@ -89,7 +89,12 @@ from typing import Protocol
 
 from pydantic import ValidationError
 
-from app.adapters.morpho import MorphoDataConflictError, MorphoError, MorphoNotFoundError
+from app.adapters.morpho import (
+    MarketPositions,
+    MorphoDataConflictError,
+    MorphoError,
+    MorphoNotFoundError,
+)
 from app.analysis.exit_cost import (
     USD_NUMERAIRES,
     USD_STABLE_SYMBOLS,
@@ -107,6 +112,8 @@ from app.analysis.recommendation import (
     make_recommendation,
 )
 from app.analysis.scenario_engine import ScenarioEngine
+from app.analysis.solvency_graph import annotate_solvency
+from app.analysis.solvency_inputs import gather_solvency_inputs
 from app.catalog.assets import AssetRegistry, default_asset_registry
 from app.contracts.models import (
     AnalysisRequest,
@@ -135,7 +142,13 @@ from app.domain.graph import (
     OracleObservation,
     node_id,
 )
-from app.domain.position import PositionValidationError, ValidatedPosition, validate_position
+from app.domain.position import (
+    PositionValidationError,
+    ValidatedPosition,
+    convert_to_numeraire,
+    symbol_matches,
+    validate_position,
+)
 from app.domain.protocol import ProtocolTvlSnapshot
 from app.domain.scenario import (
     ORACLE_DEVIATION_THRESHOLD,
@@ -248,6 +261,7 @@ ORACLE_SOURCE = "live oracle"
 ALLOCATIONS_SOURCE = "Morpho vault allocations"
 EXIT_SOURCE = "exit estimate"
 BORROWER_POSITIONS_SOURCE = "Morpho borrower positions"
+SOLVENCY_FAILED = "Solvency model could not be computed for this analysis; its metrics are absent."
 # Lender bad-debt estimate: borrower positions are fetched for at most this many
 # collateral-shocked markets (most exposed first); the rest use the worst-case bound.
 MAX_BAD_DEBT_MARKETS = 12
@@ -455,8 +469,10 @@ class AnalysisService:
 
         graph = self._graph(position, entry, snapshots, oracles, now)
         borrowers: dict[str, BorrowerDistribution] = {}
+        # Borrower positions fetched in this analysis, shared by bad debt and solvency.
+        fetched: dict[str, DataEnvelope[MarketPositions] | None] = {}
         if position.mode is PositionMode.LENDER:
-            borrowers = self._borrower_distributions(graph, request.scenarios, sources)
+            borrowers = self._borrower_distributions(graph, request.scenarios, sources, fetched)
         conflicts: list[DataConflict] = []
         scenarios_out = []
         try:
@@ -502,6 +518,8 @@ class AnalysisService:
             carry=_carry(position, snapshots),
             confidence_caps=_unjudged_oracle_caps(oracles),
         )
+        # After the recommendation: solvency annotations never change scenarios or the decision.
+        graph = self._annotate_solvency(graph, position, snapshots, oracles, fetched)
         return AnalysisResponse(
             graph=graph,
             scenario_results=scenarios,
@@ -659,6 +677,7 @@ class AnalysisService:
         graph: RiskGraph,
         selections: Sequence[ScenarioSelection],
         sources: list[tuple[str, Freshness]],
+        fetched: dict[str, DataEnvelope[MarketPositions] | None],
     ) -> dict[str, BorrowerDistribution]:
         """Borrower debt distributions of the markets a lender's collateral shock reaches.
 
@@ -667,8 +686,7 @@ class AnalysisService:
         `MAX_BAD_DEBT_MARKETS`, is left out and the engine prices it at the
         worst-case bound. Raw positions never reach the response.
         """
-        fetch = getattr(self._morpho, "get_market_positions", None)
-        if not callable(fetch):
+        if not callable(getattr(self._morpho, "get_market_positions", None)):
             return {}
         try:
             wanted = self._engine.collateral_markets(graph, selections)
@@ -687,15 +705,10 @@ class AnalysisService:
             lltv = lltvs.get(market_id)
             if lltv is None:
                 continue
-            try:
-                envelope = fetch(market_id)
-                positions = envelope.value
-                if positions.market_id.lower() != market_id:
-                    logger.warning("borrower positions do not match the requested market")
-                    continue
-            except Exception as error:  # provider boundary: never leak provider text
-                logger.info("borrower positions unavailable: %s", type(error).__name__)
+            envelope = self._market_positions(market_id, fetched)
+            if envelope is None:
                 continue
+            positions = envelope.value
             if envelope.freshness is FreshnessStatus.EXPIRED:
                 continue
             sources.append(
@@ -708,6 +721,75 @@ class AnalysisService:
                 complete=positions.complete,
             )
         return distributions
+
+    def _market_positions(
+        self, market_id: str, fetched: dict[str, DataEnvelope[MarketPositions] | None]
+    ) -> DataEnvelope[MarketPositions] | None:
+        """Morpho borrower positions of one market, fetched at most once per analysis."""
+        market_id = market_id.lower()
+        if market_id in fetched:
+            return fetched[market_id]
+        fetch = getattr(self._morpho, "get_market_positions", None)
+        envelope = None
+        if callable(fetch):
+            try:
+                envelope = fetch(market_id)
+                if envelope.value.market_id.lower() != market_id:
+                    logger.warning("borrower positions do not match the requested market")
+                    envelope = None
+            except Exception as error:  # provider boundary: never leak provider text
+                logger.info("borrower positions unavailable: %s", type(error).__name__)
+                envelope = None
+        fetched[market_id] = envelope
+        return envelope
+
+    def _annotate_solvency(
+        self,
+        graph: RiskGraph,
+        position: ValidatedPosition,
+        snapshots: _Snapshots,
+        oracles: Mapping[str, DataEnvelope[OracleObservation]],
+        fetched: dict[str, DataEnvelope[MarketPositions] | None],
+    ) -> RiskGraph:
+        """Lender solvency model on the response graph (`app.analysis.solvency_graph`).
+
+        Markets beyond `MAX_BAD_DEBT_MARKETS` (largest vault supply first) are not
+        evaluated, which leaves the vault's solvency result unavailable.
+        """
+        try:
+            if position.mode is not PositionMode.LENDER:
+                return annotate_solvency(graph, {}, x_in_pool_units=None)
+            markets, skipped = _solvency_markets(snapshots)
+            inputs = gather_solvency_inputs(
+                markets,
+                positions=lambda market_id: self._market_positions(market_id, fetched),
+                oracles=oracles,
+                quote=(
+                    None
+                    if self._quotes is None
+                    else lambda request: self._quotes.quote(request, refresh=False)
+                ),
+            )
+            pool_asset = (
+                snapshots.market.value.loan_asset
+                if snapshots.market is not None
+                else snapshots.primary.value.asset
+            )
+            annotated = annotate_solvency(
+                graph,
+                inputs,
+                x_in_pool_units=_amount_in_asset(position, pool_asset, _known_assets(snapshots)),
+            )
+            if skipped:
+                annotated = _with_warning(
+                    annotated,
+                    f"Solvency model evaluated the {MAX_BAD_DEBT_MARKETS} largest allocations; "
+                    f"{skipped} smaller market(s) were not evaluated.",
+                )
+            return annotated
+        except Exception as error:  # an annotation failure must never fail the analysis
+            logger.warning("solvency annotation failed: %s", type(error).__name__)
+            return _with_warning(graph, SOLVENCY_FAILED)
 
     def _protocol_tvl_envelope(self, now: datetime) -> DataEnvelope[ProtocolTvlSnapshot] | None:
         """Morpho TVL for the protocol node; a provider gap is a completeness warning, never fatal."""
@@ -1991,6 +2073,36 @@ class ChainlinkOracleHealth:
 def _computed_now(updated_at: int, block_timestamp: int | None) -> bool:
     """A computed-on-read feed reports no update time, or the read block's own time."""
     return updated_at == 0 or (block_timestamp is not None and updated_at == block_timestamp)
+
+
+def _solvency_markets(snapshots: _Snapshots) -> tuple[tuple[MarketSnapshot, ...], int]:
+    """Markets to evaluate (largest vault supply first, capped) and how many were skipped."""
+    if snapshots.market is not None:
+        return (snapshots.market.value,), 0
+    supplied: dict[str, Decimal] = {}
+    for row in snapshots.allocations.value if snapshots.allocations is not None else ():
+        if row.market_id is not None:
+            key = row.market_id.lower()
+            supplied[key] = supplied.get(key, ZERO) + row.supply_assets
+    markets = sorted(
+        (envelope.value for envelope in snapshots.allocation_markets.values()),
+        key=lambda market: (-supplied.get(market.market_id.lower(), ZERO), market.market_id.lower()),
+    )
+    return tuple(markets[:MAX_BAD_DEBT_MARKETS]), max(0, len(markets) - MAX_BAD_DEBT_MARKETS)
+
+
+def _amount_in_asset(
+    position: ValidatedPosition, asset: AssetInfo, references: Mapping[str, AssetInfo]
+) -> Decimal | None:
+    """The lender amount (numeraire) in `asset` units, or None without a price to convert."""
+    if symbol_matches(position.numeraire, asset.symbol):
+        return position.amount
+    unit = convert_to_numeraire(Decimal(1), asset, position.numeraire, references.values())
+    if unit is None or unit <= ZERO:
+        return None
+    with localcontext() as context:
+        context.prec = 80
+        return position.amount / unit
 
 
 def _oracle_price(price: int | None, market: MarketSnapshot) -> Decimal | None:

@@ -348,3 +348,12 @@ def test_borrower_graph_is_marked_not_applicable_and_otherwise_unchanged() -> No
     assert "solvency_q" not in nodes[market_node_id("a")].metrics
     assert graph.edges == original.edges
     assert any("lender-only" in warning for warning in graph.completeness_warnings)
+
+
+def test_position_larger_than_its_pool_is_warned_and_its_loss_share_capped() -> None:
+    graph = annotate_solvency(
+        market_graph(), {market_id("a"): inputs("a", q=D("10"))}, x_in_pool_units=D("2000000")
+    )
+    assert by_id(graph)[POSITION].metrics["solvency_w_pool"] == D(2)
+    assert edge(graph, POSITION, market_node_id("a")).loss_share == D(1)
+    assert any("larger than the pool" in warning for warning in graph.completeness_warnings)

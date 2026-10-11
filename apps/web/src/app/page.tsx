@@ -1,12 +1,13 @@
 "use client"
 
-import type { AnalysisResponse, ExposureCreateRequest, HealthStatus, HydratedCatalogEntry, IncidentGraphResponse, IncidentImpact, PositionInput, RadarEntity, RadarGraphResponse } from "@risk0/contracts"
+import type { AnalysisResponse, ExposureCreateRequest, ExposureImpactResponse, HealthStatus, HydratedCatalogEntry, IncidentGraphResponse, IncidentImpact, PositionInput, RadarEntity, RadarGraphResponse } from "@risk0/contracts"
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 
 import { BookPanel } from "../components/book-panel"
 import { CatalogSelector, canAnalyze } from "../components/catalog-selector"
 import { DataQualityPanel } from "../components/data-quality"
+import { ExposureImpactPanel } from "../components/exposure-impact"
 import { ExposureRail } from "../components/exposure-rail"
 import { IncidentRail } from "../components/incident-rail"
 import { NotificationCenter } from "../components/notification-center"
@@ -133,6 +134,10 @@ export default function Home() {
   const exposureId = useRef<string | null>(null)
   const [exposureImpacts, setExposureImpacts] = useState<IncidentImpact[]>([])
   const [exposureStatus, setExposureStatus] = useState<{ kind: "ok" | "error"; message: string } | null>(null)
+  // The latest exposure's estimated impact across every active incident.
+  const [exposureReport, setExposureReport] = useState<ExposureImpactResponse | null>(null)
+  const [exposureReportError, setExposureReportError] = useState<string | null>(null)
+  const exposureReportToken = useRef(0)
   const [exposureBusy, setExposureBusy] = useState(false)
   // Identifies the latest analysis request; a response for an older one is dropped.
   const requestToken = useRef(0)
@@ -248,6 +253,21 @@ export default function Home() {
     }
   }, [])
 
+  const loadExposureReport = useCallback(async () => {
+    const id = exposureId.current
+    if (!id) return
+    const token = ++exposureReportToken.current
+    try {
+      const report = await getExposureImpact(id)
+      if (token !== exposureReportToken.current) return
+      setExposureReport(report)
+      setExposureReportError(null)
+    } catch (error) {
+      if (token !== exposureReportToken.current) return
+      setExposureReportError(`Exposure impact could not be loaded: ${errorMessage(error)}`)
+    }
+  }, [])
+
   /** Coalesce event-driven refetches: one graph (and selected incident) fetch per burst. */
   const scheduleRadarRefresh = useCallback((incidentId: string | null = null) => {
     if (incidentId !== null) pendingIncidentId.current = incidentId
@@ -257,10 +277,12 @@ export default function Home() {
       const pending = pendingIncidentId.current
       pendingIncidentId.current = null
       void refreshRadar()
+      // Incidents opening or resolving change what reaches the exposure.
+      void loadExposureReport()
       // Skip if the user has since selected a different incident.
       if (pending !== null && pending === requestedIncidentId.current) void focusIncident(pending)
     }, RADAR_REFRESH_DELAY_MS)
-  }, [focusIncident, refreshRadar])
+  }, [focusIncident, loadExposureReport, refreshRadar])
 
   useRadarEvents({
     onGraphUpdated: () => scheduleRadarRefresh(),
@@ -277,6 +299,8 @@ export default function Home() {
       const exposure = await createExposure(request)
       exposureId.current = exposure.exposure_id
       setExposureImpacts([])
+      setExposureReport(null)
+      void loadExposureReport()
       // Show the new exposure's impact on the incident already on screen.
       if (requestedIncidentId.current) void focusIncident(requestedIncidentId.current)
       setExposureStatus({ kind: "ok", message: `Exposure recorded: ${exposure.amount} ${exposure.numeraire}` })
@@ -500,6 +524,16 @@ export default function Home() {
                   <ExposureRail entities={radarGraph.entities} onSubmit={addExposure} busy={exposureBusy} />
                   {exposureStatus?.kind === "ok" ? <p role="status" className="exposure-status">{exposureStatus.message}</p> : null}
                   {exposureStatus?.kind === "error" ? <p role="alert" className="alert">{exposureStatus.message}</p> : null}
+                  {exposureReportError ? <p role="alert" className="alert">{exposureReportError}</p> : null}
+                  {exposureReport ? (
+                    <ExposureImpactPanel
+                      report={exposureReport}
+                      entities={displayedGraph.entities}
+                      incidents={radarGraph.active_incidents}
+                      selectedIncidentId={selectedIncident?.incident.incident_id ?? null}
+                      onViewIncident={focusIncident}
+                    />
+                  ) : null}
                 </div>
                 <aside id="incident-drawer-panel" className="floating-panel" aria-label="Incident drawer" hidden={!incidentsOpen}>
                   <IncidentRail

@@ -9,6 +9,8 @@ test("oracle incident opens, propagates to exposure, and resolves", async ({ pag
   await exposure.getByLabel("Exposure target").selectOption({ label: "Belem Sentinel USDC" })
   await exposure.getByRole("button", { name: "Add exposure" }).click()
   await expect(page.getByRole("status")).toContainText("Exposure recorded: 100000 USDC")
+  const impact = page.getByRole("region", { name: "Exposure impact" })
+  await expect(impact).toContainText("No active incident reaches this exposure.")
 
   const opened = await request.post(`${riskUrl}/v1/fixtures/radar/oracle-incident/open`)
   expect(opened.status()).toBe(201)
@@ -16,6 +18,10 @@ test("oracle incident opens, propagates to exposure, and resolves", async ({ pag
   const toast = page.getByRole("alert").filter({ hasText: "Critical oracle deviation" })
   await expect(toast).toContainText("deviated 8%")
   await expect(toast).toHaveAttribute("data-severity", "CRITICAL")
+
+  // The incident's propagation reaches the recorded exposure: the panel refreshes live.
+  await expect(impact).toContainText("Estimated affected: 60,000 USDC across 1 incident")
+  await expect(impact).toContainText("Path: WETH / USDC Oracle → WETH / USDC 86% → Belem Sentinel USDC")
 
   await page.getByRole("button", { name: "Notifications, 1 unread" }).click()
   const history = page.getByLabel("Notification history")

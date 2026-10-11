@@ -49,11 +49,21 @@ const categoryRadarGraph = {
   }],
 }
 
+const recordedExposure = {
+  exposure_id: "exposure:test", entity_id: "vault:1:catalog", mode: "lender", amount: "100000", numeraire: "USDC",
+  collateral_amount: null, debt_amount: null, ltv: null, created_at: "2026-10-10T12:01:00Z",
+}
+
+function exposureImpact(impacts: unknown[] = []) {
+  return { schema_version: "1.0.0", exposure: recordedExposure, impacts, generated_at: "2026-10-10T12:02:00Z" }
+}
+
 function stubApi(analysis: Response | (() => Promise<Response>) = Response.json(analysisResponse)) {
   const fetchMock = vi.fn(async (url: string) => {
     if (url === "/api/catalog") return Response.json(catalogResponse)
     if (url === "/api/graph") return Response.json(radarGraph)
     if (url.startsWith("/api/notifications")) return Response.json({ schema_version: "1.0.0", notifications: [], next_cursor: null, generated_at: "2026-10-10T12:00:00Z" })
+    if (url.startsWith("/api/exposures?")) return Response.json(exposureImpact())
     if (url === "/api/exposures") return Response.json({ exposure_id: "exposure:test", entity_id: "vault:1:catalog", mode: "lender", amount: "100000", numeraire: "USDC", collateral_amount: null, debt_amount: null, ltv: null, created_at: "2026-10-10T12:01:00Z" }, { status: 201 })
     if (url === "/api/analysis") return typeof analysis === "function" ? analysis() : analysis
     throw new Error(`unexpected ${url}`)
@@ -195,6 +205,82 @@ describe("Home", () => {
 
     await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => url === "/api/exposures")).toBe(true))
     expect(screen.getByRole("status")).toHaveTextContent("Exposure recorded")
+  })
+
+  it("shows that no active incident reaches a recorded exposure", async () => {
+    stubApi()
+    render(<Home />)
+
+    fireEvent.click(await screen.findByRole("button", { name: "Add exposure" }))
+
+    const impact = await screen.findByRole("region", { name: "Exposure impact" })
+    expect(impact).toHaveTextContent("100,000 USDC lender exposure in Belem Sentinel USDC")
+    expect(impact).toHaveTextContent("No active incident reaches this exposure.")
+  })
+
+  it("renders the estimated impact of a recorded exposure and hands off to the incident", async () => {
+    const incident = {
+      incident_id: "incident:oracle", source_entity_id: "vault:1:peer", severity: "CRITICAL", status: "OPEN",
+      trigger_metrics: {}, rule_version: "v1", first_observed_at: "2026-10-10T12:00:00Z",
+      last_observed_at: "2026-10-10T12:00:00Z", resolved_at: null, reasons: ["Oracle deviated 8%."],
+    }
+    const impacts = [
+      {
+        incident_id: "incident:oracle", target_entity_id: "position:1:exposure:test",
+        path: ["vault:1:peer", "vault:1:catalog", "position:1:exposure:test"], distance: 2, confidence: "0.7",
+        estimated_affected_amount: "60000", reasons: ["lender path allocation weight 0.6"], revealed: false,
+        alternate_path_count: 0,
+      },
+    ]
+    const base = stubApi()
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url === "/api/graph") return Response.json({ ...radarGraph, active_incidents: [incident] })
+      if (url.startsWith("/api/exposures?")) return Response.json(exposureImpact(impacts))
+      if (url.startsWith("/api/graph?incident_graph_id=")) {
+        return Response.json({
+          schema_version: "1.0.0", incident, entities: [], relationships: [], similarities: [], exposures: [],
+          impacts: [], generated_at: "2026-10-10T12:00:00Z",
+        })
+      }
+      return base(url)
+    })
+    vi.stubGlobal("fetch", fetchMock)
+    render(<Home />)
+
+    fireEvent.click(await screen.findByRole("button", { name: "Add exposure" }))
+
+    const panel = await screen.findByRole("region", { name: "Exposure impact" })
+    expect(panel).toHaveTextContent("Estimated affected: 60,000 USDC across 1 incident")
+    const row = within(within(panel).getByRole("list", { name: "Incidents reaching this exposure" })).getByRole("listitem")
+    expect(row).toHaveTextContent("Institutional USDC Peer")
+    expect(row).toHaveTextContent("CRITICAL")
+    expect(row).toHaveTextContent("Affected: 60,000 USDC")
+    expect(row).toHaveTextContent("Path: Institutional USDC Peer → Belem Sentinel USDC → Your exposure")
+    expect(row).toHaveTextContent("Confidence 70% · 2 hops")
+
+    fireEvent.click(within(row).getByRole("button", { name: "View incident Institutional USDC Peer" }))
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url).includes("incident_graph_id=incident%3Aoracle"))).toBe(true))
+  })
+
+  it("never counts an unknown affected amount as zero", async () => {
+    const impacts = ["a", "b"].map((id, index) => ({
+      incident_id: `incident:${id}`, target_entity_id: "vault:1:catalog", path: ["vault:1:catalog"], distance: 0,
+      confidence: "1", estimated_affected_amount: index === 0 ? "25000" : null,
+      reasons: index === 0 ? [] : ["allocation weight on the path is unavailable"], revealed: false,
+      alternate_path_count: 0,
+    }))
+    const base = stubApi()
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => (
+      url.startsWith("/api/exposures?") ? Response.json(exposureImpact(impacts)) : base(url)
+    )))
+    render(<Home />)
+
+    fireEvent.click(await screen.findByRole("button", { name: "Add exposure" }))
+
+    const panel = await screen.findByRole("region", { name: "Exposure impact" })
+    expect(panel).toHaveTextContent("Estimated affected: 25,000 USDC across 2 incidents (1 with an unknown amount, not counted as zero)")
+    expect(panel).toHaveTextContent("Affected amount unavailable")
+    expect(panel).toHaveTextContent("allocation weight on the path is unavailable")
   })
 
   it("uses a full radar workspace whose exposure and incident panels never cover each other", async () => {
@@ -507,6 +593,39 @@ describe("Home", () => {
     await waitFor(() => expect(graphCalls()).toBe(2))
     await new Promise((resolve) => setTimeout(resolve, 600))
     expect(graphCalls()).toBe(2)
+  })
+
+  it("refreshes the exposure impact when the radar reports a new incident", async () => {
+    const sources: { emit: (type: string, payload: unknown) => void }[] = []
+    vi.stubGlobal("EventSource", class {
+      listeners = new Map<string, (event: MessageEvent) => void>()
+      constructor() { sources.push(this) }
+      addEventListener(type: string, listener: (event: MessageEvent) => void) { this.listeners.set(type, listener) }
+      close() {}
+      emit(type: string, payload: unknown) { this.listeners.get(type)?.(new MessageEvent(type, { data: JSON.stringify(payload) })) }
+    })
+    let reached = false
+    const base = stubApi()
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (!url.startsWith("/api/exposures?")) return base(url)
+      return Response.json(exposureImpact(reached ? [{
+        incident_id: "incident:new", target_entity_id: "vault:1:catalog", path: ["vault:1:catalog"], distance: 0,
+        confidence: "1", estimated_affected_amount: "100000", reasons: [], revealed: false, alternate_path_count: 0,
+      }] : []))
+    }))
+    render(<Home />)
+    fireEvent.click(await screen.findByRole("button", { name: "Add exposure" }))
+    const panel = await screen.findByRole("region", { name: "Exposure impact" })
+    await waitFor(() => expect(panel).toHaveTextContent("No active incident reaches this exposure."))
+
+    reached = true
+    act(() => {
+      for (const source of sources) {
+        source.emit("incident.opened", { sequence: 1, type: "incident.opened", resource_id: "incident:new", summary: {} })
+      }
+    })
+
+    await waitFor(() => expect(screen.getByRole("region", { name: "Exposure impact" })).toHaveTextContent("Estimated affected: 100,000 USDC across 1 incident"))
   })
 
   it("keeps the most recently selected incident when an older response arrives late", async () => {

@@ -1747,6 +1747,10 @@ fieldset.panel legend,
   text-transform: uppercase;
 }
 
+.health-computation__hysteresis {
+  font-size: 0.85rem;
+}
+
 .health-computation__hysteresis span,
 .health-computation__meta dt {
   color: var(--color-muted);

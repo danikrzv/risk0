@@ -316,6 +316,13 @@ def test_recovery_is_held_then_confirmed():
     assert confirmed.status is HealthStatus.HEALTHY
     assert confirmed.derivation.hysteresis.held is False
     assert confirmed.derivation.hysteresis.counter == 3
+    recovery = checks(confirmed)[-1]
+    assert (recovery.operator, recovery.observed, recovery.threshold, recovery.leads_to) == (
+        ">=",
+        Decimal(3),
+        Decimal(3),
+        HealthStatus.HEALTHY,
+    )
     assert decisive(confirmed) == []
 
 

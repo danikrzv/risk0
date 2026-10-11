@@ -95,7 +95,7 @@ const confirmedWarning = derivation({
     rule: "WARNING needs 2 consecutive abnormal evaluations",
     metric: "consecutive_abnormal",
     observed: "2",
-    operator: "<",
+    operator: ">=",
     threshold: "2",
     outcome: "info",
     leads_to: "WARNING",
@@ -313,7 +313,7 @@ describe("HealthComputation", () => {
   it("notes when an incident overrides the displayed status", async () => {
     renderSection(async () => response(state({})), { displayedStatus: "CRITICAL" })
 
-    expect(await screen.findByText(/The radar shows CRITICAL for the incident under review/)).toBeInTheDocument()
+    expect(await screen.findByText(/The radar currently shows CRITICAL/)).toBeInTheDocument()
   })
 
   it("reports a failed load and retries on request", async () => {

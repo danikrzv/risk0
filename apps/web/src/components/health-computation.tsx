@@ -136,7 +136,7 @@ function HealthComputationBody({
       </p>
       {displayedStatus !== health.status ? (
         <p className="health-computation__note">
-          The radar shows {displayedStatus} for the incident under review; this is the recorded health evaluation.
+          The radar currently shows {displayedStatus} (an incident under review or a newer graph state); below is the latest recorded health evaluation.
         </p>
       ) : null}
       {derivation === null ? (

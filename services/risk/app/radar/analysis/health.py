@@ -734,7 +734,8 @@ class HealthEvaluator:
                     _OUTCOME.INFO,
                     metric="consecutive_abnormal",
                     observed=Decimal(abnormal),
-                    operator="<",
+                    # The condition as it resolved: held below, confirmed at or above.
+                    operator="<" if abnormal < cycles else ">=",
                     threshold=Decimal(cycles),
                     leads_to=(
                         HealthStatus.HEALTHY if abnormal < cycles else HealthStatus.WARNING
@@ -779,7 +780,7 @@ class HealthEvaluator:
                 _OUTCOME.INFO,
                 metric="consecutive_normal",
                 observed=Decimal(normal),
-                operator="<",
+                operator="<" if normal < cycles else ">=",
                 threshold=Decimal(cycles),
                 leads_to=previous if normal < cycles else HealthStatus.HEALTHY,
                 note=previous.value,

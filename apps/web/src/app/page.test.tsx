@@ -32,6 +32,21 @@ const radarGraph = {
   relationships: [], similarities: [], active_incidents: [], generated_at: "2026-10-10T12:00:00Z",
 }
 
+const categoryRadarGraph = {
+  ...radarGraph,
+  entities: [
+    ...radarGraph.entities,
+    { entity_id: "market:1:healthy", entity_type: "market", chain_id: 1, address_or_key: "healthy-market", label: "Healthy Market", source: "fixture:radar", catalog: false, visible: true, metadata: { health_status: "HEALTHY" } },
+    { entity_id: "market:1:unknown", entity_type: "market", chain_id: 1, address_or_key: "unknown-market", label: "Unknown Market", source: "fixture:radar", catalog: false, visible: true, metadata: { health_status: "BROKEN" } },
+    { entity_id: "oracle:1:warning", entity_type: "oracle", chain_id: 1, address_or_key: "warning-oracle", label: "Warning Oracle", source: "fixture:radar", catalog: false, visible: true, metadata: { health_status: "WARNING" } },
+  ],
+  active_incidents: [{
+    incident_id: "incident:market", source_entity_id: "market:1:healthy", severity: "CRITICAL", status: "OPEN",
+    trigger_metrics: {}, rule_version: "v1", first_observed_at: "2026-10-10T12:00:00Z",
+    last_observed_at: "2026-10-10T12:00:00Z", resolved_at: null, reasons: ["Liquidity threshold breached."],
+  }],
+}
+
 function stubApi(analysis: Response | (() => Promise<Response>) = Response.json(analysisResponse)) {
   const fetchMock = vi.fn(async (url: string) => {
     if (url === "/api/catalog") return Response.json(catalogResponse)
@@ -45,11 +60,79 @@ function stubApi(analysis: Response | (() => Promise<Response>) = Response.json(
   return fetchMock
 }
 
+function openPositionAnalysis() {
+  fireEvent.click(screen.getByRole("button", { name: "Position Analysis" }))
+}
+
 describe("Home", () => {
   it("renders the Risk0 heading", () => {
     stubApi()
     render(<Home />)
     expect(screen.getByRole("heading", { name: "Risk0" })).toBeInTheDocument()
+  })
+
+  it("opens on the full-screen Graph category without the removed masthead", async () => {
+    stubApi()
+    render(<Home />)
+
+    expect(screen.getByRole("button", { name: "Graph" })).toHaveAttribute("aria-current", "page")
+    expect(await screen.findByRole("heading", { name: "Morpho radar graph" })).toBeInTheDocument()
+    expect(screen.queryByText("Monitor dependencies, propagation, and portfolio impact")).not.toBeInTheDocument()
+    expect(screen.queryByRole("heading", { name: "Position analysis" })).not.toBeInTheDocument()
+  })
+
+  it("switches between health-marked Markets, Oracles, Incidents, and Position Analysis", async () => {
+    const base = stubApi()
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => (
+      url === "/api/graph" ? Response.json(categoryRadarGraph) : base(url)
+    )))
+    render(<Home />)
+    await screen.findByRole("heading", { name: "Morpho radar graph" })
+
+    fireEvent.click(screen.getByRole("button", { name: "Markets" }))
+    const markets = screen.getByRole("region", { name: "Markets" })
+    expect(within(markets).getByRole("button", { name: /Healthy Market.*HEALTHY/ })).toHaveTextContent("✓ HEALTHY")
+    expect(within(markets).getByRole("button", { name: /Unknown Market.*UNKNOWN/ })).toHaveTextContent("? UNKNOWN")
+
+    fireEvent.click(screen.getByRole("button", { name: "Oracles" }))
+    const oracles = screen.getByRole("region", { name: "Oracles" })
+    expect(within(oracles).getByRole("button", { name: /Warning Oracle.*WARNING/ })).toHaveTextContent("! WARNING")
+
+    fireEvent.click(screen.getByRole("button", { name: "Incidents" }))
+    const incidents = screen.getByRole("region", { name: "Incidents" })
+    expect(within(incidents).getByRole("button", { name: /Healthy Market.*CRITICAL/ })).toHaveTextContent("× CRITICAL")
+
+    fireEvent.click(screen.getByRole("button", { name: "Position Analysis" }))
+    expect(screen.getByRole("heading", { name: "Position analysis" })).toBeInTheDocument()
+    expect(await screen.findByRole("button", { name: /Belem RWA EURCV.*UNKNOWN/ })).toHaveTextContent("? UNKNOWN")
+  })
+
+  it("explains empty market, oracle, and incident lists", async () => {
+    stubApi()
+    render(<Home />)
+    await screen.findByRole("heading", { name: "Morpho radar graph" })
+
+    fireEvent.click(screen.getByRole("button", { name: "Markets" }))
+    expect(screen.getByText("No markets are currently available.")).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Oracles" }))
+    expect(screen.getByText("No oracles are currently available.")).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Incidents" }))
+    expect(within(screen.getByRole("region", { name: "Incidents" })).getByText("No active incidents.")).toBeInTheDocument()
+  })
+
+  it("returns to Graph and selects the entity chosen from a category list", async () => {
+    const base = stubApi()
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => (
+      url === "/api/graph" ? Response.json(categoryRadarGraph) : base(url)
+    )))
+    render(<Home />)
+    await screen.findByRole("heading", { name: "Morpho radar graph" })
+
+    fireEvent.click(screen.getByRole("button", { name: "Markets" }))
+    fireEvent.click(screen.getByRole("button", { name: /Healthy Market.*HEALTHY/ }))
+
+    expect(screen.getByRole("button", { name: "Graph" })).toHaveAttribute("aria-current", "page")
+    expect(screen.getByRole("button", { name: /Healthy Market.*HEALTHY/ })).toHaveAttribute("aria-pressed", "true")
   })
 
   it("renders the healthy radar and records a manual exposure", async () => {
@@ -85,6 +168,7 @@ describe("Home", () => {
   it("runs the select → inputs → scenarios → result flow", async () => {
     const fetchMock = stubApi()
     render(<Home />)
+    openPositionAnalysis()
 
     fireEvent.click(await screen.findByRole("radio", { name: /wstETH collateral \/ WETH debt/ }))
     fireEvent.click(screen.getByRole("radio", { name: "Borrower" }))
@@ -112,6 +196,7 @@ describe("Home", () => {
     let resolveAnalysis: (response: Response) => void = () => {}
     stubApi(() => new Promise<Response>((resolve) => (resolveAnalysis = resolve)))
     render(<Home />)
+    openPositionAnalysis()
 
     fireEvent.click(await screen.findByRole("radio", { name: /wstETH collateral \/ WETH debt/ }))
     fireEvent.click(screen.getByRole("radio", { name: "Borrower" }))
@@ -129,6 +214,7 @@ describe("Home", () => {
   it("resets scenario edits and errors when the entry changes", async () => {
     stubApi()
     render(<Home />)
+    openPositionAnalysis()
 
     fireEvent.click(await screen.findByRole("radio", { name: /Belem RWA EURCV/ }))
     fireEvent.change(screen.getByLabelText("Stablecoin depeg severity (%)"), { target: { value: "200" } })
@@ -146,6 +232,7 @@ describe("Home", () => {
   it("reports scenario errors even when the position is also invalid", async () => {
     const fetchMock = stubApi()
     render(<Home />)
+    openPositionAnalysis()
 
     fireEvent.click(await screen.findByRole("radio", { name: /Belem RWA EURCV/ }))
     fireEvent.change(screen.getByLabelText("Amount"), { target: { value: "abc" } })
@@ -169,6 +256,7 @@ describe("Home", () => {
   it("shows analysis errors without a recommendation", async () => {
     stubApi(Response.json({ error: "The risk service rejected this position or scenario selection" }, { status: 422 }))
     render(<Home />)
+    openPositionAnalysis()
 
     fireEvent.click(await screen.findByRole("radio", { name: /Belem RWA EURCV/ }))
     fireEvent.click(screen.getByRole("button", { name: "Run analysis" }))
@@ -182,6 +270,7 @@ describe("Home", () => {
   it("blocks analysis when no scenario is selected", async () => {
     const fetchMock = stubApi()
     render(<Home />)
+    openPositionAnalysis()
 
     fireEvent.click(await screen.findByRole("radio", { name: /Belem RWA EURCV/ }))
     for (const checkbox of screen.getAllByRole("checkbox")) fireEvent.click(checkbox)
@@ -296,11 +385,13 @@ describe("Home", () => {
     stubApi()
     render(<Home />)
 
-    expect(screen.getByText("Loading curated catalog…")).toBeInTheDocument()
     expect(screen.getByText("Loading radar topology…")).toBeInTheDocument()
-    expect(await screen.findByRole("heading", { name: "Morpho radar graph" })).toBeInTheDocument()
+    openPositionAnalysis()
+    expect(screen.getByText("Loading curated catalog…")).toBeInTheDocument()
     await screen.findByRole("radio", { name: /Belem RWA EURCV/ })
     expect(screen.queryByText("Loading curated catalog…")).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Graph" }))
+    expect(await screen.findByRole("heading", { name: "Morpho radar graph" })).toBeInTheDocument()
     expect(screen.queryByText("Loading radar topology…")).not.toBeInTheDocument()
   })
 
@@ -332,6 +423,7 @@ describe("Home", () => {
     vi.stubGlobal("fetch", fetchMock)
     render(<Home />)
 
+    openPositionAnalysis()
     // Retried failures are announced politely and never as a dead-end alert.
     expect(await screen.findByText("Risk service is busy — retrying")).toHaveAttribute("role", "status")
     expect(screen.queryByRole("alert")).not.toBeInTheDocument()
@@ -339,6 +431,7 @@ describe("Home", () => {
     expect(screen.getByText("Loading radar topology…")).toBeInTheDocument()
 
     expect(await screen.findByRole("radio", { name: /Belem RWA EURCV/ }, { timeout: 4_000 })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Graph" }))
     // The radar is still retrying once the catalog error is gone.
     expect(
       await screen.findByText("Risk service is starting or unreachable — retrying automatically", {}, { timeout: 4_000 }),

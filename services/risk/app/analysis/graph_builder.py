@@ -825,7 +825,7 @@ class _Builder:
         existing = self.nodes.get(identifier)
         if existing is not None:
             current = existing.metrics.get("deviation")
-            if deviation is not None and (not isinstance(current, Decimal) or deviation > current):
+            if deviation is not None and (not isinstance(current, Decimal) or abs(deviation) > abs(current)):
                 self.nodes[identifier] = existing.model_copy(
                     update={"metrics": {**existing.metrics, "deviation": deviation}}
                 )

@@ -197,6 +197,7 @@ def vault_graph(
     collateral_b: str = CBBTC,
     available_liquidity: Decimal | None = Decimal("5000"),
     pool_depth: Decimal | None = Decimal("2000000"),
+    oracle_a_deviation: str = "0.001",
 ) -> RiskGraph:
     """USDC vault lending into two markets; Morpho and Ethereum are shared."""
     collateral_nodes = {
@@ -211,7 +212,7 @@ def vault_graph(
             node(MARKET_B, **MARKET_TOTALS, market_id=MARKET_B_ID),
             node(USDC, symbol="USDC"),
             *{key: collateral_nodes[key] for key in (collateral_a, collateral_b)}.values(),
-            node(ORACLE_A, age_seconds=Decimal("60"), deviation=Decimal("0.001")),
+            node(ORACLE_A, age_seconds=Decimal("60"), deviation=Decimal(oracle_a_deviation)),
             node(ORACLE_B, age_seconds=Decimal("60"), deviation=Decimal("0.001")),
             node(MORPHO, symbol="Morpho"),
             node(ETHEREUM),
@@ -481,6 +482,33 @@ def test_loan_asset_depeg_reduces_stressed_debt_value():
     assert result.stressed_values["stressed_ltv"] == Decimal("450.0") / Decimal("1000")
     assert result.impact == Decimal("0")
     assert USDC in result.affected_path
+
+
+@pytest.mark.parametrize(
+    ("deviation", "breach"),
+    [("-0.07", False), ("0.07", True), ("0.049", False)],
+)
+def test_lender_oracle_breach_only_when_the_oracle_overvalues_collateral(deviation, breach):
+    # An oracle pricing collateral below the market (e.g. a deliberately lowered
+    # feed) liquidates borrowers early, which protects lenders.
+    result = run_one(
+        lender("1000"),
+        vault_graph("0.4", "0.6", oracle_a_deviation=deviation),
+        select(ScenarioId.ORACLE_FAILURE, "0.05"),
+    )
+
+    assert (ORACLE_FAILURE_TRIGGER in result.hard_triggers) is breach
+    assert result.stressed_values["oracle_max_deviation"] == abs(Decimal(deviation))
+
+
+def test_borrower_oracle_breach_in_either_direction():
+    result = run_one(
+        borrower("1000", "100"),
+        market_borrow_graph(oracle_deviation="-0.07"),
+        select(ScenarioId.ORACLE_FAILURE, "0.05"),
+    )
+
+    assert ORACLE_FAILURE_TRIGGER in result.hard_triggers
 
 
 def test_borrower_oracle_failure_can_force_liquidation_and_flags_live_breach():

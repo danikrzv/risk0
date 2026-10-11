@@ -73,6 +73,7 @@ from app.domain.scenario import (
     LIQUIDATION_TRIGGER,
     LIQUIDITY_SHORTFALL,
     ORACLE_DEVIATION_THRESHOLD,
+    oracle_deviation_breaches,
     ORACLE_FAILURE_TRIGGER,
     ORACLE_STALE_THRESHOLD_SECONDS,
     PERMANENT_LOSS_COMPONENTS,
@@ -343,7 +344,7 @@ class ScenarioEngine:
         else:
             outcome = self._borrower(position, view, definition, severity)
         if definition.event_family == EventFamily.ORACLE_FAILURE:
-            self._check_live_oracles(view, outcome)
+            self._check_live_oracles(view, outcome, position.mode)
         if definition.event_family == EventFamily.LIQUIDITY_COLLAPSE:
             self._stress_exit_pools(view, severity, outcome)
         if definition.event_family in UNMODELLED_SENSITIVE_FAMILIES:
@@ -826,16 +827,18 @@ class ScenarioEngine:
 
     # Shared stressed metrics
 
-    def _check_live_oracles(self, view: _GraphView, outcome: _Outcome) -> None:
+    def _check_live_oracles(self, view: _GraphView, outcome: _Outcome, mode: PositionMode) -> None:
         oracles = sorted(view.nodes_of_type(RiskNodeType.ORACLE, view.reachable(LOSS_EDGES)))
         ages = [view.decimal_metric(node_id, ORACLE_AGE_SECONDS_KEY) for node_id in oracles]
         deviations = [view.decimal_metric(node_id, ORACLE_DEVIATION_KEY) for node_id in oracles]
         known_ages = [age for age in ages if age is not None]
-        known_deviations = [abs(value) for value in deviations if value is not None]
+        known_deviations = [value for value in deviations if value is not None]
         max_age = max(known_ages, default=None)
-        max_deviation = max(known_deviations, default=None)
-        breached = (max_age is not None and max_age >= ORACLE_STALE_THRESHOLD_SECONDS) or (
-            max_deviation is not None and max_deviation >= ORACLE_DEVIATION_THRESHOLD
+        # Reported as the largest magnitude; whether it breaches depends on the
+        # side of the market (`oracle_deviation_breaches`).
+        max_deviation = max((abs(value) for value in known_deviations), default=None)
+        breached = (max_age is not None and max_age >= ORACLE_STALE_THRESHOLD_SECONDS) or any(
+            oracle_deviation_breaches(value, mode) for value in known_deviations
         )
         if not oracles or len(known_ages) < len(oracles) or len(known_deviations) < len(oracles):
             outcome.warnings.append("Live oracle age or deviation is unavailable.")

@@ -136,6 +136,7 @@ from app.domain.protocol import ProtocolTvlSnapshot
 from app.domain.scenario import (
     ORACLE_DEVIATION_THRESHOLD,
     ORACLE_STALE_THRESHOLD_SECONDS,
+    oracle_deviation_breaches,
     SCENARIO_DEFINITIONS,
     ScenarioSeverityError,
     validate_selection,
@@ -473,7 +474,7 @@ class AnalysisService:
             scenarios,
             exit_estimate,
             quality,
-            live_triggers=self._live_triggers(oracles),
+            live_triggers=self._live_triggers(oracles, position.mode),
             numeraire=position.numeraire,
             carry=_carry(position, snapshots),
             confidence_caps=_unjudged_oracle_caps(oracles),
@@ -876,7 +877,7 @@ class AnalysisService:
     # Live triggers
 
     def _live_triggers(
-        self, oracles: Mapping[str, DataEnvelope[OracleObservation]]
+        self, oracles: Mapping[str, DataEnvelope[OracleObservation]], mode: PositionMode
     ) -> tuple[LiveTrigger, ...]:
         triggers: list[LiveTrigger] = []
         for address in sorted(oracles):
@@ -888,9 +889,8 @@ class AnalysisService:
                 observation.age_seconds is not None
                 and observation.age_seconds >= ORACLE_STALE_THRESHOLD_SECONDS
             )
-            deviated = (
-                observation.deviation is not None
-                and abs(observation.deviation) >= ORACLE_DEVIATION_THRESHOLD
+            deviated = observation.deviation is not None and oracle_deviation_breaches(
+                observation.deviation, mode
             )
             if stale or deviated:
                 triggers.append(
@@ -1925,7 +1925,11 @@ def _computed_now(updated_at: int, block_timestamp: int | None) -> bool:
 
 
 def _oracle_deviation(price: int | None, market: MarketSnapshot) -> Decimal | None:
-    """|price() as collateral per loan token - Morpho USD ratio| / Morpho USD ratio."""
+    """(price() as collateral per loan token - Morpho USD ratio) / Morpho USD ratio.
+
+    Signed: positive when the oracle values the collateral above the market
+    (`oracle_deviation_breaches` applies the threshold per position side).
+    """
     collateral = market.collateral_asset.price_usd
     loan = market.loan_asset.price_usd
     if price is None or price <= 0 or collateral is None or loan is None:
@@ -1937,7 +1941,7 @@ def _oracle_deviation(price: int | None, market: MarketSnapshot) -> Decimal | No
         context.prec = 60
         oracle_price = Decimal(price).scaleb(-exponent)
         reference = collateral / loan
-        return abs(oracle_price - reference) / reference
+        return (oracle_price - reference) / reference
 
 
 class FileAndDefiScanEvidence:

@@ -1908,6 +1908,7 @@ class ChainlinkOracleHealth:
                 deviation=_oracle_deviation(state.price, market),
                 oracle_type=oracle.oracle_type,
                 feeds=tuple(feeds),
+                price=_oracle_price(state.price, market),
             ),
             source=(
                 f"chainlink:{oracle.oracle_type}({names}) (age_seconds is staleness beyond "
@@ -1990,6 +1991,14 @@ class ChainlinkOracleHealth:
 def _computed_now(updated_at: int, block_timestamp: int | None) -> bool:
     """A computed-on-read feed reports no update time, or the read block's own time."""
     return updated_at == 0 or (block_timestamp is not None and updated_at == block_timestamp)
+
+
+def _oracle_price(price: int | None, market: MarketSnapshot) -> Decimal | None:
+    """`price()` as loan-token units per collateral token (scaled by 1e36 in token units)."""
+    if price is None or price <= 0:
+        return None
+    exponent = 36 + market.loan_asset.decimals - market.collateral_asset.decimals
+    return Decimal(price).scaleb(-exponent)
 
 
 def _oracle_deviation(price: int | None, market: MarketSnapshot) -> Decimal | None:

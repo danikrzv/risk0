@@ -120,6 +120,38 @@ describe("Home", () => {
     expect(within(screen.getByRole("region", { name: "Incidents" })).getByText("No active incidents.")).toBeInTheDocument()
   })
 
+  it("shows radar loading state instead of empty category messages while the graph is pending", () => {
+    const base = stubApi()
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url === "/api/graph") return new Promise<Response>(() => {})
+      return base(url)
+    }))
+    render(<Home />)
+
+    for (const category of ["Markets", "Oracles", "Incidents"]) {
+      fireEvent.click(screen.getByRole("button", { name: category }))
+      const region = screen.getByRole("region", { name: category })
+      expect(within(region).getByText("Loading radar topology…")).toHaveAttribute("role", "status")
+      expect(within(region).queryByText(/No (markets|oracles|active incidents)/)).not.toBeInTheDocument()
+    }
+  })
+
+  it("shows radar errors instead of empty category messages when the graph fails", async () => {
+    const base = stubApi()
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => (
+      url === "/api/graph" ? Response.json({ error: "Risk service unavailable" }, { status: 502 }) : base(url)
+    )))
+    render(<Home />)
+    await screen.findByText("DEGRADED")
+
+    for (const category of ["Markets", "Oracles", "Incidents"]) {
+      fireEvent.click(screen.getByRole("button", { name: category }))
+      const region = screen.getByRole("region", { name: category })
+      expect(within(region).getByRole("alert")).toHaveTextContent("Risk service unavailable")
+      expect(within(region).queryByText(/No (markets|oracles|active incidents)/)).not.toBeInTheDocument()
+    }
+  })
+
   it("returns to Graph and selects the entity chosen from a category list", async () => {
     const base = stubApi()
     vi.stubGlobal("fetch", vi.fn(async (url: string) => (

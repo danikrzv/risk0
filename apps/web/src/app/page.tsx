@@ -462,7 +462,11 @@ export default function Home() {
             <span className="eyebrow">RADAR ENTITIES</span>
             <h2 id="markets-heading">Markets</h2>
           </header>
-          {marketEntities.length === 0 ? <p className="category-view__empty">No markets are currently available.</p> : (
+          {!radarGraph ? (
+            radarError
+              ? <LoadErrorMessage error={radarError} />
+              : <p role="status" className="category-view__empty">Loading radar topology…</p>
+          ) : marketEntities.length === 0 ? <p className="category-view__empty">No markets are currently available.</p> : (
             <ul className="category-list" aria-label="Market health">
               {marketEntities.map((entity) => {
                 const status = entityHealthStatus(entity)
@@ -489,7 +493,11 @@ export default function Home() {
             <span className="eyebrow">RADAR ENTITIES</span>
             <h2 id="oracles-heading">Oracles</h2>
           </header>
-          {oracleEntities.length === 0 ? <p className="category-view__empty">No oracles are currently available.</p> : (
+          {!radarGraph ? (
+            radarError
+              ? <LoadErrorMessage error={radarError} />
+              : <p role="status" className="category-view__empty">Loading radar topology…</p>
+          ) : oracleEntities.length === 0 ? <p className="category-view__empty">No oracles are currently available.</p> : (
             <ul className="category-list" aria-label="Oracle health">
               {oracleEntities.map((entity) => {
                 const status = entityHealthStatus(entity)
@@ -519,7 +527,11 @@ export default function Home() {
             <span className="eyebrow">ACTIVE SIGNALS</span>
             <h2 id="incidents-heading">Incidents</h2>
           </header>
-          {activeIncidents.length === 0 ? <p className="category-view__empty">No active incidents.</p> : (
+          {!radarGraph ? (
+            radarError
+              ? <LoadErrorMessage error={radarError} />
+              : <p role="status" className="category-view__empty">Loading radar topology…</p>
+          ) : activeIncidents.length === 0 ? <p className="category-view__empty">No active incidents.</p> : (
             <ul className="category-list" aria-label="Active incident categories">
               {activeIncidents.map((incident) => {
                 const label = radarLabels.get(incident.source_entity_id) ?? incident.source_entity_id

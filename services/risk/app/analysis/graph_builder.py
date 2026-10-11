@@ -8,7 +8,10 @@ Graph shape, matching the scenario engine's traversal rules:
 - market:         --lends--> loan asset, --uses_collateral--> collateral asset,
                   --uses_oracle--> oracle, --deployed_on--> Morpho
 - oracle:         --uses_oracle--> each feed it reads, when the live observation
-                  decoded the oracle (feeds are oracle nodes keyed by feed address)
+                  decoded the oracle (feeds are oracle nodes keyed by feed address,
+                  with `feed_kind`, `provider`, `last_update_age_seconds`,
+                  `heartbeat_seconds` and `heartbeat_source`; a third-party feed
+                  whose staleness is not judged adds a completeness warning)
 - vault:          --lends--> vault asset, --deployed_on--> Morpho
 - Morpho --deployed_on--> Ethereum
 - position --exits_through--> pool --exits_through--> pool tokens already in the graph
@@ -840,6 +843,21 @@ class _Builder:
             "deviation": deviation,
             "deviation_scope": "oracle price this feed composes",
         }
+        if feed.provider is not None:
+            metrics["provider"] = feed.provider
+        if feed.history_readable is not None:
+            metrics["round_history_readable"] = feed.history_readable
+        if feed.staleness_unjudged:
+            metrics["staleness_judged"] = False
+            age = (
+                _duration(feed.last_update_age_seconds)
+                if feed.last_update_age_seconds is not None
+                else "an unknown time"
+            )
+            self._warn(
+                f"{feed.provider or 'Unknown-provider'} feed {feed.description or feed.address.lower()} "
+                f"has no published heartbeat; last update {age} ago; staleness not judged."
+            )
         label = f"{feed.description or feed.address.lower()} ({feed.kind.replace('_', ' ')})"
         return self._add_envelope_node(RiskNodeType.ORACLE, feed.address, label, metrics, observation)
 
@@ -912,6 +930,16 @@ class _Builder:
     def _warn(self, message: str) -> None:
         if message not in self.warnings:
             self.warnings.append(message)
+
+
+def _duration(seconds: Decimal) -> str:
+    """A feed age for a warning: minutes under 2 h, hours under 2 days, else days."""
+    value = float(seconds)
+    if value < 7200:
+        return f"{value / 60:.0f} min"
+    if value < 172800:
+        return f"{value / 3600:.1f} h"
+    return f"{value / 86400:.1f} days"
 
 
 def _reference_assets(context: GraphContext) -> tuple[AssetInfo, ...]:

@@ -122,12 +122,14 @@ class HistoricalProbabilityService:
         *,
         now: datetime,
         label: str | None = None,
+        require_phase: bool = True,
     ) -> EmpiricalProbabilityEvidence:
         """Share of 30-day windows in which the feed was stale beyond heartbeat + 30 minutes.
 
         Uses exact update timestamps from round reads (`get_feed_updates`), never
         the hourly price series, so a gap only minutes past the threshold is still
-        seen; see `app.history.staleness`.
+        seen; see `app.history.staleness`. `require_phase=False` reads a
+        third-party AggregatorV3 feed whose round ids carry no Chainlink phase.
         """
         name = label or feed_address.lower()
         event = StalenessEvent(heartbeat_seconds)
@@ -142,9 +144,15 @@ class HistoricalProbabilityService:
         if not callable(reader):
             return unavailable("Feed update history is not available from this client")
         try:
-            updates = reader(feed_address, normalized_start, normalized_end)
+            if require_phase:
+                updates = reader(feed_address, normalized_start, normalized_end)
+            else:
+                updates = reader(
+                    feed_address, normalized_start, normalized_end, require_phase=False
+                )
         except UnsupportedFeedError:
-            return unavailable(f"{name} is not a Chainlink aggregator with readable rounds")
+            kind = "a Chainlink aggregator" if require_phase else "a feed"
+            return unavailable(f"{name} is not {kind} with readable rounds")
         except EthereumProviderError:
             return unavailable("Ethereum provider history is unavailable")
         series = staleness_series(

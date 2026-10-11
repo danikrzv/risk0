@@ -211,8 +211,15 @@ def make_recommendation(
     live_triggers: Iterable[str | LiveTrigger] = (),
     numeraire: str = "",
     carry: CarryEstimate | None = None,
+    confidence_caps: Iterable[tuple[ConfidenceLevel, str]] = (),
 ) -> Recommendation:
-    """`carry` is the position yield; without it the forgone yield is zero (older callers)."""
+    """`carry` is the position yield; without it the forgone yield is zero (older callers).
+
+    `confidence_caps` are (highest allowed confidence, reason) pairs for data that
+    is usable but only partly judged (for example a live oracle whose
+    third-party feed staleness is unknown). Each cap bounds a STAY or EXIT
+    confidence and adds its reason to the explanation.
+    """
     unit = f" {numeraire}" if numeraire else ""
     live = tuple(
         item if isinstance(item, LiveTrigger) else LiveTrigger(item) for item in live_triggers
@@ -346,6 +353,10 @@ def make_recommendation(
             f"Sources conflict on {fields}; the conservative value was used and "
             "confidence was lowered."
         )
+    for cap, reason in confidence_caps:
+        if CONFIDENCE_ORDER.index(cap) < CONFIDENCE_ORDER.index(confidence):
+            confidence = cap
+        parts.append(reason)
     if decision is RecommendationDecision.EXIT and not exit_estimate.withdrawable:
         parts.append(
             "Exit is recommended, but a full exit is currently unavailable: current "

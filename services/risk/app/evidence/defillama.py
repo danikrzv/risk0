@@ -45,11 +45,22 @@ The rate is the probability of an impairment *event* within 30 days. The
 scenario severity is the loss fraction given that event; it does not scale the
 probability.
 
+Oracle-exploit prior (`oracle_exploit_estimate`)
+-------------------------------------------------
+The same population, window, exposure rule, matching rule, materiality
+threshold, Wilson interval and 30-day conversion, restricted to oracle-related
+incidents: DeFiLlama classification "Oracle Manipulation", or a technique that
+mentions "oracle" (for example "Oracle Misconfiguration", "Stale Oracle
+Price"). It answers "how often does a large lending protocol suffer a material
+oracle-related exploit in a year" and is used as the oracle-failure probability
+of a third-party feed whose staleness history cannot be measured. It is an
+industry prior, not a feed-specific estimate, so it is always LOW confidence.
+
 TVL concentration (`protocol_tvl_snapshot`): see `app.domain.protocol`.
 """
 
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal, localcontext
@@ -73,6 +84,9 @@ from app.history.estimator import _wilson_interval as wilson_interval
 
 
 BASE_RATE_MODEL_VERSION = "protocol-base-rate-v1"
+ORACLE_PRIOR_MODEL_VERSION = "oracle-exploit-prior-v1"
+ORACLE_CLASSIFICATION = "oracle manipulation"
+ORACLE_TECHNIQUE_MARKER = "oracle"
 LENDING_CATEGORIES = frozenset({"Lending", "CDP"})
 TVL_FLOOR_USD = Decimal(100_000_000)
 MATERIAL_LOSS_USD = Decimal(1_000_000)
@@ -152,8 +166,12 @@ def compute_base_rate(
     protocols: Iterable[DefiLlamaProtocol],
     *,
     now: datetime,
+    incident_filter: Callable[[DefiLlamaHack], bool] | None = None,
 ) -> BaseRate | None:
-    """The base rate over the window, or None when the population has no protocol-years."""
+    """The base rate over the window, or None when the population has no protocol-years.
+
+    `incident_filter` restricts the counted incidents (exposure is unchanged).
+    """
     first, last = observation_window(now)
     lending = {
         protocol.id: protocol for protocol in protocols if protocol.category in LENDING_CATEGORIES
@@ -174,6 +192,8 @@ def compute_base_rate(
     for hack in hacks:
         year = hack.occurred_at.astimezone(UTC).year
         if not first <= year <= last or not _material(hack):
+            continue
+        if incident_filter is not None and not incident_filter(hack):
             continue
         if hack.defillama_id is not None:
             protocol, matched_by = by_id.get(hack.defillama_id), "defillama_id"
@@ -268,6 +288,72 @@ def base_rate_estimate(
         retrieved_at=min(hacks.fetched_at, protocols.fetched_at),
         freshness=freshness,
         explanation=_explanation(protocol, rate, central, low, high, hacks.value, protocols.value),
+    )
+
+
+def is_oracle_incident(hack: DefiLlamaHack) -> bool:
+    """DeFiLlama classifies the incident as oracle manipulation or names an oracle technique."""
+    classification = (hack.classification or "").strip().casefold()
+    technique = (hack.technique or "").casefold()
+    return classification == ORACLE_CLASSIFICATION or ORACLE_TECHNIQUE_MARKER in technique
+
+
+def oracle_exploit_estimate(
+    hacks: DataEnvelope[tuple[DefiLlamaHack, ...]],
+    protocols: DataEnvelope[tuple[DefiLlamaProtocol, ...]],
+    *,
+    now: datetime,
+) -> ProbabilityEstimate | None:
+    """The 30-day oracle-exploit prior, or None without protocol-years."""
+    rate = compute_base_rate(
+        hacks.value, protocols.value, now=now, incident_filter=is_oracle_incident
+    )
+    if rate is None:
+        return None
+    with localcontext() as context:
+        context.prec = PRECISION
+        central = annual_to_horizon(rate.annual_central)
+        low = annual_to_horizon(rate.annual_low)
+        high = annual_to_horizon(rate.annual_high)
+    freshness = max((hacks.freshness, protocols.freshness), key=_FRESHNESS_ORDER.index)
+    categories = " and ".join(sorted(LENDING_CATEGORIES, reverse=True))
+    matched = "; ".join(
+        f"{_incident(item.hack)} -> {item.protocol.name}" for item in rate.incidents
+    ) or "none"
+    explanation = " ".join(
+        [
+            f"Industry oracle-exploit prior ({ORACLE_PRIOR_MODEL_VERSION}) from DeFiLlama, not a "
+            f"feed-specific estimate: {rate.event_years} protocol-years with a material "
+            f"oracle-related exploit in {rate.protocol_years} protocol-years, "
+            f"{rate.first_year}-{rate.last_year}.",
+            f"Population: DeFiLlama {categories} protocols with current TVL >= "
+            f"{_usd(TVL_FLOOR_USD)} on any chain ({len(rate.population)} protocols), the same "
+            "population and exposure rule as the protocol-impairment base rate.",
+            f"Event: a DeFiLlama /hacks incident classified \"Oracle Manipulation\" or with a "
+            f"technique naming an oracle, gross loss >= {_usd(MATERIAL_LOSS_USD)}, matched to a "
+            "population protocol by DeFiLlama id or exact normalized name.",
+            f"Annual rate {_percent(rate.annual_central)} (Wilson 95%: "
+            f"{_percent(rate.annual_low)} to {_percent(rate.annual_high)}), converted to 30 days "
+            f"as 1 - (1 - annual)^(30/365): central {_percent(central, 3)}, range "
+            f"{_percent(low, 3)} to {_percent(high, 3)}.",
+            f"Matched incidents: {matched}.",
+            "Caveats: survivorship (the population is selected on current TVL) and unmatched "
+            "incident names push the rate down; an exploit is not the same event as a stale "
+            "feed, so this stands in for a feed whose own update history cannot be measured. "
+            "LOW confidence.",
+        ]
+    )
+    return ProbabilityEstimate(
+        method=ProbabilityMethod.MODEL_ESTIMATED_PROTOCOL,
+        low=low,
+        central=central,
+        high=high,
+        confidence=BASE_RATE_CONFIDENCE,
+        horizon_days=HORIZON_DAYS,
+        source=f"{hacks.source}; {protocols.source}",
+        retrieved_at=min(hacks.fetched_at, protocols.fetched_at),
+        freshness=freshness,
+        explanation=explanation,
     )
 
 

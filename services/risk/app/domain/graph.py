@@ -40,11 +40,15 @@ class GraphConstructionError(ValueError):
 
 
 class OracleFeedObservation(BaseModel):
-    """One price source read by a decoded oracle (a Chainlink feed or an on-chain rate adapter).
+    """One price source read by a decoded oracle (`kind` is an `app.adapters.morpho_oracle.FeedKind`).
 
-    `staleness_seconds` is the age beyond the heartbeat (zero for a rate adapter,
-    which computes its answer when read); `heartbeat_source` says whether the
-    heartbeat came from the documented table or was inferred from round history.
+    `staleness_seconds` is the age beyond the heartbeat (zero for a feed that
+    computes its answer when read); `heartbeat_source` says whether the
+    heartbeat was documented, published by a third-party provider, inferred
+    from round history, or is unknown. A third-party feed with an unknown
+    heartbeat has an observed `last_update_age_seconds` but no
+    `staleness_seconds`: its staleness is not judged. `provider` is parsed from
+    the description for display only.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -58,6 +62,12 @@ class OracleFeedObservation(BaseModel):
     heartbeat_seconds: DecimalValue | None = None
     heartbeat_source: str | None = None
     staleness_seconds: DecimalValue | None = None
+    provider: str | None = None
+    history_readable: bool | None = None
+
+    @property
+    def staleness_unjudged(self) -> bool:
+        return self.kind == "third_party" and self.staleness_seconds is None
 
 
 class OracleObservation(BaseModel):
@@ -74,6 +84,11 @@ class OracleObservation(BaseModel):
     deviation: DecimalValue | None = None
     oracle_type: str | None = None
     feeds: tuple[OracleFeedObservation, ...] = ()
+
+    @property
+    def unjudged_feeds(self) -> tuple[OracleFeedObservation, ...]:
+        """Third-party feeds whose age is observed but whose staleness is not judged."""
+        return tuple(feed for feed in self.feeds if feed.staleness_unjudged)
 
 
 @dataclass(frozen=True)

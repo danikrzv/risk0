@@ -366,3 +366,38 @@ def test_settings_repr_redacts_rpc_url(monkeypatch):
     assert secret not in rendered
     assert "https://" not in rendered
     assert "<redacted>" in rendered
+
+
+def test_third_party_feed_without_phases_is_read_only_when_asked(monkeypatch):
+    chain = FakeChain()
+    rounds = [(k, 10**8 + k, ts(6 * (40 - k))) for k in range(1, 41)]
+    chain.add_third_party_feed(ADAPTER, "RedStone Price Feed for X_FUNDAMENTAL", 8, rounds)
+    client = client_for(chain, monkeypatch)
+
+    with pytest.raises(UnsupportedFeedError):
+        client.get_feed_updates(ADAPTER, NOW - timedelta(days=5), NOW)
+    updates = client.get_feed_updates(ADAPTER, NOW - timedelta(days=5), NOW, require_phase=False)
+
+    # Rounds 20..40 are inside the five days; round 19 is the answer standing at the start.
+    assert [int(item.timestamp.timestamp()) for item in updates] == [
+        ts(6 * (40 - k)) for k in range(19, 41)
+    ]
+
+
+def test_calls_can_be_pinned_to_an_earlier_block(monkeypatch):
+    from app.adapters.multicall import (
+        GET_CURRENT_BLOCK_TIMESTAMP_SELECTOR,
+        MULTICALL3_ADDRESS,
+        decode_uint,
+    )
+
+    chain = FakeChain()
+    chain.block_timestamp = ts(0)
+    client = client_for(chain, monkeypatch)
+    call = Call(MULTICALL3_ADDRESS, GET_CURRENT_BLOCK_TIMESTAMP_SELECTOR)
+
+    (latest,) = client.aggregate([call])
+    (earlier,) = client.aggregate([call], block=chain.block_number - 1)
+
+    assert decode_uint(latest.data) - decode_uint(earlier.data) == 12
+    assert chain.blocks_called == ["latest", hex(chain.block_number - 1)]

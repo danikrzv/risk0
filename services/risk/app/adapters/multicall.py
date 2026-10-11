@@ -16,6 +16,10 @@ from dataclasses import dataclass
 MULTICALL3_ADDRESS = "0xcA11bde05977b3631167028862bE2a173976CA11"
 # keccak("aggregate3((address,bool,bytes)[])")[:4]
 AGGREGATE3_SELECTOR = "0x82ad56cb"
+# Multicall3 block-context getters, verified with eth_call on mainnet on
+# 2026-10-11 (block 26166480, timestamp 1791688835, and the same at block - 1).
+GET_BLOCK_NUMBER_SELECTOR = "0x42cbb15c"  # getBlockNumber()
+GET_CURRENT_BLOCK_TIMESTAMP_SELECTOR = "0x0f28c97d"  # getCurrentBlockTimestamp()
 WORD_BYTES = 32
 
 

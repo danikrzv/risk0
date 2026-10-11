@@ -11,8 +11,10 @@ from app.evidence.defillama import (
     annual_to_horizon,
     base_rate_estimate,
     compute_base_rate,
+    is_oracle_incident,
     normalize_name,
     observation_window,
+    oracle_exploit_estimate,
     protocol_incidents,
     protocol_tvl_snapshot,
     DEFILLAMA_PROTOCOLS,
@@ -283,3 +285,68 @@ def test_protocol_tvl_snapshot_without_data_is_none_or_partial(data):
     assert partial.chain_tvl_usd is not None
     no_borrowed = partial.model_copy(update={"chain_borrowed_usd": None})
     assert no_borrowed.chain_gross_deposits_usd is None
+
+
+# Oracle-exploit prior
+
+
+def classified(name, year, classification, technique=None, amount="5000000"):
+    return hack(name, year, amount).model_copy(
+        update={"classification": classification, "technique": technique}
+    )
+
+
+def test_oracle_incident_rule_uses_classification_or_technique():
+    assert is_oracle_incident(classified("A", 2023, "Oracle Manipulation"))
+    assert is_oracle_incident(classified("A", 2023, "Other", "Stale Oracle Price"))
+    assert is_oracle_incident(classified("A", 2023, None, "Oracle Misconfiguration"))
+    assert not is_oracle_incident(classified("A", 2023, "Access Control", "Private Key Compromised"))
+    assert not is_oracle_incident(classified("A", 2023, None, None))
+
+
+def test_oracle_prior_counts_only_material_oracle_incidents_in_the_same_population():
+    protocols = [protocol("1", "Alpha"), protocol("2", "Beta"), protocol("3", "Gamma")]
+    hacks = [
+        classified("Alpha", 2023, "Oracle Manipulation", "Spot Price Manipulation"),
+        classified("Beta", 2022, "Other", "Stale Oracle Price"),
+        classified("Beta", 2024, "Access Control", "Private Key Compromised"),  # not oracle
+        classified("Gamma", 2024, "Oracle Manipulation", amount="250000"),  # immaterial
+    ]
+
+    oracle = compute_base_rate(hacks, protocols, now=NOW, incident_filter=is_oracle_incident)
+    every = compute_base_rate(hacks, protocols, now=NOW)
+
+    assert oracle.protocol_years == every.protocol_years == 15
+    assert oracle.event_years == 2
+    assert every.event_years == 3
+
+
+def test_oracle_prior_estimate_is_low_confidence_and_explained(data):
+    hacks, protocols, _ = data
+
+    estimate = oracle_exploit_estimate(hacks, protocols, now=NOW)
+    rate = compute_base_rate(
+        hacks.value, protocols.value, now=NOW, incident_filter=is_oracle_incident
+    )
+
+    assert estimate.method is ProbabilityMethod.MODEL_ESTIMATED_PROTOCOL
+    assert estimate.confidence is ConfidenceLevel.LOW
+    assert estimate.horizon_days == 30
+    assert estimate.central == annual_to_horizon(rate.annual_central)
+    assert estimate.low <= estimate.central <= estimate.high
+    for expected in (
+        "Industry oracle-exploit prior (oracle-exploit-prior-v1)",
+        "not a feed-specific estimate",
+        f"{rate.event_years} protocol-years with a material oracle-related exploit in "
+        f"{rate.protocol_years} protocol-years, 2021-2025",
+        '"Oracle Manipulation"',
+        "gross loss >= $1,000,000",
+        "1 - (1 - annual)^(30/365)",
+        "LOW confidence",
+    ):
+        assert expected in estimate.explanation
+
+
+def test_oracle_prior_needs_a_population():
+    tiny = [protocol("1", "Tiny", tvl="1")]
+    assert compute_base_rate([], tiny, now=NOW, incident_filter=is_oracle_incident) is None

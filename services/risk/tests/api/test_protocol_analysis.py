@@ -104,6 +104,37 @@ def test_the_base_rate_is_computed_once_per_data_version(clock, monkeypatch):
     assert len(calls) == 1
 
 
+def test_oracle_prior_and_impairment_rate_are_memoized_side_by_side(clock, monkeypatch):
+    import app.evidence.defillama as module
+
+    calls = []
+    original = module.oracle_exploit_estimate
+
+    def counting(*args, **kwargs):
+        calls.append(1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(module, "oracle_exploit_estimate", counting)
+    source = evidence_source(clock)
+
+    prior = source.oracle_exploit_base_rate(now=clock())
+    impairment = source.impairment_base_rate("morpho", now=clock())
+    again = source.oracle_exploit_base_rate(now=clock())
+
+    assert prior == again and len(calls) == 1
+    assert prior.method is ProbabilityMethod.MODEL_ESTIMATED_PROTOCOL
+    assert prior.confidence is ConfidenceLevel.LOW
+    assert prior.explanation.startswith("Industry oracle-exploit prior")
+    assert impairment.explanation.startswith("Empirical industry base rate")
+    assert prior.central <= impairment.central  # oracle exploits are a subset
+
+
+def test_oracle_prior_without_defillama_is_unavailable(clock):
+    source = FileAndDefiScanEvidence(DEFISAFETY_PATH, UnavailableDefiScan(clock), clock=clock)
+
+    assert source.oracle_exploit_base_rate(now=clock()).method is ProbabilityMethod.UNAVAILABLE
+
+
 def test_defillama_outage_is_unavailable_and_sanitized(clock, caplog):
     outage = FakeDefiLlamaApi()
     outage.mode = "down"

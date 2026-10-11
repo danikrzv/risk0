@@ -160,19 +160,26 @@ class EthereumClient:
 
     # Calls
 
-    def eth_call(self, to: str, data: str) -> bytes:
-        result = self._call("eth_call", [{"to": to, "data": data}, "latest"])
+    def eth_call(self, to: str, data: str, *, block: int | None = None) -> bytes:
+        """`eth_call` at the latest block, or at `block` when given."""
+        tag = "latest" if block is None else hex(block)
+        result = self._call("eth_call", [{"to": to, "data": data}, tag])
         try:
             return hex_bytes(result)
         except AbiDecodeError:
             raise EthereumProviderError("Ethereum provider returned invalid call data") from None
 
-    def aggregate(self, calls: Sequence[Call]) -> tuple[CallResult, ...]:
-        """Run calls through Multicall3 `aggregate3`, `MULTICALL_BATCH_SIZE` per eth_call."""
+    def aggregate(
+        self, calls: Sequence[Call], *, block: int | None = None
+    ) -> tuple[CallResult, ...]:
+        """Run calls through Multicall3 `aggregate3`, `MULTICALL_BATCH_SIZE` per eth_call.
+
+        `block` pins every batch to that block number (default: the latest block).
+        """
         results: list[CallResult] = []
         for offset in range(0, len(calls), self._batch_size):
             chunk = calls[offset : offset + self._batch_size]
-            payload = self.eth_call(MULTICALL3_ADDRESS, encode_aggregate3(chunk))
+            payload = self.eth_call(MULTICALL3_ADDRESS, encode_aggregate3(chunk), block=block)
             try:
                 decoded = decode_aggregate3(payload)
             except AbiDecodeError:
@@ -277,6 +284,7 @@ class EthereumClient:
         end: datetime,
         *,
         source: str | None = None,
+        require_phase: bool = True,
     ) -> tuple[Observation, ...]:
         """Answers of any Chainlink proxy updated in [start, end], plus the last one before start.
 
@@ -284,13 +292,19 @@ class EthereumClient:
         that straddle the start are measured exactly. Raises
         `UnsupportedFeedError` for a contract that is not a Chainlink aggregator
         proxy with readable rounds.
+
+        `require_phase=False` also reads an AggregatorV3-compatible third-party
+        feed whose round ids carry no Chainlink phase (round ids 1, 2, ...):
+        `getRoundData` is walked back in the same batches, and a round that
+        reverts or is empty is skipped. Its latest round id must still be
+        non-zero; a feed without rounds raises `UnsupportedFeedError`.
         """
         _validate_period(start, end)
         lower = int(start.astimezone(UTC).timestamp())
         upper = int(end.astimezone(UTC).timestamp())
         known = self.feed_by_address(address)
         label = source or (known.source if known else f"chainlink:{address.lower()}")
-        history = self._history(address, lower)
+        history = self._history(address, lower, require_phase=require_phase)
         ordered = sorted(history.rounds.values(), key=lambda item: item.round_id)
         before = [item for item in ordered if item.updated_at < lower]
         inside = [item for item in ordered if lower <= item.updated_at <= upper]
@@ -299,13 +313,15 @@ class EthereumClient:
 
     # Round history
 
-    def _history(self, address: str, start: int) -> _RoundHistory:
+    def _history(self, address: str, start: int, *, require_phase: bool = True) -> _RoundHistory:
         key = address.lower()
         with self._lock_for(key):
             history = self._histories.get(key) or self._load(key)
             before = _signature(history)
             latest = self.latest_round(address)
-            if latest.round_id <= 0 or latest.updated_at <= 0 or latest.phase_id <= 0:
+            if latest.round_id <= 0 or latest.updated_at <= 0:
+                raise UnsupportedFeedError("feed has no round history")
+            if require_phase and latest.phase_id <= 0:
                 raise UnsupportedFeedError("feed has no Chainlink round history")
             if history is None:
                 history = _RoundHistory(decimals=self.feed_decimals(address))

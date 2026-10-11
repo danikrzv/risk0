@@ -207,4 +207,3 @@ def test_borrower_graph_is_marked_not_applicable(morpho_client, clock):
     assert position_metrics(response)["solvency_model"] == "not_applicable"
     assert morpho.requested == []
     assert any("lender-only" in warning for warning in response.graph.completeness_warnings)
-

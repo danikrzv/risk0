@@ -291,6 +291,39 @@ class ExitEstimate(ContractModel):
     warnings: tuple[str, ...] = ()
 
 
+ProbabilityValue = Annotated[DecimalValue, Field(ge=0, le=1)]
+
+
+class BreakEvenPoint(ContractModel):
+    """Where one scenario's 30-day probability flips the stay/exit comparison.
+
+    `break_even_probability` is `exit_cost / impact` (the probability at which
+    this scenario's expected loss alone equals the exit cost) and
+    `decision_flip_probability` is `(exit_cost - other_expected_loss) / impact`
+    (the same, holding the other scenarios at their central estimates), both
+    capped to [0, 1]. A value is null, with a reason, when an input is unknown.
+    """
+
+    scenario_id: NonEmptyString
+    dependency: str | None
+    impact: DecimalValue
+    other_expected_loss: DecimalValue | None
+    break_even_probability: ProbabilityValue | None
+    decision_flip_probability: ProbabilityValue | None
+    current_probability: ProbabilityValue | None
+    current_probability_low: ProbabilityValue | None
+    current_probability_high: ProbabilityValue | None
+    reasons: tuple[str, ...] = ()
+
+
+class BreakEven(ContractModel):
+    probability_dependent: bool
+    dominant_scenario_id: str | None
+    exit_cost: DecimalValue | None
+    points: tuple[BreakEvenPoint, ...]
+    explanation: str
+
+
 class Recommendation(ContractModel):
     decision: RecommendationDecision
     expected_loss: DecimalValue
@@ -301,6 +334,7 @@ class Recommendation(ContractModel):
     dominant_dependency: str | None
     confidence: ConfidenceLevel
     explanation: str
+    break_even: BreakEven | None = None
 
 
 class AnalysisRequest(ContractModel):
@@ -314,3 +348,96 @@ class AnalysisResponse(ContractModel):
     exit_estimate: ExitEstimate
     recommendation: Recommendation
     analyzed_at: datetime
+
+
+# Book view (`POST /v1/book`): several pockets, each a position with a weight.
+
+MAX_BOOK_POCKETS = 20
+WeightValue = Annotated[DecimalValue, Field(gt=0, le=1)]
+PocketId = Annotated[str, StringConstraints(min_length=1, max_length=64)]
+
+
+class BookPocketInput(ContractModel):
+    pocket_id: PocketId | None = None
+    position: PositionInput
+    scenarios: tuple[ScenarioSelection, ...] | None = Field(default=None, min_length=1)
+    weight: WeightValue
+
+
+class BookRequest(ContractModel):
+    pockets: tuple[BookPocketInput, ...] = Field(min_length=1, max_length=MAX_BOOK_POCKETS)
+    scenarios: tuple[ScenarioSelection, ...] | None = Field(default=None, min_length=1)
+    book_value: Annotated[DecimalValue, Field(gt=0)] | None = None
+    numeraire: NonEmptyString | None = None
+
+    @model_validator(mode="after")
+    def validate_book(self) -> "BookRequest":
+        if sum((pocket.weight for pocket in self.pockets), Decimal(0)) > 1:
+            raise ValueError("pocket weights must sum to at most 1")
+        if self.scenarios is None and any(pocket.scenarios is None for pocket in self.pockets):
+            raise ValueError("every pocket needs scenarios, its own or the book's")
+        if (self.book_value is None) != (self.numeraire is None):
+            raise ValueError("book_value and numeraire must be given together")
+        ids = [pocket.pocket_id for pocket in self.pockets if pocket.pocket_id is not None]
+        if len(ids) != len(set(ids)):
+            raise ValueError("pocket_id values must be unique")
+        return self
+
+
+class BookAmount(ContractModel):
+    """An amount in the pocket's numeraire and as fractions of the pocket and the book."""
+
+    amount: DecimalValue
+    fraction_of_pocket: DecimalValue | None
+    fraction_of_book: DecimalValue | None
+
+
+class BookPocketResult(ContractModel):
+    pocket_id: NonEmptyString
+    rank: int = Field(ge=1)
+    entity_id: NonEmptyString
+    mode: PositionMode
+    numeraire: NonEmptyString
+    weight: DecimalValue
+    decision: RecommendationDecision
+    confidence: ConfidenceLevel
+    dominant_dependency: str | None
+    triggers: tuple[str, ...]
+    pocket_value: DecimalValue | None
+    expected_loss: BookAmount | None
+    exit_cost: BookAmount | None
+    exit_advantage: BookAmount | None
+    break_even: BreakEven | None
+    unavailable_reasons: tuple[str, ...]
+    explanation: str
+    analyzed_at: datetime | None
+
+
+class BookTotal(ContractModel):
+    amount: DecimalValue | None
+    fraction_of_book: DecimalValue | None
+
+
+class BookTotals(ContractModel):
+    numeraire: str | None
+    expected_loss_staying: BookTotal
+    exit_cost_exit_pockets: BookTotal
+    expected_loss_stay_pockets: BookTotal
+    recommended_cost: BookTotal
+    net_benefit: BookTotal
+    allocated_weight: DecimalValue
+    stay_weight: DecimalValue
+    exit_weight: DecimalValue
+    unavailable_weight: DecimalValue
+    stay_count: int = Field(ge=0)
+    exit_count: int = Field(ge=0)
+    unavailable_count: int = Field(ge=0)
+    complete: bool
+    warnings: tuple[str, ...]
+
+
+class BookResponse(ContractModel):
+    schema_version: Literal["1.0.0"] = "1.0.0"
+    pockets: tuple[BookPocketResult, ...]
+    totals: BookTotals
+    generated_at: datetime

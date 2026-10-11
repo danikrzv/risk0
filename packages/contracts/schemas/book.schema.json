@@ -1,0 +1,194 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://risk0.local/schemas/book.schema.json",
+  "title": "Book",
+  "description": "POST /v1/book: a book of pockets (position + weight), each analyzed like POST /v1/analysis, with per-pocket amounts as fractions of the pocket and of the book, and book totals.",
+  "$defs": {
+    "DecimalString": {
+      "type": "string",
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$"
+    },
+    "NullableDecimalString": {
+      "oneOf": [
+        { "$ref": "#/$defs/DecimalString" },
+        { "type": "null" }
+      ]
+    },
+    "Weight": {
+      "description": "Fraction of the book, greater than 0 and at most 1; the weights of a book sum to at most 1 (checked by the service).",
+      "type": "string",
+      "pattern": "^(?:0\\.\\d*[1-9]\\d*|1(?:\\.0+)?)$"
+    },
+    "BookPocketInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["position", "weight"],
+      "properties": {
+        "pocket_id": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "position": { "$ref": "analysis-request.schema.json#/$defs/PositionInput" },
+        "scenarios": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "analysis-request.schema.json#/$defs/ScenarioSelection" }
+        },
+        "weight": { "$ref": "#/$defs/Weight" }
+      }
+    },
+    "BookRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pockets"],
+      "properties": {
+        "pockets": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 20,
+          "items": { "$ref": "#/$defs/BookPocketInput" }
+        },
+        "scenarios": {
+          "description": "Shared scenarios for every pocket without its own.",
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "analysis-request.schema.json#/$defs/ScenarioSelection" }
+        },
+        "book_value": {
+          "type": "string",
+          "pattern": "^(?:0|[1-9]\\d*)(?:\\.\\d+)?$"
+        },
+        "numeraire": { "type": "string", "minLength": 1 }
+      },
+      "dependentRequired": {
+        "book_value": ["numeraire"],
+        "numeraire": ["book_value"]
+      }
+    },
+    "BookAmount": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["amount", "fraction_of_pocket", "fraction_of_book"],
+      "properties": {
+        "amount": { "$ref": "#/$defs/DecimalString" },
+        "fraction_of_pocket": { "$ref": "#/$defs/NullableDecimalString" },
+        "fraction_of_book": { "$ref": "#/$defs/NullableDecimalString" }
+      }
+    },
+    "NullableBookAmount": {
+      "oneOf": [
+        { "$ref": "#/$defs/BookAmount" },
+        { "type": "null" }
+      ]
+    },
+    "BookPocketResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pocket_id",
+        "rank",
+        "entity_id",
+        "mode",
+        "numeraire",
+        "weight",
+        "decision",
+        "confidence",
+        "dominant_dependency",
+        "triggers",
+        "pocket_value",
+        "expected_loss",
+        "exit_cost",
+        "exit_advantage",
+        "break_even",
+        "unavailable_reasons",
+        "explanation",
+        "analyzed_at"
+      ],
+      "properties": {
+        "pocket_id": { "type": "string", "minLength": 1 },
+        "rank": { "type": "integer", "minimum": 1 },
+        "entity_id": { "type": "string", "minLength": 1 },
+        "mode": { "enum": ["lender", "borrower"] },
+        "numeraire": { "type": "string", "minLength": 1 },
+        "weight": { "$ref": "#/$defs/DecimalString" },
+        "decision": { "enum": ["STAY", "EXIT", "UNAVAILABLE"] },
+        "confidence": { "enum": ["high", "medium", "low", "unavailable"] },
+        "dominant_dependency": { "type": ["string", "null"] },
+        "triggers": { "type": "array", "items": { "type": "string" } },
+        "pocket_value": { "$ref": "#/$defs/NullableDecimalString" },
+        "expected_loss": { "$ref": "#/$defs/NullableBookAmount" },
+        "exit_cost": { "$ref": "#/$defs/NullableBookAmount" },
+        "exit_advantage": { "$ref": "#/$defs/NullableBookAmount" },
+        "break_even": {
+          "oneOf": [
+            { "$ref": "analysis-response.schema.json#/$defs/BreakEven" },
+            { "type": "null" }
+          ]
+        },
+        "unavailable_reasons": { "type": "array", "items": { "type": "string" } },
+        "explanation": { "type": "string" },
+        "analyzed_at": {
+          "oneOf": [
+            { "type": "string", "format": "date-time" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "BookTotal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["amount", "fraction_of_book"],
+      "properties": {
+        "amount": { "$ref": "#/$defs/NullableDecimalString" },
+        "fraction_of_book": { "$ref": "#/$defs/NullableDecimalString" }
+      }
+    },
+    "BookTotals": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "numeraire",
+        "expected_loss_staying",
+        "exit_cost_exit_pockets",
+        "expected_loss_stay_pockets",
+        "recommended_cost",
+        "net_benefit",
+        "allocated_weight",
+        "stay_weight",
+        "exit_weight",
+        "unavailable_weight",
+        "stay_count",
+        "exit_count",
+        "unavailable_count",
+        "complete",
+        "warnings"
+      ],
+      "properties": {
+        "numeraire": { "type": ["string", "null"] },
+        "expected_loss_staying": { "$ref": "#/$defs/BookTotal" },
+        "exit_cost_exit_pockets": { "$ref": "#/$defs/BookTotal" },
+        "expected_loss_stay_pockets": { "$ref": "#/$defs/BookTotal" },
+        "recommended_cost": { "$ref": "#/$defs/BookTotal" },
+        "net_benefit": { "$ref": "#/$defs/BookTotal" },
+        "allocated_weight": { "$ref": "#/$defs/DecimalString" },
+        "stay_weight": { "$ref": "#/$defs/DecimalString" },
+        "exit_weight": { "$ref": "#/$defs/DecimalString" },
+        "unavailable_weight": { "$ref": "#/$defs/DecimalString" },
+        "stay_count": { "type": "integer", "minimum": 0 },
+        "exit_count": { "type": "integer", "minimum": 0 },
+        "unavailable_count": { "type": "integer", "minimum": 0 },
+        "complete": { "type": "boolean" },
+        "warnings": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "BookResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "pockets", "totals", "generated_at"],
+      "properties": {
+        "schema_version": { "const": "1.0.0" },
+        "pockets": { "type": "array", "items": { "$ref": "#/$defs/BookPocketResult" } },
+        "totals": { "$ref": "#/$defs/BookTotals" },
+        "generated_at": { "type": "string", "format": "date-time" }
+      }
+    }
+  }
+}

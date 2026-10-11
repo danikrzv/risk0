@@ -35,6 +35,18 @@ loss, because the selections describe the same event. Each selection's expected
 loss pairs its own impact with its own probability (the orchestrator estimates a
 probability per (scenario id, severity)), so a mild severity's higher
 probability is never applied to a severe impact.
+
+Break-even (`Recommendation.break_even`): for every deduplicated scenario with a
+non-zero impact, the 30-day probability at which staying and exiting cost the
+same. `break_even_probability = exit_cost / impact` is that scenario on its own;
+`decision_flip_probability = (exit_cost - other_expected_loss) / impact` holds
+the other scenarios at their central estimates, so it is where this rule flips.
+Both are capped to [0, 1]: 1 means no probability makes EXIT cheaper, 0 means
+EXIT is already cheaper at zero probability. A value is null, with a reason,
+when the impact is incomplete or negative, the exit cost is unknown (expired or
+missing exit estimate), or (for the flip) another scenario's probability is
+unknown; nothing is fabricated. When a hard trigger fires the decision does not
+depend on probability, and `probability_dependent` is false.
 """
 
 from collections.abc import Iterable
@@ -42,6 +54,8 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 from app.contracts.models import (
+    BreakEven,
+    BreakEvenPoint,
     ConfidenceLevel,
     ExitEstimate,
     FreshnessStatus,
@@ -54,6 +68,7 @@ from app.infrastructure.freshness import DataQuality
 
 
 ZERO = Decimal(0)
+ONE = Decimal(1)
 IMPACT_COMPLETE_KEY = "impact_complete"
 CONFIDENCE_ORDER = (
     ConfidenceLevel.UNAVAILABLE,
@@ -100,7 +115,8 @@ def make_recommendation(
     )
     exit_cost = exit_estimate.total_cost
     contributions = _deduplicated(scenarios)
-    known = [item for item in contributions if item.central is not None]
+    break_even = _break_even(contributions, exit_estimate, triggered=bool(_triggers(scenarios, live)))
+    known =[item for item in contributions if item.central is not None]
     expected_loss = _quantize(sum((item.central for item in known if item.central is not None), ZERO))
 
     incomplete = tuple(
@@ -128,6 +144,7 @@ def make_recommendation(
                 f"maximum age ({', '.join(dict.fromkeys(missing))}). Missing data is never "
                 "treated as zero risk, so no STAY or EXIT is given."
             ),
+            break_even=break_even,
         )
 
     triggers = _triggers(scenarios, live)
@@ -178,6 +195,7 @@ def make_recommendation(
                 "impact, so the expected staying loss cannot be computed. An unknown "
                 "probability is never treated as zero."
             ),
+            break_even=break_even,
         )
     else:
         relevant = [
@@ -218,6 +236,7 @@ def make_recommendation(
         dominant_dependency=dominant,
         confidence=confidence,
         explanation=" ".join(parts),
+        break_even=break_even,
     )
 
 
@@ -320,3 +339,136 @@ def _lower(level: ConfidenceLevel) -> ConfidenceLevel:
 
 def _quantize(value: Decimal) -> Decimal:
     return value.quantize(NUMERAIRE_PLACES)
+
+
+def _break_even(
+    contributions: list[_Contribution], exit_estimate: ExitEstimate, *, triggered: bool
+) -> BreakEven:
+    # The unavailable exit estimate is EXPIRED with a zero total: unknown, not free.
+    exit_cost = (
+        None if exit_estimate.freshness is FreshnessStatus.EXPIRED else exit_estimate.total_cost
+    )
+    candidates = [item for item in contributions if item.scenario.impact != ZERO]
+    points = [_break_even_point(item, contributions, exit_cost) for item in candidates]
+    dominant = max(
+        range(len(candidates)),
+        key=lambda index: (
+            candidates[index].central
+            if candidates[index].central is not None
+            else candidates[index].scenario.impact,
+            candidates[index].scenario.impact,
+        ),
+        default=None,
+    )
+    if triggered:
+        explanation = (
+            "A hard safety trigger fired: it overrides the expected-loss comparison, so the "
+            "stay/exit decision does not depend on any probability."
+        )
+    elif dominant is None:
+        explanation = "No selected scenario has a non-zero impact, so there is no break-even probability."
+    else:
+        explanation = _point_sentence(points[dominant])
+    return BreakEven(
+        probability_dependent=not triggered,
+        dominant_scenario_id=None if dominant is None else points[dominant].scenario_id,
+        exit_cost=exit_cost,
+        points=tuple(points),
+        explanation=explanation,
+    )
+
+
+def _break_even_point(
+    item: _Contribution, contributions: list[_Contribution], exit_cost: Decimal | None
+) -> BreakEvenPoint:
+    scenario = item.scenario
+    impact = scenario.impact
+    probability = scenario.probability
+    others = [other for other in contributions if other is not item]
+    other_unknown = [
+        other.scenario.scenario_id
+        for other in others
+        if other.central is None and other.scenario.impact != ZERO
+    ]
+    other_loss = (
+        None
+        if other_unknown
+        else _quantize(sum((other.central or ZERO for other in others), ZERO))
+    )
+    reasons: list[str] = []
+    break_even = flip = None
+    if _impact_incomplete(scenario):
+        reasons.append("the scenario impact is incomplete, so no break-even is computed")
+    elif impact < ZERO:
+        reasons.append("the scenario impact is negative, so it has no break-even probability")
+    elif exit_cost is None:
+        reasons.append("the exit cost is unknown (no current exit estimate)")
+    else:
+        break_even = _probability(exit_cost / impact)
+        if exit_cost >= impact:
+            reasons.append(
+                "the exit cost is at least the full impact: no probability of this scenario "
+                "alone makes EXIT cheaper"
+            )
+        if other_loss is None:
+            reasons.append(
+                "no decision flip point: the probability of "
+                f"{', '.join(other_unknown)} is unknown"
+            )
+        else:
+            flip = _probability((exit_cost - other_loss) / impact)
+            if exit_cost < other_loss:
+                reasons.append("the other scenarios' expected loss already exceeds the exit cost")
+    if probability.central is None:
+        reasons.append("no current 30-day probability estimate is available")
+    return BreakEvenPoint(
+        scenario_id=scenario.scenario_id,
+        dependency=scenario.affected_path[-1] if scenario.affected_path else None,
+        impact=impact,
+        other_expected_loss=other_loss,
+        break_even_probability=break_even,
+        decision_flip_probability=flip,
+        current_probability=_clamped(probability.central),
+        current_probability_low=_clamped(probability.low),
+        current_probability_high=_clamped(probability.high),
+        reasons=tuple(reasons),
+    )
+
+
+def _point_sentence(point: BreakEvenPoint) -> str:
+    threshold = point.decision_flip_probability
+    if threshold is None:
+        threshold = point.break_even_probability
+    if threshold is None:
+        return f"No break-even probability for {point.scenario_id}: {'; '.join(point.reasons)}."
+    estimate = (
+        "no current estimate"
+        if point.current_probability is None
+        else f"current estimate {_percent(point.current_probability)}"
+    )
+    if threshold >= ONE:
+        return (
+            f"No 30-day probability of {point.scenario_id} makes EXIT cheaper than staying "
+            f"({estimate})."
+        )
+    if threshold <= ZERO and point.decision_flip_probability is not None:
+        return (
+            "The other scenarios' expected loss alone reaches the exit cost, so EXIT is "
+            f"optimal at any non-zero probability of {point.scenario_id} ({estimate})."
+        )
+    return (
+        f"EXIT becomes optimal if the 30-day probability of {point.scenario_id} exceeds "
+        f"{_percent(threshold)} ({estimate})."
+    )
+
+
+def _percent(value: Decimal) -> str:
+    return f"{(value * 100).quantize(Decimal('0.0001')).normalize():f}%"
+
+
+def _probability(value: Decimal) -> Decimal:
+    return _quantize(min(ONE, max(ZERO, value)))
+
+
+def _clamped(value: Decimal | None) -> Decimal | None:
+    return None if value is None else min(ONE, max(ZERO, value))

@@ -154,6 +154,63 @@
         "triggers": { "type": "array", "items": { "type": "string" } },
         "dominant_dependency": { "type": ["string", "null"] },
         "confidence": { "enum": ["high", "medium", "low", "unavailable"] },
+        "explanation": { "type": "string" },
+        "break_even": {
+          "oneOf": [
+            { "$ref": "#/$defs/BreakEven" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "Probability": {
+      "type": "string",
+      "pattern": "^(?:0(?:\\.\\d+)?|1(?:\\.0+)?)$"
+    },
+    "NullableProbability": {
+      "oneOf": [
+        { "$ref": "#/$defs/Probability" },
+        { "type": "null" }
+      ]
+    },
+    "BreakEvenPoint": {
+      "description": "break_even_probability = exit_cost / impact; decision_flip_probability = (exit_cost - other_expected_loss) / impact; both capped to [0, 1] and null (with reasons) when an input is unknown.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scenario_id",
+        "dependency",
+        "impact",
+        "other_expected_loss",
+        "break_even_probability",
+        "decision_flip_probability",
+        "current_probability",
+        "current_probability_low",
+        "current_probability_high",
+        "reasons"
+      ],
+      "properties": {
+        "scenario_id": { "type": "string", "minLength": 1 },
+        "dependency": { "type": ["string", "null"] },
+        "impact": { "$ref": "#/$defs/DecimalString" },
+        "other_expected_loss": { "$ref": "#/$defs/NullableDecimalString" },
+        "break_even_probability": { "$ref": "#/$defs/NullableProbability" },
+        "decision_flip_probability": { "$ref": "#/$defs/NullableProbability" },
+        "current_probability": { "$ref": "#/$defs/NullableProbability" },
+        "current_probability_low": { "$ref": "#/$defs/NullableProbability" },
+        "current_probability_high": { "$ref": "#/$defs/NullableProbability" },
+        "reasons": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "BreakEven": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["probability_dependent", "dominant_scenario_id", "exit_cost", "points", "explanation"],
+      "properties": {
+        "probability_dependent": { "type": "boolean" },
+        "dominant_scenario_id": { "type": ["string", "null"] },
+        "exit_cost": { "$ref": "#/$defs/NullableDecimalString" },
+        "points": { "type": "array", "items": { "$ref": "#/$defs/BreakEvenPoint" } },
         "explanation": { "type": "string" }
       }
     }

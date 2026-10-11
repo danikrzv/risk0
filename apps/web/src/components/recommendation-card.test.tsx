@@ -146,4 +146,48 @@ describe("RecommendationCard", () => {
     expect(within(breakdown).getByText("0.002 WETH")).toBeInTheDocument()
     expect(within(card()).getByText("Route: wstETH → WETH · quote block 23500000 · 4 s old")).toBeInTheDocument()
   })
+
+  it("states the break-even probability next to the current estimate", () => {
+    const breakEven = {
+      probability_dependent: true,
+      dominant_scenario_id: "collateral-shock",
+      exit_cost: "0.122",
+      points: [
+        {
+          scenario_id: "collateral-shock",
+          dependency: "asset:1:wsteth",
+          impact: "1.2",
+          other_expected_loss: "0.0027",
+          break_even_probability: "0.101666666666666667",
+          decision_flip_probability: "0.099416666666666667",
+          current_probability: "0.02",
+          current_probability_low: "0.01",
+          current_probability_high: "0.04",
+          reasons: [],
+        },
+      ],
+      explanation: "",
+    }
+    const { rerender } = render(
+      <RecommendationCard
+        analysis={withRecommendation({ decision: "STAY", triggers: [], break_even: breakEven })}
+        numeraire="WETH"
+        onSelectDependency={() => {}}
+      />,
+    )
+
+    const comparison = within(card()).getByRole("group", { name: "Stay versus exit" })
+    expect(comparison).toHaveTextContent(
+      "EXIT becomes optimal above 9.94% probability of Collateral shock; current estimate 2.00%.",
+    )
+
+    rerender(
+      <RecommendationCard
+        analysis={withRecommendation({ break_even: { ...breakEven, probability_dependent: false } })}
+        numeraire="WETH"
+        onSelectDependency={() => {}}
+      />,
+    )
+    expect(comparison).toHaveTextContent("A hard safety trigger fired: the decision does not depend on any probability.")
+  })
 })

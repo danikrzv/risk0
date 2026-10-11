@@ -390,3 +390,146 @@ def test_scenario_trigger_stays_dominant_over_a_live_trigger():
 
     assert result.triggers == ("collateral-shock:liquidation", f"live:oracle_failure:{ORACLE}")
     assert result.dominant_dependency == ASSET
+
+
+# Break-even probability
+
+
+def only_point(result):
+    assert result.break_even is not None
+    assert len(result.break_even.points) == 1
+    return result.break_even.points[0]
+
+
+def test_break_even_is_exit_cost_over_impact_with_the_current_estimate():
+    result = make_recommendation((scenario("100"),), exit_estimate("5"), quality())
+
+    point = only_point(result)
+    assert result.decision is STAY
+    assert result.break_even.probability_dependent is True
+    assert result.break_even.dominant_scenario_id == "collateral-shock"
+    assert result.break_even.exit_cost == Decimal("5")
+    assert point.break_even_probability == Decimal("0.05")
+    assert point.decision_flip_probability == Decimal("0.05")
+    assert point.other_expected_loss == Decimal(0)
+    assert point.current_probability == Decimal("0.02")
+    assert (point.current_probability_low, point.current_probability_high) == (
+        Decimal("0.01"),
+        Decimal("0.03"),
+    )
+    assert point.dependency == ASSET
+    assert point.reasons == ()
+    assert "exceeds 5% (current estimate 2%)" in result.break_even.explanation
+
+
+def test_estimate_above_break_even_exits_and_the_flip_accounts_for_other_scenarios():
+    result = make_recommendation(
+        (
+            scenario("100", prob=probability("0.08", "0.04", "0.1")),
+            scenario("50", scenario_id="protocol-impairment", path=("p", "protocol:morpho")),
+        ),
+        exit_estimate("6"),
+        quality(),
+    )
+
+    assert result.decision is EXIT  # 8 + 1 > 6
+    shock, protocol = result.break_even.points
+    assert result.break_even.dominant_scenario_id == "collateral-shock"
+    assert shock.break_even_probability == Decimal("0.06")
+    # (6 - 50 * 0.02) / 100
+    assert shock.other_expected_loss == Decimal(1)
+    assert shock.decision_flip_probability == Decimal("0.05")
+    assert protocol.break_even_probability == Decimal("0.12")
+    # (6 - 8) / 50 is negative: capped at 0, EXIT already from the other scenario.
+    assert protocol.decision_flip_probability == Decimal(0)
+    assert any("already exceeds" in reason for reason in protocol.reasons)
+
+
+def test_exit_cost_above_the_impact_caps_break_even_at_one():
+    result = make_recommendation((scenario("4"),), exit_estimate("5"), quality())
+
+    point = only_point(result)
+    assert point.break_even_probability == Decimal(1)
+    assert point.decision_flip_probability == Decimal(1)
+    assert any("no probability" in reason for reason in point.reasons)
+    assert "No 30-day probability of collateral-shock makes EXIT cheaper" in result.break_even.explanation
+
+
+def test_zero_impact_scenarios_have_no_break_even_point():
+    result = make_recommendation((scenario("0"),), exit_estimate("5"), quality())
+
+    assert result.break_even.points == ()
+    assert result.break_even.dominant_scenario_id is None
+    assert "no break-even" in result.break_even.explanation
+
+
+def test_incomplete_impact_gives_a_null_break_even_with_a_reason():
+    result = make_recommendation((scenario("100", complete=False),), exit_estimate("5"), quality())
+
+    point = only_point(result)
+    assert result.decision is UNAVAILABLE
+    assert point.break_even_probability is None
+    assert point.decision_flip_probability is None
+    assert "incomplete" in point.reasons[0]
+
+
+def test_unknown_exit_cost_gives_a_null_break_even_never_zero():
+    result = make_recommendation(
+        (scenario("100"),), exit_estimate("0", freshness=FreshnessStatus.EXPIRED), quality()
+    )
+
+    point = only_point(result)
+    assert result.break_even.exit_cost is None
+    assert point.break_even_probability is None
+    assert "exit cost is unknown" in point.reasons[0]
+
+
+def test_unknown_probability_keeps_the_break_even_but_not_the_flip_of_others():
+    result = make_recommendation(
+        (
+            scenario("100", prob=probability(None)),
+            scenario("50", scenario_id="protocol-impairment", path=("p", "protocol:morpho")),
+        ),
+        exit_estimate("5"),
+        quality(),
+    )
+
+    assert result.decision is UNAVAILABLE
+    unknown, protocol = result.break_even.points
+    assert unknown.break_even_probability == Decimal("0.05")
+    assert unknown.decision_flip_probability == Decimal("0.04")  # (5 - 1) / 100
+    assert unknown.current_probability is None
+    assert any("no current 30-day probability" in reason for reason in unknown.reasons)
+    assert protocol.break_even_probability == Decimal("0.1")
+    assert protocol.decision_flip_probability is None
+    assert any("collateral-shock is unknown" in reason for reason in protocol.reasons)
+
+
+def test_hard_trigger_decision_does_not_depend_on_probability():
+    result = make_recommendation(
+        (scenario("100", triggers=("liquidation",)),), exit_estimate("5"), quality()
+    )
+
+    assert result.decision is EXIT
+    assert result.break_even.probability_dependent is False
+    assert "does not depend on any probability" in result.break_even.explanation
+    # The threshold is still reported for context.
+    assert only_point(result).break_even_probability == Decimal("0.05")
+
+
+def test_break_even_serializes_to_the_response_schema():
+    import json
+    from pathlib import Path
+
+    from jsonschema import Draft202012Validator
+
+    schema = json.loads(
+        (
+            Path(__file__).resolve().parents[4]
+            / "packages/contracts/schemas/analysis-response.schema.json"
+        ).read_text()
+    )
+    validator = Draft202012Validator({"$ref": "#/$defs/Recommendation", "$defs": schema["$defs"]})
+    for exit_cost in ("5", "500"):
+        result = make_recommendation((scenario("100"),), exit_estimate(exit_cost), quality())
+        validator.validate(json.loads(result.model_dump_json()))

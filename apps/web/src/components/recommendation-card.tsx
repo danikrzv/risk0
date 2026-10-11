@@ -1,6 +1,7 @@
 import type { AnalysisResponse, RecommendationDecision } from "@risk0/contracts"
 
 import { compareDecimal, formatQuantity } from "../lib/format"
+import { BreakEvenLine } from "./break-even"
 
 // UNAVAILABLE is a data-quality state; it must never look like a safe result.
 const TONES: Record<RecommendationDecision, "safe" | "danger" | "unavailable"> = {
@@ -76,6 +77,7 @@ export function RecommendationCard({
           <dd>{amount(recommendation.exit_cost)}</dd>
         </dl>
         <p>{comparisonText}</p>
+        <BreakEvenLine breakEven={recommendation.break_even} />
         {triggerOverride && <p>A hard safety trigger requires exit regardless of the cost comparison.</p>}
       </div>
 

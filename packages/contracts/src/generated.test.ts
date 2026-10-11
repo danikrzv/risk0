@@ -25,7 +25,10 @@ import {
   SIMILARITY_STORAGE_THRESHOLD,
   SIMILARITY_VISIBILITY_THRESHOLD,
   SIMILARITY_VISIBLE_LIMIT,
+  MAX_BOOK_POCKETS,
   type AnalysisRequest,
+  type BookRequest,
+  type BookResponse,
   type CatalogEntry,
   type CatalogResponse,
   type ExitEstimate,
@@ -99,6 +102,15 @@ const invalidBorrower: PositionInput = {
   amount: "3000",
   numeraire: "USDC",
 };
+const bookRequest = {
+  pockets: [{ position: lenderPosition, weight: "0.1" }],
+  scenarios: [{ scenario_id: "stablecoin-depeg", severity: "0.10" }],
+} satisfies BookRequest;
+// @ts-expect-error a book value needs its numeraire
+const invalidBook: BookRequest = { ...bookRequest, book_value: "1000000" };
+type BookVersionIsFixed = Assert<Equal<BookResponse["schema_version"], "1.0.0">>;
+const bookVersionIsFixed: BookVersionIsFixed = true;
+
 // @ts-expect-error an analysis request requires at least one scenario
 const invalidRequest: AnalysisRequest = { position: lenderPosition, scenarios: [] };
 
@@ -172,6 +184,15 @@ describe("generated contract parity", () => {
     expect(invalidLender).toBeDefined();
     expect(invalidBorrower).toBeDefined();
     expect(invalidRequest).toBeDefined();
+    expect(bookRequest.pockets).toHaveLength(1);
+    expect(invalidBook).toBeDefined();
+    expect(bookVersionIsFixed).toBe(true);
+  });
+
+  it("freezes the book pocket limit shared with the Python model", () => {
+    const limit = pythonModels.match(/^MAX_BOOK_POCKETS = (\d+)$/m);
+    expect(limit).not.toBeNull();
+    expect(MAX_BOOK_POCKETS).toBe(Number(limit![1]));
   });
 
   it("matches the Python CatalogChainId literal", () => {

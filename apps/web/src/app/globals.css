@@ -1224,6 +1224,17 @@ fieldset.panel legend,
   border-collapse: collapse;
 }
 
+.metrics .metrics__source {
+  color: var(--color-muted);
+  font-size: 0.8em;
+  overflow-wrap: anywhere;
+}
+
+.graph__solvency {
+  margin: 0.75rem 0 0;
+  font-weight: 700;
+}
+
 .components caption,
 .metrics caption {
   text-align: left;

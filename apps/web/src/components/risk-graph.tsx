@@ -2,11 +2,11 @@
 
 import "@xyflow/react/dist/style.css"
 
-import type { RiskGraph as RiskGraphData } from "@risk0/contracts"
+import type { MetricProvenance, RiskGraph as RiskGraphData, RiskNode } from "@risk0/contracts"
 import { Background, Controls, type Edge, MarkerType, type Node, type NodeMouseHandler, Position, ReactFlow } from "@xyflow/react"
 import { memo, useCallback, useMemo } from "react"
 
-import { formatPercent, formatTimestamp, humanize } from "../lib/format"
+import { formatPercent, formatQuantity, formatTimestamp, humanize } from "../lib/format"
 import { FreshnessBadge } from "./data-quality"
 
 const COLUMN_WIDTH = 240
@@ -35,9 +35,11 @@ function dependencyDepths(graph: RiskGraphData): Map<string, number> {
   return depths
 }
 
-export function edgeLabel(relationship: string, exposureWeight: string | null): string {
-  const label = humanize(relationship)
-  return exposureWeight === null ? label : `${label} · ${formatPercent(exposureWeight)}`
+export function edgeLabel(relationship: string, exposureWeight: string | null, lossShare?: string | null): string {
+  let label = humanize(relationship)
+  if (exposureWeight !== null) label = `${label} · ${formatPercent(exposureWeight)}`
+  if (lossShare != null) label = `${label} · loss share ${formatPercent(lossShare)}`
+  return label
 }
 
 export function layoutGraph(graph: RiskGraphData, selectedNodeId: string | null = null): { nodes: Node[]; edges: Edge[] } {
@@ -63,7 +65,7 @@ export function layoutGraph(graph: RiskGraphData, selectedNodeId: string | null 
       id: `${edge.source}->${edge.target}:${edge.relationship}:${index}`,
       source: edge.source,
       target: edge.target,
-      label: edgeLabel(edge.relationship, edge.exposure_weight),
+      label: edgeLabel(edge.relationship, edge.exposure_weight, edge.loss_share),
       className: `graph-edge graph-edge--${edge.relationship}`,
       markerEnd: { type: MarkerType.ArrowClosed },
     }),
@@ -74,6 +76,27 @@ export function layoutGraph(graph: RiskGraphData, selectedNodeId: string | null 
 function metricText(value: string | boolean | null): string {
   if (value === null) return "—"
   return String(value)
+}
+
+function provenanceText(provenance: MetricProvenance | undefined): string {
+  if (!provenance) return ""
+  const parts: string[] = [provenance.kind, provenance.source]
+  if (provenance.block_number != null) parts.push(`block ${provenance.block_number}`)
+  return parts.join(" · ")
+}
+
+/** One-line reading of the lender solvency model, or null when the node carries none. */
+export function solvencySummary(node: RiskNode): string | null {
+  const { metrics } = node
+  if (metrics.solvency_model === "not_applicable") return "Solvency model: not applicable to borrowers"
+  const scenario = metrics.solvency_scenario
+  if (typeof scenario !== "string") return null
+  const parts = [`Solvency: ${humanize(scenario)}`]
+  const loss = metrics.solvency_expected_loss
+  if (typeof loss === "string") parts.push(`expected loss ${formatQuantity(loss)}`)
+  if (metrics.solvency_vulnerable === true) parts.push("vulnerability alert")
+  if (metrics.solvency_vulnerable === false) parts.push("healthy")
+  return parts.join(" · ")
 }
 
 /** Apply the selection to an already laid-out node list without moving anything. */
@@ -155,6 +178,7 @@ export const RiskGraph = memo(function RiskGraph({
                   />
                 </dd>
               </dl>
+              {solvencySummary(selected) && <p className="graph__solvency">{solvencySummary(selected)}</p>}
               {Object.keys(selected.metrics).length > 0 && (
                 <table className="metrics">
                   <caption>Metrics</caption>
@@ -163,6 +187,9 @@ export const RiskGraph = memo(function RiskGraph({
                       <tr key={name}>
                         <th scope="row">{name}</th>
                         <td>{metricText(value)}</td>
+                        {selected.metric_provenance && Object.keys(selected.metric_provenance).length > 0 && (
+                          <td className="metrics__source">{provenanceText(selected.metric_provenance[name])}</td>
+                        )}
                       </tr>
                     ))}
                   </tbody>
@@ -192,7 +219,7 @@ export const RiskGraph = memo(function RiskGraph({
         <ul aria-label="Dependency relationships" className="edge-list">
           {graph.edges.map((edge, index) => (
             <li key={`${edge.source}-${edge.target}-${index}`}>
-              {`${labels.get(edge.source) ?? edge.source} → ${labels.get(edge.target) ?? edge.target}: ${edgeLabel(edge.relationship, edge.exposure_weight)}`}
+              {`${labels.get(edge.source) ?? edge.source} → ${labels.get(edge.target) ?? edge.target}: ${edgeLabel(edge.relationship, edge.exposure_weight, edge.loss_share)}`}
             </li>
           ))}
         </ul>

@@ -19,7 +19,7 @@ The brief's worked example is five layers deep. Risk0 covers each layer for Morp
 | Settlement chain | `chain` node (Ethereum) | static (Ethereum mainnet; the live smoke test checks the RPC reports chain id 1) |
 | Underlying yield source and its issuer | asset —backed_by→ underlying asset —backed_by→ **issuer** (e.g. wstETH → stETH → Lido; USDC → Circle; EURCV → Société Générale-FORGE; WBTC → custodians), up to 4 hops, cycle-safe | `data/catalog/assets.ethereum.json`, each claim with a cited source |
 | Oracle pricing the asset | market oracle **decomposed on-chain into its feeds** (Chainlink proxies, exchange-rate adapters, third-party AggregatorV3 feeds such as RedStone or Ojo), each with description, heartbeat and its source, last-update age | `MorphoChainlinkOracleV2` getters read by `eth_call` |
-| AMM curve | exit pool node priced by a live Uniswap V3 QuoterV2 simulation | on-chain, current block |
+| AMM curve | exit route priced by a live Uniswap V3 QuoterV2 simulation (route, slippage, fees, gas, price impact, quote block shown with the recommendation); pool depth is not yet attached to the graph as a node | on-chain, current block |
 | Lending market holding it | position → vault —allocated_to→ markets (with live allocation weights) → collateral and loan assets | Morpho API |
 
 Beyond a single position, the **radar** maps about 5,000 mainnet Morpho entities, scores their health every five minutes, finds

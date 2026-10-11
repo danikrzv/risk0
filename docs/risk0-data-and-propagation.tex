@@ -1,0 +1,1107 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=2.2cm]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs,longtable,array,tabularx}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{microtype}
+
+\definecolor{riskblue}{HTML}{1976A3}
+\definecolor{riskred}{HTML}{B83A3A}
+\hypersetup{colorlinks=true,linkcolor=riskblue,urlcolor=riskblue}
+\setlist{nosep}
+\newcommand{\RiskZero}{\textsc{Risk0}}
+\newcommand{\Prob}{\mathbb{P}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\ind}{\mathbf{1}}
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\src}[1]{\textsf{\small #1}}
+\newcommand{\note}[1]{\textcolor{riskred}{#1}}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+\newcolumntype{Y}{>{\raggedright\arraybackslash}X}
+
+\title{\RiskZero{}: Data Acquisition, Data Treatment,\\ and Failure Propagation}
+\author{Risk0 team, Belem Capital DeFi Risk Dependency Challenge}
+\date{11 October 2026 (branch \code{main})}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This document specifies, rule by rule, how \RiskZero{} obtains its inputs (Morpho
+API, Ethereum JSON-RPC, Uniswap V3, DeFiLlama, DeFiScan and version-controlled
+catalogs), how it treats them before use (units, freshness, hourly series,
+heartbeats, oracle decomposition, issuer look-through, base rates), how a failure
+state is defined, and how that state travels through the dependency graph down to
+the impact on one position and the \code{STAY}/\code{EXIT}/\code{UNAVAILABLE}
+decision. Every rule cites the module that implements it so that a reader can
+check it. Module paths are relative to \src{services/risk/app/} unless they start
+with \src{data/} (repository root). Where the code and older documents disagree,
+this document follows the code and says so.
+\end{abstract}
+
+\tableofcontents
+
+%======================================================================
+\section{Scope and notation}
+%======================================================================
+
+\paragraph{Scope.} Morpho Blue markets and MetaMorpho vaults (V1 and V2) on
+Ethereum mainnet (chain id 1) for position analysis; the radar (continuous
+monitoring) is multi-chain capable but defaults to chain 1
+(\code{RISK0\_RADAR\_CHAIN\_IDS}, \src{config.py}). Everything is read-only.
+
+\paragraph{Graph.} A position is analysed on a directed graph $G=(V,E)$ built per
+request (\src{analysis/graph\_builder.py}). Node identifiers are
+\code{<type>:<chain\_id>:<key>} with a lower-case key (\src{domain/graph.py}).
+Node types $\tau(v)\in\{$\code{position}, \code{vault}, \code{market},
+\code{protocol}, \code{asset}, \code{oracle}, \code{pool}, \code{chain}$\}$.
+Every edge $(u,v,r)$ points from the \emph{dependent} $u$ to its
+\emph{dependency} $v$; a failure of $v$ can hurt $u$, never the reverse.
+Each node carries provenance, \code{observed\_at} and a freshness class
+(Section~\ref{sec:freshness}).
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}L{2.6cm}Yc@{}}
+\toprule
+Edge $r$ & Meaning (dependent $\to$ dependency) & Loss edge \\
+\midrule
+\code{lends} & position/vault/market $\to$ what it supplies (market, vault asset, loan asset) & yes \\
+\code{borrows} & borrower position $\to$ market and loan asset & yes \\
+\code{allocated\_to} & vault $\to$ market or unmodelled adapter, weight $w\in[0,1]$ & yes \\
+\code{uses\_collateral} & market or borrower $\to$ collateral asset & yes \\
+\code{uses\_oracle} & market $\to$ oracle; decoded oracle $\to$ each feed it reads & yes \\
+\code{backed\_by} & asset $\to$ underlying asset, issuer, or off-chain reference & yes \\
+\code{deployed\_on} & market/vault $\to$ Morpho; Morpho, on-chain issuers, native ETH $\to$ Ethereum & yes \\
+\code{exits\_through} & position $\to$ exit pool $\to$ pool tokens & no \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\paragraph{Exposure weights.} Only \code{allocated\_to} edges carry a weight
+$w_{uv}$ (share of the vault's assets in market $v$); every other edge is a
+\emph{full} dependency. An edge with $w=0$ is never traversed; an
+\code{allocated\_to} edge without a weight is treated as full exposure with a
+warning (\src{analysis/scenario\_engine.py}, \code{\_GraphView}).
+
+\paragraph{Horizon and units.} The decision horizon is $H=30$ days; every
+probability is a 30-day probability. Amounts are exact \code{Decimal}s in the
+position numeraire $N$ (USD or the symbol of an asset the position touches,
+\src{domain/position.py}); numeraire values are quantized to $10^{-18}$.
+
+\paragraph{Radar graph.} The radar uses its own topology
+(\src{radar/discovery/morpho.py}) with entity types \code{chain},
+\code{protocol}, \code{vault}, \code{market}, \code{asset}, \code{oracle},
+\code{irm}, \code{position} and edges \code{lends}, \code{uses\_collateral},
+\code{uses\_oracle}, \code{uses\_irm}, \code{deployed\_on}, \code{allocated\_to}
+(weight $=$ supplied assets / vault total assets, dropped when $>1$). Vault
+similarity records are stored separately and never carry an incident.
+
+%======================================================================
+\section{Data acquisition}
+%======================================================================
+
+\subsection{Envelopes, cache and freshness}\label{sec:freshness}
+
+Every fetched datum is wrapped in a \code{DataEnvelope} $=$ (value, source,
+\code{fetched\_at}, freshness, block number) (\src{domain/snapshots.py}). For a
+datum of age $a=t_{\text{now}}-t_{\text{fetched}}$ with time-to-live $T$ and
+retention $R\geq T$ (\src{infrastructure/freshness.py}):
+\begin{equation}
+\phi(a)=\begin{cases}
+\code{fresh}, & a<T,\\
+\code{stale\_usable}, & T\leq a<R,\\
+\code{expired}, & a\geq R.
+\end{cases}
+\end{equation}
+The SQLite cache (\src{infrastructure/cache.py}) deletes an entry on read once
+$t_{\text{now}}\geq t_{\text{fetched}}+R$, so a cache read only ever returns
+\code{fresh} or \code{stale\_usable}; \code{expired} is produced explicitly
+(unknown radar snapshots, unavailable estimates, an exit quote past its maximum
+age). The cache is size-capped (100\,MB) with LRU eviction.
+
+\paragraph{Load rule (Morpho, DeFiLlama, DeFiLlama coins, normalized history).}
+A \code{fresh} entry is returned without a request; otherwise the source is
+fetched; if the fetch fails, a \code{stale\_usable} entry is returned with that
+freshness; otherwise the call fails. One exception: a Morpho \emph{data
+conflict} is never masked by a cached value (\src{adapters/morpho.py},
+\code{\_load}).
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}YccL{4.1cm}@{}}
+\toprule
+Datum & TTL $T$ & Retention $R$ & Module \\
+\midrule
+Morpho market, vault, allocations, borrower positions, radar subset refresh & 60\,s & 24\,h & \src{adapters/morpho.py} \\
+Morpho full discovery (markets, vaults, chains) & 30\,min & 24\,h & \src{adapters/morpho.py} \\
+Chainlink rounds, per feed (extended on every read) & 1\,d & 400\,d & \src{adapters/ethereum.py} \\
+Normalized hourly price series & 1\,d & 365\,d & \src{history/normalization.py} \\
+DeFiLlama \code{/hacks}, \code{/protocols}, \code{/v2/chains} & 1\,d & 7\,d & \src{adapters/defillama.py} \\
+DeFiLlama coins chunk still being written & 1\,d & 7\,d & \src{adapters/defillama\_coins.py} \\
+DeFiLlama coins chunk ended $\geq 1$\,d before fetch & 30\,d & 400\,d & \src{adapters/defillama\_coins.py} \\
+Uniswap quote (cache) & 15\,s & 15\,s & \src{adapters/uniswap.py} \\
+Exit quote for a decision & 15\,s & 30\,s & \src{domain/exit.py} \\
+\bottomrule
+\end{tabularx}
+\end{center}
+In-process memos: latest Chainlink answer 60\,s (\code{ChainlinkLatest}); a
+decoded oracle for the process lifetime, a failed decode retried after 10\,min;
+an inferred heartbeat 1\,d; a DeFiScan review 1\,d (5\,min after a failure)
+(\src{analysis/service.py}). An exit quote is also \code{expired} when its block
+is more than 20 blocks from the snapshot block (\src{analysis/exit\_cost.py},
+\code{MAX\_QUOTE\_BLOCK\_LAG}); it is then refreshed once.
+
+\subsection{Morpho API}
+
+Base URL \code{https://api.morpho.org}; timeout 10\,s; up to 3 attempts with
+backoff $0.25\cdot 2^{k-1}$\,s on transport errors, HTTP 429 and 5xx; HTTP 404 or
+a GraphQL \code{NOT\_FOUND} means the entity no longer exists; other 4xx fail at
+once. JSON numbers are parsed as \code{Decimal} (\src{adapters/morpho.py}).
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}L{3.2cm}Y@{}}
+\toprule
+Datum & Requests \\
+\midrule
+Market snapshot & REST \code{/v0/blue/markets/\{chain\}:\{id\}} and \code{.../state}; GraphQL \code{marketById} (listed, LLTV, assets with \code{price\{usd\}}, USD totals, \code{supplyApy}, \code{netSupplyApy}). \\
+Vault snapshot & REST \code{/v0/vaults-v1|v2/\{chain\}:\{addr\}} and its state (V2: \code{/v1/vaults-v2/.../state}); GraphQL \code{vaultByAddress} / \code{vaultV2ByAddress} (USD totals, \code{apy}, \code{netApy}). \\
+Allocations & REST \code{.../allocations} (V1 also re-reads the state for \code{total\_assets}). \\
+Borrower positions & GraphQL \code{marketPositions} ordered by borrow shares descending, pages of 100, at most 2\,000 positions; \code{complete} iff the listing was exhausted and no item was rejected. Fields: health factor, supply, borrow, collateral. \\
+Radar discovery & GraphQL \code{chains}, \code{markets}, \code{vaults}, \code{vaultV2s}, paged by \code{first/skip} (100 per page; V2 at most 20 per page because nested adapter positions hit Morpho's complexity cap; at most 500 pages). Fast-loop refresh re-reads monitored ids in chunks of 100 (\src{radar/collectors/morpho.py}). \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\subsection{Ethereum JSON-RPC}\label{sec:rpc}
+
+\paragraph{Providers.} Position analysis uses one endpoint,
+\code{ETHEREUM\_RPC\_URL} (\src{adapters/ethereum.py}, timeout 20\,s). The radar
+chain collector uses \code{RpcRegistry} (\src{adapters/rpc\_registry.py}):
+ordered fallback over \code{RISK0\_RPC\_<id>\_URLS}, \code{ETHEREUM\_RPC\_URL},
+then public endpoints, each provider verified once with \code{eth\_chainId}.
+
+\paragraph{Methods.} Only \code{eth\_call} (latest or pinned block),
+\code{eth\_blockNumber}, \code{eth\_gasPrice}, \code{eth\_chainId} and
+\code{eth\_getBlockByNumber} (radar head and finality) are used. \RiskZero{}
+never calls \code{eth\_getLogs}.
+
+\paragraph{Multicall3.} Reads are batched through \code{aggregate3} on
+\code{0xcA11...CA11} with \code{allowFailure} set per call, at most 1\,000 calls
+per \code{eth\_call} (measured at about 10\,M gas). The decoded result count must
+equal the call count, otherwise the read fails (\src{adapters/multicall.py},
+\code{EthereumClient.aggregate}). ABI encoding is hand-written; selectors are
+constants verified against mainnet contracts.
+
+\paragraph{Chainlink round history.} An \code{EACAggregatorProxy} round id is
+$\rho=(\pi\ll 64)\,|\,k$ (phase $\pi$, aggregator round $k$). For a requested
+start $t_0$ (\code{\_history}, \code{\_walk\_back}):
+\begin{enumerate}
+\item read \code{latestRoundData()} (one call);
+\item walk back in batches of 1\,000 \code{getRoundData}$(\rho)$ calls, one
+  Multicall3 \code{eth\_call} per batch; reverted or empty rounds are skipped;
+\item stop after the first batch containing a round with
+  \code{updatedAt}$\;<t_0$, so the answer \emph{standing} at $t_0$ is known;
+\item at $k=1$, the previous phase's last round comes from
+  \code{phaseAggregators}$(\pi-1)$ and that aggregator's \code{latestRound()}, as
+  direct \code{eth\_call}s (aggregators restrict callers, so not via
+  Multicall3); a walk reads at most $4\cdot10^{6}$ rounds.
+\end{enumerate}
+Third-party AggregatorV3 feeds are walked the same way without phases
+(\code{require\_phase=False}). Rounds are cached per feed address as a contiguous
+range in memory and in SQLite; a repeat read costs one \code{latestRoundData()}
+plus the rounds published since, and the range is extended backwards only when
+an earlier start is requested. Rounds older than 400 days are pruned except the
+last one before the cutoff. A composite catalog feed (WBTC/USD $=$ WBTC/BTC
+$\times$ BTC/USD) is the product of the standing component answers at every
+component update (\code{\_composite}).
+
+\paragraph{Why not \code{eth\_getLogs}.} Free-tier RPC keys cap the block range
+of \code{eth\_getLogs} to a few blocks (the judging map cites 10 on Alchemy's free
+tier), which makes a year of \code{AnswerUpdated} logs impractical; round reads
+through \code{eth\_call} have no range limit, and Multicall3 cuts the request
+count by up to $1000\times$. A free key is therefore sufficient.
+
+\paragraph{Oracle reads.} Decoding a Morpho oracle costs one multicall of eight
+getters, then one multicall at the latest block (block number, block timestamp
+and, per feed, \code{description()}, \code{decimals()}, \code{phaseId()},
+\code{latestRoundData()}), then for non-Chainlink candidates one multicall pinned
+at block $-1$ (block timestamp, \code{latestRoundData()},
+\code{getRoundData}(latest$-1$), \code{getRoundData}(latest$+1$)). A live
+observation costs one multicall: \code{price()}, every feed's
+\code{latestRoundData()} and the block timestamp
+(\src{adapters/morpho\_oracle.py}).
+
+\paragraph{Errors.} \code{EthereumProviderError} names only the RPC method; URL,
+request body and provider message are never included.
+
+\subsection{Uniswap V3 exit quotes}
+
+QuoterV2 (\code{0x61ff...b21e}) is simulated by \code{eth\_call} at one pinned
+block (\src{adapters/uniswap.py}). Candidates: the direct pair on fee tiers
+$\{100,500,3000,10000\}$ and two-hop routes via WETH and via USDC
+($4\times4$ fee pairs each). A route that reverts or returns \code{0x} is skipped.
+The winner maximizes output net of gas (gas valued in the output token through
+ETH/USD and the token's USD price), ties broken by fewer hops then lower fee.
+Price impact uses a marginal probe of size
+\begin{equation}
+q_{\text{probe}}=\max\!\Big(1,\ \min\big(q,\ \max(\lfloor q/10^4\rfloor,\ \lceil 1000\,q/q_{\text{out}}\rceil)\big)\Big)
+\end{equation}
+(base units); a probe output below 1\,000 units is raised by one unit, so the
+impact is an upper bound. The minimum output uses a 0.5\% slippage tolerance.
+Quotes are cached 15\,s.
+
+\subsection{DeFiLlama and DeFiLlama coins}
+
+\code{https://api.llama.fi} \code{/hacks} (date, name, classification, technique,
+gross loss, \code{defillamaId}), \code{/protocols} (projected to id, name, slug,
+category, TVL, Ethereum TVL and borrowed TVL, parent, listing date, previous
+names) and \code{/v2/chains} (chain TVL). Timeout 30\,s, 2 attempts (0.5\,s
+backoff); after a failed fetch further fetches of that path are skipped for
+5\,min, serving a stale cached copy meanwhile when one exists
+(\src{adapters/defillama.py}).
+
+\code{https://coins.llama.fi/chart/ethereum:<address>} returns aggregated market
+prices. The adapter reads \code{span=500}, \code{period=2h} (the finest period
+that covers a year almost completely, measured 2026-10-11) in chunks of
+$500\times2$\,h $=41$\,d\,16\,h aligned on a fixed UTC grid, so chunk cache keys do
+not move with request time. The history's confidence is the minimum DeFiLlama
+confidence over chunks, its freshness the worst chunk freshness
+(\src{adapters/defillama\_coins.py}).
+
+\subsection{Protocol evidence}
+
+A version-controlled DeFiSafety snapshot (\src{data/evidence/defisafety.ethereum.json};
+for Morpho the status is \code{not\_captured}) and a live DeFiScan review
+(\src{adapters/defiscan.py}) feed the protocol evidence score
+(\src{evidence/scoring.py}); both only matter for protocol impairment
+(Section~\ref{sec:baserate}).
+
+\subsection{Version-controlled catalogs}
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}L{5.6cm}Y@{}}
+\toprule
+File & Content \\
+\midrule
+\src{data/catalog/ethereum.json} & Curated entries (vault or market, address, supported modes). \\
+\src{data/catalog/feeds.ethereum.json} & Chainlink proxies by id (ETH/USD, USDC/USD, EUR/USD, stETH/USD, BTC/USD, WBTC/BTC, BTC/ETH) and the composite WBTC/USD; descriptions verified 2026-10-11. \\
+\src{data/catalog/oracle-feeds.third-party.ethereum.json} & Published heartbeats of third-party feeds (RedStone push feeds; a Compound wstETH/ETH wrapper of Chainlink STETH/ETH), each with an https source and quote; never inferred values. \\
+\src{data/catalog/assets.ethereum.json} & Issuer and underlying registry (Section~\ref{sec:lookthrough}). \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\subsection{Failure handling at the source boundary}
+
+Provider text is never forwarded: services log only the exception type, URLs
+are reduced to scheme, host and path before they become graph provenance
+(\code{public\_source}), and the RPC URL lives only in \code{Settings}
+(\code{repr} redacted). The analysis service maps source failures as follows
+(\src{analysis/service.py}):
+\begin{itemize}
+\item entity unknown, inactive, unsupported mode, Morpho \code{NOT\_FOUND}, invalid
+  position $\Rightarrow$ HTTP 422;
+\item the entity's own Morpho snapshot unavailable with no usable cache, a Morpho
+  data conflict, an inconsistent graph, or a dependency cycle $\Rightarrow$ HTTP 503;
+\item any other gap (allocations, an allocated market, oracle health, history,
+  evidence, gas, price, quote) $\Rightarrow$ a 200 response in which the gap is an
+  explicit unknown: a missing critical source, an \code{exposure\_unknown}
+  node, or an \code{UNAVAILABLE} probability (Section~\ref{sec:unavailable}).
+\end{itemize}
+
+%======================================================================
+\section{Data treatment}
+%======================================================================
+
+\subsection{Morpho units, consistency checks and allocation weights}
+
+Token amounts are exact: $x=n\cdot10^{-d}$ from the integer $n$ and token
+decimals $d$; LLTV is WAD ($10^{-18}$), share price RAY ($10^{-27}$);
+utilization is $B/S$ from integers (\src{adapters/morpho.py}). A snapshot is
+rejected as a \emph{conflict} when chain id or entity identity differs between
+REST payloads, when REST and GraphQL disagree on LLTV or on asset address or
+decimals, when $B>S$, when V1 allocations exceed \code{total\_assets} by more
+than one base unit or the V1 withdraw queue is not $\{0,\dots,n-1\}$, or when V2
+adapter caps are duplicated, an adapter lacks exactly one adapter-level cap, or
+market caps do not sum to the adapter's assets within one unit.
+
+Allocation weights:
+\begin{equation}
+w_{v m}=\frac{a_{v m}}{A_v},\qquad
+A_v=\begin{cases}\code{total\_assets}_v & \text{V1},\\
+\sum_{\text{adapters}} \text{adapter assets} & \text{V2 (idle assets excluded).}\end{cases}
+\end{equation}
+For V2 the weights therefore sum to one over the \emph{allocated} assets: idle
+cash is not credited as risk-free. The graph builder sums rows per market (V2 may
+split a market over adapters), skips zero and negative weights (negative with a
+warning), caps a per-market weight above 1 at 1 (warning), and warns when
+$\sum w>1$. A row that is not a Morpho market becomes a \code{protocol} node
+\emph{Unmodelled allocation} with \code{exposure\_unknown=true}; an allocated
+market whose snapshot cannot be read is marked \code{exposure\_unknown=true}
+(\src{analysis/service.py}, \code{\_mark\_unresolved\_markets}).
+
+\paragraph{APY.} The market APY is the first finite, non-negative value of
+(\code{netSupplyApy}, \code{supplyApy}); the vault APY of (\code{netApy},
+\code{apy}); otherwise the APY is unknown, never zero (\code{\_apy}).
+
+\subsection{Hourly normalization}\label{sec:hourly}
+
+Price history is normalized to UTC hours (\src{history/normalization.py},
+\code{normalize\_hourly}). The period $[t_0,t_1]$ becomes hours
+$h_0=\lceil t_0\rceil_{\text{h}},\dots,h_{N-1}=\lfloor t_1\rfloor_{\text{h}}$.
+\begin{enumerate}
+\item Each hour takes the value of the latest observation inside it (ties by
+  block, round id, log index); observations are deduplicated by identity.
+\item Between consecutive observed hours $h_a<h_b$: if $h_b-h_a\leq G_{\max}$
+  the hours in between are carried forward with the value at $h_a$
+  (\emph{forward-filled}); otherwise they are a \emph{gap} (absent).
+\item Hours before the first and after the last observation are gaps.
+\end{enumerate}
+For a Chainlink feed (\src{history/estimator.py}):
+$G_{\max}=\max(6\,\text{h},\ H_{\text{feed}}+1800\,\text{s})$ when a documented
+heartbeat is known (\code{HISTORY\_HEARTBEATS}; WBTC/USD uses its shortest
+component, 1\,h), else 6\,h; with a known heartbeat every carried-forward hour is
+counted as an observation. Only rounds with \code{updatedAt} in $[t_0,t_1]$ enter
+the price series. The missing ratio is
+\begin{equation}
+\mu=\frac{N-n_{\text{obs}}}{N},\qquad n_{\text{obs}}=\#\{\text{hours present and not forward-filled}\}.
+\end{equation}
+A freshly fetched series with $\mu>0.05$ is replaced by the cached series when one
+exists (\code{\_materially\_partial}).
+
+\subsection{Rolling-window estimator and Wilson interval}\label{sec:wilson}
+
+\code{RollingWindowEstimator} (\src{history/estimator.py}) works on the hourly
+grid with window length $W=30\cdot24=720$ hours. Window $j\in\{0,\dots,N-W\}$
+covers hours $j,\dots,j+W-1$; it is \emph{counted} iff none of its hours is a gap
+(forward-filled hours are present), and is an \emph{event window} iff the event
+predicate holds on it. With $n$ counted and $k$ event windows,
+$\hat p=k/n$ and, with $z=1.96$,
+\begin{equation}
+c=\frac{\hat p+\frac{z^2}{2n}}{1+\frac{z^2}{n}},\qquad
+m=\frac{z\sqrt{\frac{\hat p(1-\hat p)}{n}+\frac{z^2}{4n^2}}}{1+\frac{z^2}{n}},\qquad
+[p_{\text{low}},p_{\text{high}}]=[\max(0,c-m),\ \min(1,c+m)].
+\end{equation}
+For $k=0$ this gives $[0,\ z^2/(n+z^2)]$. Confidence is HIGH if $\mu\leq0.05$,
+otherwise LOW. If $N<720$ or $n=0$ the estimate is \code{UNAVAILABLE}
+(\emph{insufficient history}). The lookback is 365 days
+(\code{HISTORY\_LOOKBACK}, \src{analysis/service.py}).
+
+\subsection{Event predicates}
+
+On the hourly values $x_h$ of a window (\src{analysis/service.py},
+\src{history/staleness.py}):
+\begin{align}
+\textsc{Depeg}_s &:\ \exists h:\ x_h\leq 1-s, \\
+\textsc{Shock}_s &:\ \exists h,h'\ \text{in the window},\ 1\,\text{h}\leq h-h'\leq 24\,\text{h}:\ x_h\leq(1-s)\,x_{h'}, \\
+\textsc{Stale}_H &:\ \exists h:\ \text{hour } h \text{ overlaps a stale interval (Section~\ref{sec:heartbeat})}.
+\end{align}
+The depeg series is the Chainlink answer in USD (USDC/USD) or the peg ratio of
+Section~\ref{sec:marketprice}. Collateral-shock feeds: WETH$\to$ETH/USD,
+wstETH$\to$stETH/USD (the wstETH/stETH exchange rate is not modelled; caveat
+attached to the explanation), WBTC$\to$WBTC/BTC$\times$BTC/USD.
+
+\subsection{Heartbeats and staleness}\label{sec:heartbeat}
+
+A feed's heartbeat $H$ is the longest interval a healthy feed may go without a
+round. Its source is, in order (\src{analysis/service.py},
+\code{ChainlinkOracleHealth}):
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}L{2.4cm}YL{3.2cm}@{}}
+\toprule
+Class & Rule & Effective $H$ \\
+\midrule
+documented & Chainlink feed in \src{feeds.ethereum.json} with an entry in \code{CHAINLINK\_HEARTBEATS}: ETH/USD, stETH/USD, BTC/USD 3\,600\,s; USDC/USD, EUR/USD, WBTC/BTC, BTC/ETH 86\,400\,s. & table value \\
+inferred & any other Chainlink feed, and a third-party feed without a published value whose round history is readable: 99th-percentile update gap over the last 90 days (below). & $2\,H_{\text{inf}}$ (one missed cycle tolerated) \\
+published & third-party feed whose address \emph{and} on-chain \code{description()} match \src{oracle-feeds.third-party.ethereum.json}. & published value \\
+unknown & third-party feed with neither: its age is reported, its staleness is not judged. & none \\
+\bottomrule
+\end{tabularx}
+\end{center}
+A Chainlink feed whose heartbeat is neither documented nor inferable makes the
+whole oracle unobservable (Section~\ref{sec:oracleobs}).
+
+\paragraph{Inference} (\src{history/staleness.py}, \code{infer\_heartbeat}). From
+the distinct update times, gaps $g_{(1)}\leq\dots\leq g_{(m)}$; with $m\geq20$,
+$q=g_{(\lceil0.99m\rceil)}$ (nearest rank) and
+\begin{equation}
+H_{\text{inf}}=\min\{c\in S:\ c\geq q/1.05\},\quad
+S=\{60,120,300,600,900,1200,1800,3600,7200,10800,21600,43200,86400,172800\}\,\text{s},
+\end{equation}
+or $q$ itself if no standard value qualifies; with $m<20$ the heartbeat is
+unknown.
+
+\paragraph{Staleness of a live read.} With $\tau$ the feed's \code{updatedAt},
+\begin{equation}
+\sigma=\max(0,\ t_{\text{now}}-\tau-H),\qquad \text{stale}\iff \sigma\geq 1800\,\text{s},
+\end{equation}
+i.e.\ the spec's ``stale for 30 minutes'' is read as \emph{older than heartbeat
+plus 30 minutes} (\code{ORACLE\_STALE\_THRESHOLD\_SECONDS}, \src{domain/scenario.py}).
+
+\paragraph{Staleness history} (\code{staleness\_series}). From exact round
+timestamps $\tau_1<\dots<\tau_r$ (the standing round before $t_0$ included) and
+$\tau_{r+1}=\min(t_{\text{now}},t_1+1\,\text{h})$, every pair with
+$\tau_{i+1}-\tau_i>H+1800$ defines a stale interval $[\tau_i+H+1800,\ \tau_{i+1})$.
+Each hour is flagged 1 iff it overlaps a stale interval; hours before the first
+fully covered hour are gaps, never healthy. The rolling-window estimator then
+gives the share of 30-day windows containing staleness. For an inferred heartbeat
+the lookback is cut to the same 90 days and the confidence is capped at LOW
+(\code{\_staleness\_estimate}).
+
+\subsection{Oracle decomposition and feed classification}\label{sec:oracleobs}
+
+A \code{MorphoChainlinkOracleV2} (getters \code{BASE\_FEED\_1/2},
+\code{QUOTE\_FEED\_1/2}, \code{BASE\_VAULT}, \code{QUOTE\_VAULT},
+\code{SCALE\_FACTOR}) or its V1 predecessor (single \code{VAULT}) prices
+collateral in loan units as
+\begin{equation}
+P=\frac{\code{SCALE\_FACTOR}\cdot r_{\text{base vault}}\cdot F_{b1}F_{b2}}{r_{\text{quote vault}}\cdot F_{q1}F_{q2}},
+\qquad \code{price()}=P\cdot10^{36+d_{\text{loan}}-d_{\text{coll}}}.
+\end{equation}
+Any other oracle contract is not decoded. Each used feed (non-zero address) is
+classified by on-chain behaviour; the first rule that holds wins
+(\src{adapters/morpho\_oracle.py}):
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}L{3.2cm}YL{2.4cm}@{}}
+\toprule
+Kind & Rule & Staleness \\
+\midrule
+\code{chainlink} & \code{phaseId()}$>0$, readable decimals, \code{latestRoundData()} with round id $>0$ and \code{updatedAt}$>0$. & judged \\
+\code{exchange\_rate\_adapter} & address and \code{description()} both match \code{KNOWN\_RATE\_ADAPTERS} (wstETH/stETH rate adapter). & never stale \\
+\code{constant\_scaler} & computed on read (next row) and answer an exact power of ten, equal at both blocks and returned unchanged for round latest$+1$, and description contains \emph{dummy}, \emph{constant}, \emph{fixed} or \emph{scal}. & never stale \\
+\code{computed\_on\_read} & at blocks $b$ and $b-1$, positive answer and \code{updatedAt}$=0$ at both, or equal to that block's timestamp at both. & never stale \\
+\code{third\_party} & non-empty description, decimals, positive answer, $0<$\code{updatedAt}$\leq$ block time, no Chainlink phase. \code{history\_readable} iff \code{getRoundData}(latest$-1$) returns an earlier update. & by heartbeat class \\
+\code{unknown} & anything else. & oracle unobservable \\
+\bottomrule
+\end{tabularx}
+\end{center}
+The \code{provider} label (RedStone, Ojo, Midas, \dots) is parsed from the
+description for display only.
+
+\paragraph{Live observation} (\code{ChainlinkOracleHealth.observe}). The oracle's
+age is the largest staleness over its judged feeds,
+$\sigma_o=\max_f\sigma_f$ (never-stale kinds contribute 0; \code{None} when every
+feed is unjudged). Its deviation is \emph{signed}:
+\begin{equation}
+\delta_o=\frac{P_o-P_{\text{ref}}}{P_{\text{ref}}},\qquad
+P_o=\frac{\code{price()}}{10^{36+d_{\text{loan}}-d_{\text{coll}}}},\qquad
+P_{\text{ref}}=\frac{p^{\text{USD}}_{\text{coll}}}{p^{\text{USD}}_{\text{loan}}},
+\end{equation}
+with $p^{\text{USD}}$ the Morpho API asset prices of the market snapshot;
+$\delta_o>0$ means the oracle values collateral above the market. No reference
+price $\Rightarrow$ $\delta_o$ unknown. The observation is \emph{absent}
+(oracle unobservable) when the oracle is not decodable, a feed is of unknown kind
+or returns no round, a Chainlink feed has no documented or inferable heartbeat,
+a computed-on-read feed returns a stored update time, or a constant scaler
+changes its answer.
+
+\subsection{Issuer and underlying look-through}\label{sec:lookthrough}
+
+\src{data/catalog/assets.ethereum.json} (\src{catalog/assets.py}) registers
+issuers (\code{protocol}, \code{custodial}, \code{wrapper}, \code{native}),
+off-chain references (ETH, BTC, USD reserves, EUR reserves) and tokens with their
+underlying, issuer, redemption and a source per claim (https URL or recorded
+\code{eth\_call}). Load-time validation: unique keys, resolvable references,
+acyclic token chains of at most \code{MAX\_UNDERLYING\_DEPTH}$=4$ token hops. For
+every asset node the graph builder adds asset \code{--backed\_by-->} underlying
+(recursively, cycle-checked), asset \code{--backed\_by-->} issuer node
+\code{protocol:1:issuer-<id>}, on-chain issuers and native ETH
+\code{--deployed\_on-->} Ethereum. An asset not in the registry gets no
+look-through and the warning ``issuer and underlying are unmodelled, not assumed
+safe''. Registered today: wstETH$\to$stETH$\to$ETH (Lido), weETH$\to$eETH$\to$ETH
+(ether.fi), WETH$\to$ETH, USDC$\to$USD reserves (Circle), EURCV$\to$EUR reserves
+(SG-FORGE), EUROP$\to$EUR reserves, WBTC and cbBTC$\to$BTC, steakEURCV$\to$EURCV.
+
+\subsection{Market-price depeg fallback}\label{sec:marketprice}
+
+For a depeg asset without a Chainlink feed (EURCV) the probability comes from
+DeFiLlama market prices (\src{history/market\_price.py}):
+\begin{enumerate}
+\item \emph{Peg} from the registry: an asset whose underlying is
+  \code{usd-reserves} is pegged to 1 USD; \code{eur-reserves} to EUR, valued by
+  Chainlink EUR/USD. Any other asset has no fallback.
+\item \emph{Ratio}: for each DeFiLlama price $p_t$ (2-hour samples),
+  $\rho_t=p_t/e_{t}$ where $e_t$ is the latest EUR/USD answer at or before $t$;
+  the sample is dropped when $t-t(e_t)>86\,400+1\,800$\,s (heartbeat plus 30 min).
+  USD peg: $\rho_t=p_t$.
+\item \emph{Series}: hourly normalization with $G_{\max}=6$\,h; an hour within one
+  sampling interval (2\,h) of a sample counts as observed, longer fills count as
+  missing, longer gaps exclude their windows.
+\item \emph{Estimate}: the same \textsc{Depeg}$_s$ predicate and estimator;
+  confidence capped at MEDIUM, and at LOW when DeFiLlama's price confidence is
+  below 0.9.
+\end{enumerate}
+
+\subsection{Protocol base rate and oracle-exploit prior}\label{sec:baserate}
+
+\src{evidence/defillama.py}. With $y$ the current UTC year:
+\begin{itemize}
+\item population $\mathcal P$: DeFiLlama protocols with category Lending or CDP
+  and current TVL $\geq$ \$100M (any chain);
+\item window $Y=\{y-5,\dots,y-1\}$ (2021--2025 on 2026-10-11);
+\item event keys $K=\{(i,\text{year}(h))\}$ over \code{/hacks} incidents $h$ in $Y$
+  with gross loss $\geq$ \$1M matched to $i\in\mathcal P$: by
+  \code{defillamaId}, or, for an incident without an id, by exact normalized name
+  (lower case, alphanumerics) against the protocol's name and previous names;
+\item exposure $X=\{(i,y'):\ i\in\mathcal P,\ y'\in Y,\ \text{listed}_i<\text{1 July }y'\ \text{or listing unknown}\}\cup K$.
+\end{itemize}
+\begin{equation}
+\hat a=\frac{|K|}{|X|},\qquad [a_{\text{low}},a_{\text{high}}]=\text{Wilson}(|K|,|X|),\qquad
+p_{30}(a)=\begin{cases}1-(1-a)^{30/365}, & a<1,\\ 1, & a\geq1.\end{cases}
+\end{equation}
+The \emph{oracle-exploit prior} uses the same population, window, exposure and
+matching, counting only incidents classified ``Oracle Manipulation'' or whose
+technique mentions ``oracle''. Both are industry rates, always LOW confidence; the
+explanation states the survivorship bias (current-TVL selection), so the rate is
+closer to a floor than a central estimate.
+
+\paragraph{Protocol impairment probability} (\code{\_protocol},
+\code{combine\_protocol\_estimates}). The evidence score maps to an annual band
+(score $\geq85$: 0.5\%, $\geq70$: 1\%, $\geq50$: 3\%, else 8\%), converted by
+$p_{30}$, range $[p/f,\ pf]$ with $f=2,3,4$ for HIGH, MEDIUM, LOW
+(\src{evidence/scoring.py}). If both the score and the base rate exist they are
+merged with \code{combine\_conservative}; with only the base rate, it is used at
+LOW confidence (the case for Morpho, which has no captured DeFiSafety score).
+
+\paragraph{Conservative merge} (\code{combine\_conservative}). Over the usable
+estimates: central and high are those of the estimate with the largest central,
+high is the maximum high, low the maximum low; confidence is the lowest source
+confidence, lowered one level when centrals differ or a source was unusable;
+differing centrals are recorded as a data conflict.
+
+\subsection{Probability per scenario}
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}L{2.9cm}Y@{}}
+\toprule
+Scenario & 30-day probability (\code{HybridProbabilityProvider}, \src{analysis/service.py}) \\
+\midrule
+stablecoin depeg & Per reachable asset in \{EURCV, USDC\}: Chainlink rolling windows (USDC/USD); without a feed, the market-price fallback; otherwise UNAVAILABLE. Several assets: largest central at the lowest confidence. \\
+collateral shock & Per reachable collateral asset in \{wstETH, WETH, WBTC\}: rolling windows with \textsc{Shock}$_s$. No feed $\Rightarrow$ UNAVAILABLE (no fallback). \\
+oracle failure & Per decoded market oracle, per feed: never-stale kinds excluded; Chainlink and third-party feeds with a heartbeat and readable history: staleness rate (Section~\ref{sec:heartbeat}); a third-party feed lacking either or whose staleness estimate is unavailable, and a Chainlink feed whose readable history holds no complete 30-day window: the oracle-exploit prior (one per oracle). Feeds of an oracle merged by \code{combine\_conservative}; across oracles the highest central at the lowest confidence. An undecoded oracle or unreadable history $\Rightarrow$ UNAVAILABLE; only never-stale feeds $\Rightarrow$ structural 0 (MEDIUM). \\
+liquidity collapse & UNAVAILABLE (no pool-depth history is collected). \\
+protocol impairment & Section~\ref{sec:baserate}. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+A probability is estimated per selection (scenario id, severity), so one
+severity's probability is never paired with another severity's impact.
+
+\subsection{Forgone-yield inputs}
+
+For a lender (\src{analysis/recommendation.py}, \code{estimate\_carry}):
+\begin{equation}
+Y_{30}=A\cdot\text{APY}\cdot\frac{30}{365},
+\end{equation}
+with the vault APY for a vault and the market supply APY for a market (net of
+fees when reported, possibly including rewards); exited capital is assumed idle.
+Unknown APY: $Y_{30}=0$ (biases toward EXIT), status \code{UNKNOWN}, decision
+confidence lowered one level. Borrowers: $Y_{30}=0$, status \code{NOT\_APPLICABLE}.
+
+%======================================================================
+\section{Failure states}
+%======================================================================
+
+\subsection{Position analysis}\label{sec:unavailable}
+
+\paragraph{Live oracle failure.} For every observed oracle $o$ of the graph
+(the entry market's oracle and each resolved allocated market's oracle):
+\begin{equation}
+F_o=\big[\sigma_o\geq1800\,\text{s}\big]\ \lor\ D(\delta_o),\qquad
+D(\delta)=\begin{cases}\delta\geq0.05 & \text{lender},\\ |\delta|\geq0.05 & \text{borrower}\end{cases}
+\end{equation}
+(\code{oracle\_deviation\_breaches}, \src{domain/scenario.py}). Overvaluation
+leaves bad debt unliquidated and is the lender's risk; undervaluation only
+liquidates borrowers early. $F_o$ is a live hard trigger
+\code{live:oracle\_failure:oracle:1:<addr>} whatever the selected scenarios
+(\code{\_live\_triggers}); the scenario engine applies the same test to every
+reachable oracle node when oracle failure is selected. A third-party feed with an
+unknown heartbeat never fires the staleness part and caps the decision confidence
+at LOW (\code{\_unjudged\_oracle\_caps}).
+
+\paragraph{Critical data.} The critical sources are the entity snapshot, the exit
+estimate, the vault allocations (vault entries) and a live observation of
+every oracle in the graph. A critical source is \emph{missing} when absent or
+\code{expired} (\code{DataQuality.from\_sources}).
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}YL{3.3cm}@{}}
+\toprule
+Condition & Outcome \\
+\midrule
+Critical source missing (incl.\ unobservable oracle, unavailable or expired exit estimate) & \code{UNAVAILABLE} \\
+A scenario's impact incomplete (\code{impact\_complete=false}, Section~\ref{sec:confidence}) & \code{UNAVAILABLE} \\
+A scenario with non-zero impact has no central probability (and no hard trigger fired) & \code{UNAVAILABLE} \\
+Hard trigger: liquidation, live oracle failure, withdrawal shortfall & \code{EXIT} \\
+\bottomrule
+\end{tabularx}
+\end{center}
+Missing data is never interpreted as zero risk, so it can never yield
+\code{STAY}.
+
+\subsection{Radar entity health}\label{sec:health}
+
+\paragraph{Collection.} Two loops (\src{radar/scheduler.py}): fast every 300\,s
+(state collection, health, incidents, propagation) and slow every 3\,600\,s
+(discovery, similarity, retention); a tick arriving while the previous cycle of
+the same loop runs is recorded as \code{skipped}. Snapshots
+(\src{radar/collectors/morpho.py}, \src{radar/collectors/chain.py}):
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}L{1.6cm}Y@{}}
+\toprule
+Entity & Metrics used by health \\
+\midrule
+market & utilization $B/S$; available liquidity; Morpho \code{badDebt.underlying}; from borrower positions (visible markets only): lender and borrower HHI $\sum_i s_i^2$, near-liquidation ratio $=\sum\{d_i:\text{HF}_i<1.10\}/\sum d_i$. \\
+vault & withdrawal liquidity; allocation HHI over market shares $a_m/\code{total\_assets}$; unmodelled ratio $=$ unattributed assets / total assets. \\
+oracle & Morpho \code{state.price} scaled to collateral-in-loan units (and a USD reference, not judged). \\
+asset & Morpho USD price. \\
+chain & head block, head timestamp, finalized block (\code{RpcRegistry}). \\
+\bottomrule
+\end{tabularx}
+\end{center}
+A source failure produces an explicit \emph{unknown snapshot}: every metric null,
+listed as missing, freshness \code{expired}.
+
+\paragraph{Raw state} (\src{radar/analysis/health.py}, thresholds in
+\src{radar/domain/rules.py}, version \code{radar-health-v1}).
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}L{1.4cm}L{4.4cm}L{2.6cm}Y@{}}
+\toprule
+Entity & CRITICAL (checked first, even with missing data) & UNKNOWN & WARNING \\
+\midrule
+market & bad debt $>0$; $u\geq0.98$; near-liquidation ratio $\geq0.30$ & any required metric missing & $u\geq0.90$; lender or borrower HHI $\geq0.25$; near-liquidation $\geq0.10$; available liquidity $\leq0$ \\
+vault & --- & metric missing; unmodelled ratio $>0.05$ & withdrawal liquidity $\leq0$; allocation HHI $\geq0.25$ \\
+oracle & price $\leq0$ & field missing; no measurement & --- \\
+asset, chain & --- & field missing; no measurement & --- \\
+\bottomrule
+\end{tabularx}
+\end{center}
+Otherwise HEALTHY. Precedence is CRITICAL $>$ UNKNOWN $>$ WARNING $>$ HEALTHY.
+
+\paragraph{Dependency aggregation.} An entity's dependencies are the targets of
+its outgoing topology edges that have a health state. For a vault with known
+allocation weights, market dependencies are weighted by $w$; other dependencies
+are unweighted. With material share $\theta=0.05$ and $W_s=\sum\{w:\text{dependency in state }s\}$:
+\begin{center}\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+Condition (first match) & Dependency state \\
+\midrule
+an unweighted dependency CRITICAL, or $W_{\text{CRIT}}\geq\theta$ & CRITICAL \\
+an unweighted dependency UNKNOWN, or $W_{\text{UNK}}>\theta$ & UNKNOWN \\
+an unweighted dependency WARNING, or $0<W_{\text{CRIT}}<\theta$, or $W_{\text{WARN}}\geq\theta$ & WARNING \\
+otherwise & HEALTHY \\
+\bottomrule
+\end{tabular}
+\end{center}
+Combination: dependency CRITICAL wins first; then an \code{expired} snapshot gives
+UNKNOWN; then a raw CRITICAL or UNKNOWN; then a dependency UNKNOWN; a raw HEALTHY
+with a dependency WARNING becomes WARNING; a raw HEALTHY from a stale (not fresh)
+snapshot becomes UNKNOWN. Entities are evaluated in the order chain, asset,
+oracle, IRM, protocol, market, vault, position, so a market sees its oracle's and
+assets' state of the same cycle (\src{radar/service.py}).
+
+\paragraph{Hysteresis} (\code{\_apply\_hysteresis}, \code{\_next\_history}).
+CRITICAL and UNKNOWN apply immediately. A raw WARNING from HEALTHY (or no history)
+becomes WARNING only on the 2nd consecutive warning observation
+(\code{warning\_cycles}$=2$); from any abnormal state it applies at once. A raw
+HEALTHY after a non-HEALTHY state keeps the previous state until the 3rd
+consecutive healthy observation (\code{recovery\_cycles}$=3$). Counters advance
+only on a new observation (same entity and source with a later
+\code{observed\_at}) and are held in memory.
+
+\subsection{Radar incidents}
+
+\code{IncidentDetector.reconcile} (\src{radar/analysis/incidents.py}), one incident
+per source entity:
+\begin{itemize}
+\item post-hysteresis WARNING or CRITICAL with no open incident $\Rightarrow$ open,
+  id \code{incident:<entity>:<rule\_version>:<first evaluation, UTC>}, severity
+  CRITICAL iff the state is CRITICAL;
+\item WARNING or CRITICAL with an open incident $\Rightarrow$ update severity, reasons,
+  \code{last\_observed\_at};
+\item HEALTHY with an open incident $\Rightarrow$ resolve (the record stays, with its resolution time);
+\item UNKNOWN $\Rightarrow$ nothing: missing data never opens an incident and never
+  resolves one;
+\item source no longer monitored $\Rightarrow$ resolve; an open incident whose latest
+  trigger and origin were UNKNOWN (earlier rule versions) $\Rightarrow$ resolve as a
+  data gap.
+\end{itemize}
+
+%======================================================================
+\section{Propagation}
+%======================================================================
+
+\subsection{Radar: from a failing entity to its dependents}
+
+Two mechanisms coexist. (i) \emph{State aggregation}
+(Section~\ref{sec:health}): a CRITICAL oracle makes every market using it
+CRITICAL, and every vault holding $\geq5\%$ in such a market CRITICAL ($<5\%$:
+WARNING); each of these opens its own incident. (ii) \emph{Impact propagation}
+of each open incident (\src{radar/analysis/propagation.py}), described here.
+
+\paragraph{Traversal.} Edges are travelled in reverse, from dependency to
+dependent, by a layered breadth-first search from the incident source $s$.
+\code{similar\_to} and \code{exits\_through} edges and edges with weight 0 carry
+nothing; parallel edges between one pair keep the most confident. Each reached
+node keeps one shortest path $\pi(s,y)$; among equally short paths the highest
+confidence wins, then the lexicographically smallest path. There is no depth
+limit.
+
+\paragraph{Confidence.}
+\begin{equation}
+C(s,y)=\max\Big(0.50,\ \prod_{e\in\pi(s,y)}c_e\Big),\qquad
+c_e=\begin{cases}
+1 & \code{uses\_oracle},\ \code{uses\_collateral},\ \code{uses\_irm},\ \code{lends},\ \code{borrows},\\
+0.95 & \code{allocated\_to}\ \text{with weight},\\
+0.90 & \code{allocated\_to}\ \text{without weight},\ \code{backed\_by},\ \code{deployed\_on},
+\end{cases}
+\end{equation}
+quantized to $10^{-4}$. Immutable market parameters are certain links;
+allocations change between cycles; protocol and chain links are broad. The
+0.50 is a floor, not a cut-off. \note{The older \src{docs/risk0-algorithms.tex}
+gives $\max(0.50,1-0.05\,d)$; the code uses the product above.} The distance is
+$d=|\pi|-1$; \code{alternate\_path\_count} counts the other reached dependencies
+of $y$ (besides its predecessor on $\pi$) whose own path does not pass through $y$,
+each a distinct arrival of the incident (capped at 1\,000).
+
+\paragraph{Revealed hidden vaults.} The slow loop scores every vault against each
+catalog vault (\src{radar/analysis/similarity.py}):
+\begin{equation}
+S=0.35\,\mathrm{WJ}(\text{allocation shares})+0.20\,J(\text{assets})+0.15\,J(\text{oracles})+0.10\,J(\text{IRMs})+0.10\max(0,1-|\bar\ell_1-\bar\ell_2|)+0.05\,\ind_{\text{chain}}+0.05\,\ind_{\text{curator}},
+\end{equation}
+($J$ Jaccard, WJ weighted Jaccard, $\bar\ell$ mean LLTV); pairs with $S>0.33$ are
+stored, $S>0.60$ (top 10) are normally visible. A hidden (not visible) entity with
+a stored score $>0.33$ is \emph{revealed} when the incident reaches or originates
+at it, and every impact whose path crosses a revealed entity is flagged
+\code{revealed}.
+
+\paragraph{Affected amount of a manual exposure} (\code{ExposureImpactEstimator},
+\src{radar/analysis/exposure.py}). The impact is matched on the exposure's own
+node, else on the entity it is held in (shortest distance, then highest
+confidence), else on the incident source itself. Then
+\begin{equation}
+\hat A=\begin{cases}
+\text{undefined} & \text{incident source is a chain (any mode)},\\
+D & \text{borrower (debt amount; LTV and collateral reported)},\\
+A\prod_{(u\to v)\in\pi}w_{uv} & \text{lender (hops without an allocation weight count 1)},\\
+\text{undefined} & \text{lender, a vault}\to\text{market/vault hop without weight.}
+\end{cases}
+\end{equation}
+$\hat A$ is the \emph{amount exposed} to the incident, not a loss estimate.
+Impacts are recomputed when an incident changes or topology is rediscovered, and
+for a new exposure at creation.
+
+\subsection{Position: scenario propagation}
+
+\paragraph{Targets} $T$ per family (\code{\_targets},
+\src{analysis/scenario\_engine.py}; definitions in \src{domain/scenario.py}):
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}L{3.0cm}L{1.6cm}Y@{}}
+\toprule
+Scenario & Default $s$ & Shocked nodes $T$ \\
+\midrule
+stablecoin depeg & 0.10 & asset nodes with symbol EURCV or USDC \\
+collateral shock (24\,h) & 0.15 & asset nodes with symbol wstETH, WETH or WBTC that are the target of a \code{uses\_collateral} edge \\
+oracle failure & 0.05 & all \code{oracle} nodes (market oracles and their feeds) \\
+liquidity collapse & 0.80 & capital nodes (vault, market) directly under the position, and pools \\
+protocol impairment & 0.10 & all \code{protocol} nodes (Morpho, issuers, unmodelled allocations) \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\paragraph{Exposure.} Over an edge set $R$ (default the loss edges, all but
+\code{exits\_through}), with memoized recursion and cycle detection:
+\begin{equation}
+E_R(v;T)=\begin{cases}1, & v\in T,\\
+\min\Big(1,\ \max\big(\max_{(v,u)\ \text{full}}E_R(u;T),\ \sum_{(v,u)\ \text{weighted}}w_{vu}\,E_R(u;T)\big)\Big), & \text{otherwise,}\end{cases}
+\end{equation}
+and $E=E(\text{position};T)$. Capital reaching a shocked dependency by several
+full paths counts once (max); allocations add (sum). The affected path is every
+node on some position-to-target path, in breadth-first order, targets last; the
+\emph{primary dependency} is the first target on it, i.e.\ the nearest shocked
+node.
+
+\paragraph{Lender, price events} (\code{\_lender\_price\_event}). With $A$ the
+deposit:
+\begin{equation}
+I=\underbrace{A\,E_{R_h}(T)\,s}_{\text{held claim, 1:1}}\ +\ \sum_{m\in M_T}A\,E(\{m\})\,f_m(s'_m),
+\end{equation}
+where $R_h$ excludes \code{uses\_collateral} (the claim the lender holds: the loan
+asset and what backs it) and $M_T$ is the set of reachable markets whose
+collateral, or anything it is \code{backed\_by}, is in $T$. The relative shock is
+$s'_m=0$ when the loan asset co-moves (its backing closure meets $T$, or, for a
+collateral shock only, it shares an underlying \emph{asset} with the collateral,
+e.g.\ WETH debt against wstETH collateral), else $s'_m=s$. A depeg is
+issuer-specific: a shared off-chain reference does not co-move.
+
+\paragraph{Bad debt} (\src{domain/bad\_debt.py}). Instantaneous gap, no
+liquidation executed. Borrower $i$ with debt $d_i$ and health factor $\text{HF}_i$
+has collateral/debt ratio $r_i=\text{HF}_i/\lambda$ ($\lambda$ = LLTV; floored to
+0.001, pooled at 100). With $S_m,B_m$ the market's supply and borrow,
+$U_m=\max(0,B_m-\sum_{\text{observed}}d_i)$ the debt not covered by the fetched
+positions (truncated list, borrowers without HF) and
+$\beta(s)=\max(0,1-(1-s)/\lambda)$ the all-at-LLTV bound:
+\begin{equation}
+f_m(s)=\min\Big(1,\ \frac{\sum_i d_i\max\big(0,1-(1-s)\,r_i\big)+\beta(s)\,U_m}{S_m}\Big).
+\end{equation}
+Without positions ($U_m=B_m$) this is $\beta(s)\cdot B_m/S_m$; with unknown totals,
+$\beta(s)$ times utilization (or 1); with unknown LLTV, $\beta=s$. Positions are
+fetched for at most 12 shocked markets, most exposed first
+(\code{MAX\_BAD\_DEBT\_MARKETS}); a market priced by the bound with $s'>0$ lowers
+the scenario confidence one level.
+
+\paragraph{Lender, oracle failure and protocol impairment.}
+$I=A\cdot E(T)\cdot s$, booked as \code{protocol\_impairment}; if no target is
+reachable, $E=1$ with a warning.
+
+\paragraph{Lender, liquidity collapse} (\code{\_stress\_withdrawable\_liquidity}).
+With $L$ the summed available liquidity of the capital nodes under the position
+(in $N$):
+\begin{equation}
+L'=(1-s)L,\qquad \text{shortfall}=A-\min(A,L'),\qquad
+\text{trigger }\code{withdrawal\_shortfall}\iff L'<0.20\,A.
+\end{equation}
+The shortfall is reported but is \emph{not} a loss ($I=0$). At the default
+$s=0.8$ the trigger is equivalent to $L<A$. An unknown $L$ makes the impact
+incomplete.
+
+\paragraph{Borrower} (\code{\_borrower}). With collateral value $C$, debt $D$ (in
+$N$) and $\lambda$ the lowest known LLTV: depeg/shock set $C'=C(1-s)$ if the
+collateral's backing closure meets $T$ and $D'=D(1-s)$ if the debt's does; oracle
+failure keeps $C'=C$ but the oracle reports $C^{o}=C'(1-s)$; protocol impairment
+sets $C'=C(1-s)$. Then
+\begin{equation}
+\text{LTV}'=D'/C^{o},\qquad \text{liquidated}\iff \text{LTV}'\geq\lambda,\qquad
+I=(C-C')+\text{incentive},
+\end{equation}
+and a liquidation is priced at Morpho's incentive factor
+$\text{LIF}=\min\big(1.15,\ 1/(0.3\lambda+0.7)\big)$: seized (oracle value)
+$=\min(C^{o},D'\,\text{LIF})$, repaid $=$ seized$/\text{LIF}$, incentive $=$
+seized (true value) $-$ repaid. Liquidation is a hard trigger. Missing $C$, $D$ or
+$\lambda$ makes the impact incomplete.
+
+\paragraph{Unmodelled exposure.} For depeg, shock and oracle failure, if a node
+with \code{exposure\_unknown=true} is reachable, is not a target, the known
+exposure is below 1, and its share $E(\{\text{unknown}\})>0$, the scenario is
+incomplete.
+
+\subsubsection{Scenario confidence}\label{sec:confidence}
+
+Data confidence (\code{\_data\_confidence}): UNAVAILABLE if an input is missing,
+an unmodelled share is positive, or a node on the affected path is
+\code{expired}; LOW if the scenario raised a warning (e.g.\ live oracle data or
+pool depth unavailable); MEDIUM if the graph has completeness warnings or a
+\code{stale\_usable} node is on the path; else HIGH; lowered one level if a
+bad-debt bound was used. \code{impact\_complete} $\iff$ data confidence $\neq$
+UNAVAILABLE. Scenario confidence $=\min(\text{data},\ \text{probability})$.
+
+\subsection{From impacts to a decision}
+
+\code{make\_recommendation} (\src{analysis/recommendation.py}). Selections of the
+same scenario id are deduplicated (unknown beats known, incomplete beats complete,
+then the larger expected loss). For scenarios $j$ with impact $I_j$ and
+probability $(p^{\text{low}}_j,p_j,p^{\text{high}}_j)$:
+\begin{equation}
+\mathrm{EL}=\sum_j p_j I_j,\qquad \mathrm{EL}_{\text{low}}=\sum_j p^{\text{low}}_j I_j,\qquad
+\mathrm{EL}_{\text{high}}=\sum_j p^{\text{high}}_j I_j,
+\end{equation}
+bounds reported only when every non-zero impact has a probability. With
+$X_0$ the exit cost and $Y_{30}$ the forgone yield, the cost of exiting is
+$K=X_0+Y_{30}$. For a lender (\src{analysis/exit\_cost.py}),
+$X_0=\text{gas}\cdot\text{gasPrice}\cdot P_{\text{ETH}}^{N}$ (150\,000 gas for the
+Morpho withdrawal plus the quote's gas) plus, when the asset must be swapped into
+$N$, fee $+$ slippage buffer (0.5\% of output) $+$ price impact; an asset already
+in $N$ (or a listed USD stablecoin for $N=\text{USD}$) needs no swap. A partial
+withdrawal sets \code{withdrawable=false} and is reported, not costed.
+
+\begin{center}\small
+\begin{tabular}{@{}cll@{}}
+\toprule
+Order & Condition & Decision \\
+\midrule
+1 & critical data missing, incomplete impact, or exit estimate expired & \code{UNAVAILABLE} \\
+2 & any hard trigger (scenario or live) & \code{EXIT} \\
+3 & a non-zero impact without probability & \code{UNAVAILABLE} \\
+4 & $\mathrm{EL}>K$ & \code{EXIT} \\
+5 & otherwise (ties stay) & \code{STAY} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{Break-even.} For each scenario with $I_j\neq0$, with $L_{-j}$ the
+other scenarios' expected loss,
+\begin{equation}
+b_j=\mathrm{clip}_{[0,1]}\!\Big(\frac{K}{I_j}\Big),\qquad
+\text{flip}_j=\mathrm{clip}_{[0,1]}\!\Big(\frac{K-L_{-j}}{I_j}\Big),
+\end{equation}
+undefined when the impact is incomplete or negative, $K$ unknown, or (flip) another
+probability unknown. Under a hard trigger the decision does not depend on
+probability.
+
+\paragraph{Dominant dependency.} Among scenarios with a non-empty path (only those
+with triggers when a trigger fired), the one maximizing (has trigger, $p_jI_j$ or
+$I_j$, $I_j$); its primary dependency is reported (Morpho rather than an issuer
+behind it). If none and a live trigger fired, the live trigger's node.
+
+\paragraph{Decision confidence.} EXIT by trigger: the lowest of the triggering
+scenarios' \emph{data} confidence (the probability does not apply), the live
+triggers' confidence (fresh: HIGH, stale: MEDIUM) and the exit estimate's (fresh
+HIGH, stale MEDIUM). Comparison: the lowest confidence of scenarios with
+$I_j\neq0$ and of the exit estimate, lowered one level for an unknown APY. Then,
+in both cases, lowered one level for any data conflict, and capped at LOW when a
+live oracle has unjudged third-party feeds. ``Lowered'' never goes below LOW.
+
+%======================================================================
+\section{Worked example: USDC lender in WETH/USDC 86\%}
+%======================================================================
+
+Inputs: catalog entry \code{weth-usdc-860} (market
+\code{0x94b8...36cd}), lender, $A=100\,000$, numeraire USDC, default severities.
+Live outcome from \src{docs/judging-map.md} (2026-10-11): \code{STAY},
+$\mathrm{EL}=21.90$ USDC, $K=371.07$ USDC. Figures marked \emph{(derived)} follow
+from these and the formulas; nothing else is assumed.
+
+\paragraph{Graph.} position \code{--lends-->} market; market \code{--lends-->}
+USDC \code{--backed\_by-->} USD reserves and issuer Circle; market
+\code{--uses\_collateral-->} WETH \code{--backed\_by-->} ETH and issuer WETH9;
+market \code{--uses\_oracle-->} oracle \code{0x0f94...4580}
+(\code{MorphoChainlinkOracleV2}; \code{BASE\_FEED\_1} is a Chainlink ETH/USD proxy,
+classified \code{chainlink}, documented $H=3600$\,s; any other feed slot is
+handled as decoded on-chain; \code{price()} read as
+$2508.34\cdot10^{24}$, i.e.\ 2\,508.34 USDC per WETH, on 2026-10-11 according to the
+module docstring); market and Morpho \code{--deployed\_on-->} Ethereum. All edges
+are full, so every exposure below is 1 or 0.
+
+\paragraph{Live checks.} Stale iff the ETH/USD round is older than
+$3600+1800=5400$\,s. Deviation $\delta=(2508.34-P_{\text{ref}})/P_{\text{ref}}$
+with $P_{\text{ref}}=p^{\text{USD}}_{\text{WETH}}/p^{\text{USD}}_{\text{USDC}}$; as a
+lender only $\delta\geq0.05$ breaches. No trigger fired (the decision is STAY).
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}L{2.4cm}L{1.6cm}L{3.6cm}Y@{}}
+\toprule
+Scenario & Exposure & Impact $I_j$ (USDC) & Probability and contribution \\
+\midrule
+depeg 10\% & held 1 & $100\,000\cdot1\cdot0.10=10\,000$ & USDC/USD windows with an hour $\leq0.90$; contribution below 0.01 in this run (derived). \\
+shock 15\% & held 0; bad debt 1 & $100\,000\cdot f_m(0.15)$ & USDC does not co-move with WETH, $s'=0.15$. Bound without positions: $\beta=1-0.85/0.86=1.163\%$ of debt; with live positions, $\approx0$ (judging map). \\
+oracle 5\% & 1 & $100\,000\cdot1\cdot0.05=5\,000$ & ETH/USD staleness rate; contribution below 0.01 (derived). \\
+liquidity 80\% & --- & 0 (shortfall reported) & UNAVAILABLE, does not block since $I=0$. No trigger, so market liquidity $L\geq A$ (derived). \\
+protocol 10\% & 1 (Morpho) & $100\,000\cdot1\cdot0.10=10\,000$ & base rate $2/76$ protocol-years $\Rightarrow p=1-(1-2/76)^{30/365}=0.21895\%$; $p\,I=21.895$. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\paragraph{Decision.} $\mathrm{EL}=21.90$ equals the protocol term to the cent, so
+the other terms sum to less than 0.01 USDC (derived). $K=X_0+Y_{30}=371.07$, with
+$X_0$ the gas of one Morpho withdrawal (no swap: the asset is the numeraire) and
+$Y_{30}=100\,000\cdot\text{APY}\cdot30/365$. $21.90\leq371.07\Rightarrow$
+\code{STAY}. Bounds of the protocol term (derived): Wilson on $2/76$ gives an
+annual $[0.725\%,9.10\%]$, i.e.\ $p\in[0.0598\%,0.781\%]$ and $p\,I\in[5.98,78.08]$;
+the other scenarios add their Wilson highs to $\mathrm{EL}_{\text{high}}$.
+Break-even (derived): protocol $\text{flip}\approx371.07/10\,000=3.71\%$ against a
+current 0.219\%; depeg $(371.07-21.90)/10\,000=3.49\%$; oracle
+$(371.07-21.90)/5\,000=6.98\%$. The dominant dependency is
+\code{protocol:1:morpho}, the nearest protocol node.
+
+\paragraph{Belem RWA EURCV (vault), same mechanics.} The vault
+\code{--lends-->} EURCV, so the depeg held-claim exposure is 1 and $I=10\,000$
+EURCV. EURCV has no Chainlink feed: the fallback divides DeFiLlama EURCV/USD by
+Chainlink EUR/USD and found 0 depeg windows out of 8\,040 (judging map), so
+$p=0$, $p^{\text{high}}=z^2/(n+z^2)=3.8416/8043.84=0.0478\%$ and the depeg term adds
+at most 4.78 EURCV to $\mathrm{EL}_{\text{high}}$ (derived), at most MEDIUM
+confidence. The expected loss of 21.90 EURCV is again the protocol term, against
+$K=210.51$ EURCV: \code{STAY}.
+
+%======================================================================
+\section{Limitations}
+%======================================================================
+
+\begin{itemize}
+\item \textbf{Window dependence.} Overlapping hourly-start windows are strongly
+  autocorrelated; the Wilson interval treats them as independent, so the
+  empirical intervals are too narrow. One year of history holds few independent
+  30-day periods.
+\item \textbf{Base rate as floor.} Survivorship and name matching push the
+  industry base rate down; it is not Morpho-specific.
+\item \textbf{Bad debt} assumes an instantaneous gap with no liquidation (upper
+  bound) and sees at most 2\,000 positions per market and 12 markets per analysis;
+  the rest is priced at the LLTV bound.
+\item \textbf{Oracle deviation reference} is Morpho's own USD asset prices, not an
+  independent venue; a wrong but fresh oracle answer is outside the staleness
+  probability.
+\item \textbf{Exit pools are not attached to the position graph.} The analysis
+  service never fills \code{GraphContext.exit\_pools}, so every live graph has the
+  warning ``No candidate Uniswap exit pool was supplied'' (data confidence at most
+  MEDIUM) and the liquidity scenario reports pool depth unavailable (LOW). The exit
+  \emph{cost} does use a live QuoterV2 quote.
+\item \textbf{Radar and analysis are not linked.} The live analysis service is
+  built with \code{NoIncidents}, so radar incidents never become the
+  \code{live:protocol\_emergency} trigger. Radar health has no oracle-staleness or
+  deviation rule (the 2\%/5\% thresholds in \code{RadarRuleSet} are used only by
+  \code{OracleConsensus}, which is not wired), no chain head-age rule, and markets
+  without borrower positions (hidden markets, markets with no borrowers) are
+  UNKNOWN.
+\item \textbf{Forgone yield} assumes idle capital; Morpho's net APY may include
+  incentives. Liquidity collapse has no probability.
+\end{itemize}
+
+%======================================================================
+\section{Traceability}
+%======================================================================
+
+\begingroup\small
+\begin{longtable}{@{}L{7.4cm}L{7.6cm}@{}}
+\toprule
+Rule & Module (\src{services/risk/app/...}) \\
+\midrule
+\endfirsthead
+\toprule
+Rule & Module \\
+\midrule
+\endhead
+\bottomrule
+\endfoot
+Freshness classes fresh / stale-usable / expired & \src{infrastructure/freshness.py} \\
+SQLite cache, retention delete, LRU cap & \src{infrastructure/cache.py} \\
+Morpho fetch, retries, conflicts, APY, positions & \src{adapters/morpho.py} \\
+Multicall3 encoding and decoding & \src{adapters/multicall.py} \\
+Chainlink round walk, phases, round cache, composites & \src{adapters/ethereum.py} \\
+RPC fallback and chain-id check (radar) & \src{adapters/rpc\_registry.py}, \src{config.py} \\
+Oracle decoding and feed classification & \src{adapters/morpho\_oracle.py} \\
+Third-party published heartbeats & \src{data/catalog/oracle-feeds.third-party.ethereum.json} \\
+Uniswap quote, routes, probe, cache & \src{adapters/uniswap.py} \\
+DeFiLlama hacks, protocols, chains & \src{adapters/defillama.py} \\
+DeFiLlama coins chunks & \src{adapters/defillama\_coins.py} \\
+Hourly normalization, forward fill, gaps & \src{history/normalization.py} \\
+Rolling windows, Wilson, forward-fill limit & \src{history/estimator.py} \\
+Heartbeat inference, staleness series, 1800\,s & \src{history/staleness.py} \\
+Market-price depeg fallback & \src{history/market\_price.py} \\
+Base rate, oracle-exploit prior, $p_{30}$ & \src{evidence/defillama.py} \\
+Evidence score bands & \src{evidence/scoring.py} \\
+Issuer registry & \src{catalog/assets.py}, \src{data/catalog/assets.ethereum.json} \\
+Graph construction, weights, look-through, warnings & \src{analysis/graph\_builder.py}, \src{domain/graph.py} \\
+Scenario definitions, thresholds, signed deviation, LIF & \src{domain/scenario.py} \\
+Targets, exposure, lender and borrower impacts & \src{analysis/scenario\_engine.py} \\
+Bad debt & \src{domain/bad\_debt.py} \\
+Exit cost and quote timing & \src{analysis/exit\_cost.py}, \src{domain/exit.py} \\
+Probabilities, heartbeats table, live oracle health, critical sources & \src{analysis/service.py} \\
+Expected loss, carry, rule table, break-even, dominant dependency & \src{analysis/recommendation.py} \\
+Radar discovery and topology & \src{radar/discovery/morpho.py} \\
+Radar collectors & \src{radar/collectors/morpho.py}, \src{radar/collectors/chain.py} \\
+Health rules and hysteresis & \src{radar/analysis/health.py}, \src{radar/domain/rules.py} \\
+Incidents & \src{radar/analysis/incidents.py} \\
+Reverse propagation, confidence, reveal & \src{radar/analysis/propagation.py} \\
+Similarity & \src{radar/analysis/similarity.py} \\
+Manual exposure amounts & \src{radar/analysis/exposure.py} \\
+Cycle orchestration, evaluation order & \src{radar/service.py}, \src{radar/scheduler.py} \\
+\end{longtable}
+\endgroup
+
+\end{document}

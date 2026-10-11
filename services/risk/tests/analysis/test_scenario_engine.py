@@ -5,6 +5,7 @@ from decimal import Decimal
 import pytest
 
 from app.analysis.scenario_engine import ScenarioEngine
+from app.domain.bad_debt import build_distribution
 from app.contracts.models import (
     ConfidenceLevel,
     FreshnessStatus,
@@ -46,6 +47,15 @@ CBBTC = "asset:1:0xcbb7c0000ab88b473b1f5afd9ef808440eed33bf"
 ORACLE_A = "oracle:1:0x00000000000000000000000000000000000000c1"
 ORACLE_B = "oracle:1:0x00000000000000000000000000000000000000c2"
 POOL = "pool:1:0x00000000000000000000000000000000000000d1"
+MARKET_A_ID = MARKET_A.rsplit(":", 1)[-1]
+MARKET_B_ID = MARKET_B.rsplit(":", 1)[-1]
+# Lending-market state: LLTV 86%, 80% utilization, in loan-asset units.
+MARKET_TOTALS = {
+    "lltv": Decimal("0.86"),
+    "total_supply_assets": Decimal("1000000"),
+    "total_borrow_assets": Decimal("800000"),
+    "utilization": Decimal("0.8"),
+}
 
 
 @dataclass(frozen=True)
@@ -130,11 +140,29 @@ def select(scenario_id: ScenarioId, severity: str | None = None) -> ScenarioSele
     return ScenarioSelection(scenario_id=scenario_id, severity=severity_value)
 
 
-def run_one(position, risk_graph, selection, probabilities=None):
+def run_one(position, risk_graph, selection, probabilities=None, borrowers=None):
     if probabilities is None:
         probabilities = all_probabilities()
-    (result,) = ScenarioEngine().run(position, risk_graph, (selection,), probabilities)
+    (result,) = ScenarioEngine().run(
+        position, risk_graph, (selection,), probabilities, borrowers=borrowers
+    )
     return result
+
+
+def worst_case_fraction(severity: str, lltv: str = "0.86", utilization: str = "0.8") -> Decimal:
+    """Supplier loss fraction when every borrower sits at LLTV (no positions known)."""
+    bound = max(Decimal(0), Decimal(1) - (Decimal(1) - Decimal(severity)) / Decimal(lltv))
+    return bound * Decimal(utilization)
+
+
+def full_book(market_id: str, health_factor: str = "1.2"):
+    """Borrower positions covering all of MARKET_TOTALS' 800000 debt at one health factor."""
+    return build_distribution(
+        market_id,
+        [(Decimal("800000"), Decimal(health_factor))],
+        Decimal("0.86"),
+        complete=True,
+    )
 
 
 def lender(amount: str = "1000") -> StubPosition:
@@ -179,8 +207,8 @@ def vault_graph(
         [
             node(POSITION),
             node(VAULT, symbol="steakUSDC", available_liquidity=available_liquidity),
-            node(MARKET_A, lltv=Decimal("0.86")),
-            node(MARKET_B, lltv=Decimal("0.86")),
+            node(MARKET_A, **MARKET_TOTALS, market_id=MARKET_A_ID),
+            node(MARKET_B, **MARKET_TOTALS, market_id=MARKET_B_ID),
             node(USDC, symbol="USDC"),
             *{key: collateral_nodes[key] for key in (collateral_a, collateral_b)}.values(),
             node(ORACLE_A, age_seconds=Decimal("60"), deviation=Decimal("0.001")),
@@ -247,14 +275,17 @@ def market_borrow_graph(
 
 
 def test_lender_vault_impact_is_weighted_by_allocation_exposure():
+    # Was 1000 * 0.4 * 0.10 = 40 (collateral fall charged 1:1); a lender only loses bad debt,
+    # here the all-at-LLTV bound of market A weighted by its 0.4 allocation.
     result = run_one(
         lender("1000"),
         vault_graph("0.4", "0.6"),
-        select(ScenarioId.COLLATERAL_SHOCK, "0.10"),
+        select(ScenarioId.COLLATERAL_SHOCK, "0.40"),
     )
 
-    assert result.impact == Decimal("40")
-    assert result.impact_components[ASSET_IMPAIRMENT] == Decimal("40")
+    expected = Decimal("1000") * Decimal("0.4") * worst_case_fraction("0.40")
+    assert result.impact == expected
+    assert result.impact_components[ASSET_IMPAIRMENT] == expected
     assert result.hard_triggers == ()
     assert result.affected_path == (POSITION, VAULT, MARKET_A, WETH)
     assert MARKET_B not in result.affected_path
@@ -331,13 +362,17 @@ def test_missing_lender_liquidity_is_unavailable_not_safe():
 
 
 def test_shared_collateral_dependency_via_two_markets_is_counted_once():
+    # Was 100 (shared WETH counted once, 1:1); each market now contributes its own bad debt
+    # by allocation weight, while the shared node still appears once on the path.
     result = run_one(
         lender("1000"),
         vault_graph("0.5", "0.5", collateral_a=WETH, collateral_b=WETH),
-        select(ScenarioId.COLLATERAL_SHOCK, "0.10"),
+        select(ScenarioId.COLLATERAL_SHOCK, "0.40"),
     )
 
-    assert result.impact == Decimal("100")
+    half = Decimal("1000") * Decimal("0.5") * worst_case_fraction("0.40")
+    assert result.impact == half + half
+    assert result.stressed_values["bad_debt_markets"] == Decimal(2)
     assert result.affected_path == (POSITION, VAULT, MARKET_A, MARKET_B, WETH)
     assert result.affected_path.count(WETH) == 1
 
@@ -378,9 +413,10 @@ def test_missing_allocation_weight_is_treated_as_full_exposure():
     )
     risk_graph = risk_graph.model_copy(update={"edges": edges})
 
-    result = run_one(lender("1000"), risk_graph, select(ScenarioId.COLLATERAL_SHOCK, "0.10"))
+    result = run_one(lender("1000"), risk_graph, select(ScenarioId.COLLATERAL_SHOCK, "0.40"))
 
-    assert result.impact == Decimal("100")
+    # Was 100 (1:1); full exposure to market A now carries market A's bad-debt bound.
+    assert result.impact == Decimal("1000") * worst_case_fraction("0.40")
     assert result.confidence != ConfidenceLevel.HIGH
 
 
@@ -505,11 +541,13 @@ def test_missing_probability_is_explicitly_unavailable_never_zero():
 def test_supplied_probability_is_passed_through():
     supplied = probability(ScenarioId.COLLATERAL_SHOCK, central="0.025")
 
+    # Borrower positions are supplied: without them the bad-debt bound lowers confidence.
     result = run_one(
         lender("1000"),
         vault_graph("0.4", "0.6"),
         select(ScenarioId.COLLATERAL_SHOCK),
         probabilities={ScenarioId.COLLATERAL_SHOCK.value: supplied},
+        borrowers={MARKET_A_ID: full_book(MARKET_A_ID)},
     )
 
     assert result.probability == supplied
@@ -652,7 +690,8 @@ def vault_graph_with_unmodelled_share(unmodelled_weight: str = "0.3") -> RiskGra
 
 @pytest.mark.parametrize(
     ("scenario_id", "severity"),
-    [(ScenarioId.COLLATERAL_SHOCK, "0.10"), (ScenarioId.ORACLE_FAILURE, "0.10")],
+    # Collateral shock at 0.40 (was 0.10): a 10% fall leaves no bad debt at LLTV 86%.
+    [(ScenarioId.COLLATERAL_SHOCK, "0.40"), (ScenarioId.ORACLE_FAILURE, "0.10")],
 )
 def test_unmodelled_vault_allocation_makes_asset_and_oracle_scenarios_unavailable(
     scenario_id, severity
@@ -668,13 +707,14 @@ def test_unmodelled_vault_allocation_makes_asset_and_oracle_scenarios_unavailabl
 
 
 def test_collateral_shock_known_impact_is_kept_alongside_unmodelled_share():
+    # Was 40 (1:1); the modelled 0.4 share now carries market A's bad-debt bound.
     result = run_one(
         lender("1000"),
         vault_graph_with_unmodelled_share(),
-        select(ScenarioId.COLLATERAL_SHOCK, "0.10"),
+        select(ScenarioId.COLLATERAL_SHOCK, "0.40"),
     )
 
-    assert result.impact == Decimal("40")
+    assert result.impact == Decimal("1000") * Decimal("0.4") * worst_case_fraction("0.40")
 
 
 def test_zero_weight_unmodelled_allocation_does_not_block_the_scenario():

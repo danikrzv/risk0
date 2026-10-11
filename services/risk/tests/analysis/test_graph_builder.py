@@ -879,8 +879,12 @@ def test_scenario_engine_accepts_a_built_vault_graph():
     assert len(results) == len(ScenarioId)
     by_id = {result.scenario_id: result for result in results}
     # WETH is the vault asset, not collateral, so a collateral shock only hits WBTC via market B.
+    # A lender loses only bad debt (was 1:1 with the shock): without borrower positions the
+    # worst-case bound puts all debt at LLTV, i.e. (1 - 0.85 / 0.86) of the 0.8 utilization.
     shock = by_id[ScenarioId.COLLATERAL_SHOCK.value]
-    assert shock.impact == Decimal("10") * Decimal("0.6") * Decimal("0.15")
+    bound = (Decimal(1) - Decimal("0.85") / Decimal("0.86")) * Decimal("0.8")
+    assert shock.impact == Decimal("10") * Decimal("0.6") * bound
+    assert shock.stressed_values["bad_debt_bounded_markets"] == Decimal(1)
     assert by_id[ScenarioId.PROTOCOL_IMPAIRMENT.value].impact == Decimal("1.0")
     liquidity = by_id[ScenarioId.LIQUIDITY_COLLAPSE.value]
     assert liquidity.stressed_values["available_liquidity"] == Decimal("1250")

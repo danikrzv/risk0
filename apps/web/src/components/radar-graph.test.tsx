@@ -292,13 +292,70 @@ describe("RadarGraph", () => {
     render(<RadarGraph graph={graph} healthStates={healthStates} />)
 
     fireEvent.change(screen.getByLabelText("Search graph"), { target: { value: "oracle" } })
-    expect(screen.getByRole("button", { name: /USDC Oracle/ })).toBeInTheDocument()
-    expect(screen.queryByRole("button", { name: /Catalog Vault/ })).not.toBeInTheDocument()
+    const results = screen.getByRole("list", { name: "Graph search results" })
+    expect(within(results).getByRole("button", { name: /USDC Oracle/ })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: /Catalog Vault/ })).toBeInTheDocument()
 
     const graphRegion = screen.getByRole("region", { name: "Morpho radar graph" })
     fireEvent.click(screen.getByRole("button", { name: "Expand graph" }))
     expect(graphRegion).toHaveClass("radar-graph--expanded")
     expect(screen.getByRole("button", { name: "Exit expanded graph" })).toHaveAttribute("aria-pressed", "true")
+  })
+
+  it("promotes a selected search result beyond the canvas cap", () => {
+    const many = Array.from({ length: MAX_CANVAS_NODES + 1 }, (_, index) => (
+      entity(`vault:1:many-${index}`, index === MAX_CANVAS_NODES ? "Needle Vault" : `Many Vault ${index}`, { visible: true })
+    ))
+    const cappedGraph = { ...graph, entities: many, relationships: [], similarities: [] }
+    const onSelectEntity = vi.fn()
+    vi.mocked(layeredLayout).mockClear()
+    const { rerender } = render(<RadarGraph graph={cappedGraph} onSelectEntity={onSelectEntity} />)
+
+    fireEvent.change(screen.getByLabelText("Search graph"), { target: { value: "needle" } })
+    fireEvent.click(within(screen.getByRole("list", { name: "Graph search results" })).getByRole("button", { name: /Needle Vault/ }))
+    expect(onSelectEntity).toHaveBeenCalledWith("vault:1:many-400")
+
+    rerender(<RadarGraph graph={cappedGraph} selectedEntityId="vault:1:many-400" onSelectEntity={onSelectEntity} />)
+    const laidOutIds = vi.mocked(layeredLayout).mock.calls.at(-1)?.[0] ?? []
+    expect(laidOutIds).toHaveLength(MAX_CANVAS_NODES)
+    expect(laidOutIds).toContain("vault:1:many-400")
+  })
+
+  it("fades unrelated topology, can hide it, and clear focus restores the complete graph", () => {
+    const onSelectEntity = vi.fn()
+    const { container, rerender } = render(
+      <RadarGraph graph={graph} healthStates={healthStates} selectedEntityId="vault:1:catalog" onSelectEntity={onSelectEntity} />,
+    )
+
+    expect(container.querySelectorAll(".radar-flow-node--faded").length).toBeGreaterThan(0)
+    expect(within(screen.getByRole("list", { name: "Radar relationships" })).getAllByRole("listitem")[0]).toHaveAttribute("data-focus", "focused")
+
+    fireEvent.click(screen.getByRole("button", { name: "Show only relevant" }))
+    expect(screen.queryByRole("button", { name: /Base Vault/ })).not.toBeInTheDocument()
+    expect(within(screen.getByRole("list", { name: "Radar relationships" })).getAllByRole("listitem")).toHaveLength(2)
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear focus" }))
+    expect(onSelectEntity).toHaveBeenCalledWith(null)
+    rerender(<RadarGraph graph={graph} healthStates={healthStates} onSelectEntity={onSelectEntity} />)
+    expect(screen.getByRole("button", { name: /Base Vault/ })).toBeInTheDocument()
+    expect(container.querySelector(".radar-flow-node--faded")).not.toBeInTheDocument()
+  })
+
+  it("shows relationship labels only for focused, incident, or explicit label context", () => {
+    const { rerender } = render(<RadarGraph graph={graph} healthStates={healthStates} />)
+    const allocatedTo = () => within(screen.getByRole("list", { name: "Radar relationships" })).getByText(/allocated to/)
+    const usesOracle = () => within(screen.getByRole("list", { name: "Radar relationships" })).getByText(/uses oracle/)
+    expect(allocatedTo()).toHaveAttribute("data-label-visible", "false")
+
+    rerender(<RadarGraph graph={graph} healthStates={healthStates} selectedEntityId="vault:1:catalog" />)
+    expect(allocatedTo()).toHaveAttribute("data-label-visible", "true")
+
+    rerender(<RadarGraph graph={graph} healthStates={healthStates} selectedIncident={incident} impacts={impacts} />)
+    expect(usesOracle()).toHaveAttribute("data-label-visible", "true")
+
+    rerender(<RadarGraph graph={graph} healthStates={healthStates} />)
+    fireEvent.click(screen.getByRole("button", { name: "Show relationship labels" }))
+    expect(allocatedTo()).toHaveAttribute("data-label-visible", "true")
   })
 
   it("explains similarity scores for visible neighboring vaults", () => {

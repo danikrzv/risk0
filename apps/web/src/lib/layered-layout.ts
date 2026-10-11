@@ -31,7 +31,7 @@ export interface LayeredLayoutOptions {
   sweeps?: number
 }
 
-const DEFAULTS = { columnWidth: 230, rowHeight: 90, layerGap: 70, sweeps: 4 }
+const DEFAULTS = { columnWidth: 260, rowHeight: 110, layerGap: 100, sweeps: 4 }
 
 export function defaultMaxRows(nodeCount: number): number {
   return Math.max(8, Math.ceil(Math.sqrt(nodeCount) * 1.2))

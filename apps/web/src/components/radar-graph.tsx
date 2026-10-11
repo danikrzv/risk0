@@ -15,6 +15,7 @@ import { Background, Controls, type Edge, MarkerType, MiniMap, type Node, type N
 import { memo, useCallback, useMemo, useState } from "react"
 
 import { layeredLayout } from "../lib/layered-layout"
+import { rankRadarEntities, relevantDependencyContext } from "../lib/radar-focus"
 import { RadarEntityDetail } from "./radar-entity-detail"
 import { ShowMore, useListLimit } from "./show-more"
 
@@ -171,6 +172,8 @@ export const RadarGraph = memo(function RadarGraph({
   const [typeFilter, setTypeFilter] = useState("all")
   const [healthFilter, setHealthFilter] = useState("all")
   const [searchQuery, setSearchQuery] = useState("")
+  const [showOnlyRelevant, setShowOnlyRelevant] = useState(false)
+  const [showRelationshipLabels, setShowRelationshipLabels] = useState(false)
   const [expanded, setExpanded] = useState(false)
   const [nodeLimit, showMoreNodes] = useListLimit(LIST_PAGE_SIZE)
   const [relationshipLimit, showMoreRelationships] = useListLimit(LIST_PAGE_SIZE)
@@ -186,7 +189,6 @@ export const RadarGraph = memo(function RadarGraph({
     () => visibleRadarEntities(graph, impacts, incidentSourceId ? [...pinnedEntityIds, incidentSourceId] : pinnedEntityIds),
     [graph, impacts, incidentSourceId, pinnedEntityIds],
   )
-  const query = searchQuery.trim().toLowerCase()
   const visibleEntities = useMemo(() => policyVisibleEntities
     .filter((entity) => {
       if (incidentPath.has(entity.entity_id)) return true
@@ -194,14 +196,12 @@ export const RadarGraph = memo(function RadarGraph({
       return (chainFilter === "all" || String(entity.chain_id) === chainFilter)
         && (typeFilter === "all" || entity.entity_type === typeFilter)
         && (healthFilter === "all" || status === healthFilter)
-        && (!query || entity.label.toLowerCase().includes(query) || entity.address_or_key.toLowerCase().includes(query))
     })
     .map((entity, index) => ({ entity, index }))
     .sort((left, right) => (
       priority(left.entity, incidentPath) - priority(right.entity, incidentPath) || left.index - right.index
     ))
-    .map(({ entity }) => entity), [chainFilter, health, healthFilter, incidentPath, policyVisibleEntities, query, typeFilter])
-  const visibleIds = useMemo(() => new Set(visibleEntities.map((entity) => entity.entity_id)), [visibleEntities])
+    .map(({ entity }) => entity), [chainFilter, health, healthFilter, incidentPath, policyVisibleEntities, typeFilter])
   const chainIds = useMemo(
     () => [...new Set(policyVisibleEntities.map((entity) => entity.chain_id))].sort((left, right) => left - right),
     [policyVisibleEntities],
@@ -211,6 +211,21 @@ export const RadarGraph = memo(function RadarGraph({
     [policyVisibleEntities],
   )
   const entityById = useMemo(() => new Map(graph.entities.map((entity) => [entity.entity_id, entity])), [graph.entities])
+  const selectedEntity = selectedEntityId ? entityById.get(selectedEntityId) ?? null : null
+  const relevantIds = useMemo(
+    () => relevantDependencyContext(graph, selectedEntityId, impacts),
+    [graph, impacts, selectedEntityId],
+  )
+  const hasFocus = selectedEntity !== null && relevantIds.size > 0
+  const renderedEntities = useMemo(
+    () => showOnlyRelevant && hasFocus ? visibleEntities.filter((entity) => relevantIds.has(entity.entity_id)) : visibleEntities,
+    [hasFocus, relevantIds, showOnlyRelevant, visibleEntities],
+  )
+  const visibleIds = useMemo(() => new Set(renderedEntities.map((entity) => entity.entity_id)), [renderedEntities])
+  const searchResults = useMemo(
+    () => rankRadarEntities(policyVisibleEntities, searchQuery).slice(0, 8),
+    [policyVisibleEntities, searchQuery],
+  )
   const visibleSimilarities = useMemo(
     () => graph.similarities.filter((similarity) => visibleIds.has(similarity.candidate_entity_id)),
     [graph.similarities, visibleIds],
@@ -221,19 +236,28 @@ export const RadarGraph = memo(function RadarGraph({
   )
 
   // The canvas draws at most MAX_CANVAS_NODES entities, highest priority first.
-  const canvasEntities = useMemo(() => visibleEntities.slice(0, MAX_CANVAS_NODES), [visibleEntities])
+  const promotedEntityId = renderedEntities.length > MAX_CANVAS_NODES
+    && selectedEntityId
+    && renderedEntities.slice(MAX_CANVAS_NODES).some((entity) => entity.entity_id === selectedEntityId)
+    ? selectedEntityId
+    : null
+  const canvasEntities = useMemo(() => {
+    const entities = renderedEntities.slice(0, MAX_CANVAS_NODES)
+    if (!promotedEntityId) return entities
+    const promoted = entityById.get(promotedEntityId)
+    return promoted ? [...entities.slice(0, -1), promoted] : entities
+  }, [entityById, promotedEntityId, renderedEntities])
   const canvasRelationships = useMemo(() => {
-    if (canvasEntities.length === visibleEntities.length) return visibleRelationships
+    if (canvasEntities.length === renderedEntities.length) return visibleRelationships
     const ids = new Set(canvasEntities.map((entity) => entity.entity_id))
     return visibleRelationships.filter((edge) => ids.has(edge.source_entity_id) && ids.has(edge.target_entity_id))
-  }, [canvasEntities, visibleEntities.length, visibleRelationships])
+  }, [canvasEntities, renderedEntities.length, visibleRelationships])
   const positions = useMemo(() => layeredLayout(
     canvasEntities.map((entity) => entity.entity_id),
     canvasRelationships.map((edge) => ({ source: edge.source_entity_id, target: edge.target_entity_id })),
     { rankHint: (id) => TYPE_DEPTH[entityById.get(id)?.entity_type ?? "market"] },
   ), [canvasEntities, canvasRelationships, entityById])
 
-  const selectedEntity = selectedEntityId ? entityById.get(selectedEntityId) ?? null : null
   const statusOf = useCallback((entity: RadarEntity): HealthStatus => (
     selectedIncident?.source_entity_id === entity.entity_id
       ? selectedIncident.severity
@@ -250,20 +274,33 @@ export const RadarGraph = memo(function RadarGraph({
       targetPosition: Position.Left,
       data: { label: `${entity.label} · ${status}` },
       selected: selectedEntityId === entity.entity_id,
-      className: `radar-flow-node radar-flow-node--${status.toLowerCase()}${incidentPath.has(entity.entity_id) ? " radar-flow-node--incident" : ""}`,
+      className: `radar-flow-node radar-flow-node--${status.toLowerCase()}${incidentPath.has(entity.entity_id) ? " radar-flow-node--incident" : ""}${hasFocus ? relevantIds.has(entity.entity_id) ? " radar-flow-node--focused" : " radar-flow-node--faded" : ""}`,
     }
-  }), [canvasEntities, incidentPath, positions, selectedEntityId, statusOf])
-  const flowEdges: Edge[] = useMemo(() => canvasRelationships.map((edge, index) => ({
-    id: relationshipKey(edge, index),
-    source: edge.source_entity_id,
-    target: edge.target_entity_id,
-    label: edge.relationship_type.replaceAll("_", " "),
-    className: incidentEdges.has(pairKey(edge.source_entity_id, edge.target_entity_id)) ? "radar-flow-edge--incident" : "",
-    markerEnd: { type: MarkerType.ArrowClosed },
-  })), [canvasRelationships, incidentEdges])
+  }), [canvasEntities, hasFocus, incidentPath, positions, relevantIds, selectedEntityId, statusOf])
+  const flowEdges: Edge[] = useMemo(() => canvasRelationships.map((edge, index) => {
+    const incidentEdge = incidentEdges.has(pairKey(edge.source_entity_id, edge.target_entity_id))
+    const focusedEdge = hasFocus && relevantIds.has(edge.source_entity_id) && relevantIds.has(edge.target_entity_id)
+    const showLabel = showRelationshipLabels || focusedEdge || (selectedIncident && incidentEdge)
+    return {
+      id: relationshipKey(edge, index),
+      source: edge.source_entity_id,
+      target: edge.target_entity_id,
+      label: showLabel ? edge.relationship_type.replaceAll("_", " ") : undefined,
+      className: `${incidentEdge ? "radar-flow-edge--incident" : ""}${hasFocus ? focusedEdge ? " radar-flow-edge--focused" : " radar-flow-edge--faded" : ""}`.trim(),
+      markerEnd: { type: MarkerType.ArrowClosed },
+    }
+  }), [canvasRelationships, hasFocus, incidentEdges, relevantIds, selectedIncident, showRelationshipLabels])
   const fitViewOptions = useMemo(() => ({ padding: selectedIncident ? 0.25 : 0.15 }), [selectedIncident])
   const handleNodeClick: NodeMouseHandler = useCallback((_, node) => onSelectEntity?.(node.id), [onSelectEntity])
-  const handlePaneClick = useCallback(() => onSelectEntity?.(null), [onSelectEntity])
+  const clearFocus = useCallback(() => {
+    setShowOnlyRelevant(false)
+    onSelectEntity?.(null)
+  }, [onSelectEntity])
+  const handlePaneClick = useCallback(() => clearFocus(), [clearFocus])
+  const selectSearchResult = useCallback((entityId: string) => {
+    setSearchQuery("")
+    onSelectEntity?.(entityId)
+  }, [onSelectEntity])
 
   const header = (
     <div className="radar-graph__header">
@@ -272,6 +309,25 @@ export const RadarGraph = memo(function RadarGraph({
         <ul className="radar-legend" aria-label="Health status legend">
           {HEALTH_STATUSES.map((status) => <li key={status} data-health-status={status}>{status}</li>)}
         </ul>
+        <div className="radar-graph__focus-controls">
+          <div className="radar-search">
+            <label>Search graph<input type="search" value={searchQuery} placeholder="Name, ID, address, or type" onChange={(event) => setSearchQuery(event.target.value)} /></label>
+            {searchQuery.trim() ? searchResults.length > 0 ? (
+              <ul className="radar-search__results" aria-label="Graph search results">
+                {searchResults.map((entity) => (
+                  <li key={entity.entity_id}>
+                    <button type="button" onClick={() => selectSearchResult(entity.entity_id)}>
+                      <strong>{entity.label}</strong><small>{entity.entity_id}</small>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : <p className="radar-search__empty" role="status">No graph entities match.</p> : null}
+          </div>
+          <button type="button" aria-pressed={showOnlyRelevant} disabled={!hasFocus} onClick={() => setShowOnlyRelevant((value) => !value)}>Show only relevant</button>
+          <button type="button" disabled={!hasFocus} onClick={clearFocus}>Clear focus</button>
+          <button type="button" aria-pressed={showRelationshipLabels} onClick={() => setShowRelationshipLabels((value) => !value)}>Show relationship labels</button>
+        </div>
         {graph.entities.length > 0 ? (
           <button type="button" aria-pressed={expanded} onClick={() => setExpanded((value) => !value)}>
             {expanded ? "Exit expanded graph" : "Expand graph"}
@@ -293,20 +349,19 @@ export const RadarGraph = memo(function RadarGraph({
     )
   }
 
-  const shownNodes = visibleEntities.slice(0, nodeLimit)
+  const shownNodes = renderedEntities.slice(0, nodeLimit)
   const shownRelationships = visibleRelationships.slice(0, relationshipLimit)
   return (
     <section className={`panel radar-graph${expanded ? " radar-graph--expanded" : ""}`} aria-labelledby="radar-heading">
       {header}
       <div className="radar-filters" aria-label="Graph filters">
-        <label>Search graph<input type="search" value={searchQuery} placeholder="Name or address" onChange={(event) => setSearchQuery(event.target.value)} /></label>
         <label>Chain filter<select value={chainFilter} onChange={(event) => setChainFilter(event.target.value)}><option value="all">All chains</option>{chainIds.map((chainId) => <option key={chainId} value={chainId}>{chainId}</option>)}</select></label>
         <label>Entity type filter<select value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)}><option value="all">All entity types</option>{entityTypes.map((type) => <option key={type} value={type}>{type}</option>)}</select></label>
         <label>Health filter<select value={healthFilter} onChange={(event) => setHealthFilter(event.target.value)}><option value="all">All health states</option>{HEALTH_STATUSES.map((status) => <option key={status} value={status}>{status}</option>)}</select></label>
       </div>
-      {canvasEntities.length < visibleEntities.length ? (
+      {canvasEntities.length < renderedEntities.length ? (
         <p className="radar-graph__note">
-          The canvas shows the first {canvasEntities.length.toLocaleString("en-US")} of {visibleEntities.length.toLocaleString("en-US")} entities
+          The canvas shows the first {canvasEntities.length.toLocaleString("en-US")} of {renderedEntities.length.toLocaleString("en-US")} entities
           (incident path and catalog first). Narrow the filters to see the rest.
         </p>
       ) : null}
@@ -348,7 +403,7 @@ export const RadarGraph = memo(function RadarGraph({
         />
       ) : null}
       <details className="radar-graph__accessible">
-        <summary>Explore topology as lists ({visibleEntities.length} entities, {visibleRelationships.length} relationships)</summary>
+        <summary>Explore topology as lists ({renderedEntities.length} entities, {visibleRelationships.length} relationships)</summary>
         <ul className="radar-nodes" id="radar-node-list" aria-label="Radar nodes">
           {shownNodes.map((entity) => {
             const status = statusOf(entity)
@@ -375,7 +430,7 @@ export const RadarGraph = memo(function RadarGraph({
         </ul>
         <ShowMore
           shown={shownNodes.length}
-          total={visibleEntities.length}
+          total={renderedEntities.length}
           pageSize={LIST_PAGE_SIZE}
           noun="nodes"
           controls="radar-node-list"
@@ -386,7 +441,9 @@ export const RadarGraph = memo(function RadarGraph({
             const source = entityById.get(edge.source_entity_id)?.label ?? edge.source_entity_id
             const target = entityById.get(edge.target_entity_id)?.label ?? edge.target_entity_id
             const onPath = incidentEdges.has(pairKey(edge.source_entity_id, edge.target_entity_id))
-            return <li key={relationshipKey(edge, index)} data-incident-path={onPath ? "true" : "false"}>{source} — {edge.relationship_type.replaceAll("_", " ")} → {target}</li>
+            const focused = hasFocus && relevantIds.has(edge.source_entity_id) && relevantIds.has(edge.target_entity_id)
+            const labelVisible = showRelationshipLabels || focused || Boolean(selectedIncident && onPath)
+            return <li key={relationshipKey(edge, index)} data-focus={hasFocus ? focused ? "focused" : "faded" : "none"} data-incident-path={onPath ? "true" : "false"} data-label-visible={labelVisible ? "true" : "false"}>{source} — {edge.relationship_type.replaceAll("_", " ")} → {target}</li>
           })}
         </ul>
         <ShowMore

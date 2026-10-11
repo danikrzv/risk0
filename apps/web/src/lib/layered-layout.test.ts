@@ -5,6 +5,20 @@ import { layeredLayout } from "./layered-layout"
 const options = { columnWidth: 100, rowHeight: 10, layerGap: 0 }
 
 describe("layeredLayout", () => {
+  it("uses sparse default separation while preserving deterministic ordering", () => {
+    const ids = ["vault", "market-a", "market-b"]
+    const edges = [
+      { source: "vault", target: "market-a" },
+      { source: "vault", target: "market-b" },
+    ]
+    const first = layeredLayout(ids, edges)
+    const second = layeredLayout(ids, edges)
+
+    expect([...first.entries()]).toEqual([...second.entries()])
+    expect(first.get("market-a")!.x - first.get("vault")!.x).toBe(360)
+    expect(Math.abs(first.get("market-b")!.y - first.get("market-a")!.y)).toBe(110)
+  })
+
   it("places dependents left of their dependencies by longest path", () => {
     const positions = layeredLayout(
       ["vault", "market", "oracle", "protocol", "chain"],

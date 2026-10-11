@@ -519,9 +519,17 @@ p {
 
 .radar-graph__header-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   justify-content: flex-end;
   gap: 0.75rem;
+}
+
+.radar-graph__focus-controls {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.35rem;
 }
 
 .radar-legend {
@@ -550,7 +558,8 @@ p {
 
 .radar-filters {
   display: grid;
-  grid-template-columns: 1.4fr repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(9rem, 1fr));
+  align-items: end;
   gap: 0.5rem;
   margin-bottom: 0.75rem;
 }
@@ -566,6 +575,66 @@ p {
   width: 100%;
   box-sizing: border-box;
 }
+
+.radar-graph__focus-controls > button,
+.radar-search__results button {
+  min-height: 2.35rem;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.radar-graph__focus-controls > button[aria-pressed="true"] {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+.radar-graph__focus-controls > button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.radar-search {
+  position: relative;
+  width: min(19rem, 100%);
+}
+
+.radar-search label { display: grid; gap: 0.3rem; }
+.radar-search input { width: 100%; box-sizing: border-box; }
+
+.radar-search__results,
+.radar-search__empty {
+  position: absolute;
+  top: calc(100% + 0.25rem);
+  right: 0;
+  z-index: 40;
+  width: min(28rem, 90vw);
+  margin: 0;
+  padding: 0.35rem;
+  border: 1px solid var(--color-border-strong);
+  background: #070c13f7;
+  box-shadow: 0 0.8rem 1.8rem #000a;
+}
+
+.radar-search__results {
+  display: grid;
+  gap: 0.25rem;
+  list-style: none;
+}
+
+.radar-search__results button {
+  width: 100%;
+  display: grid;
+  gap: 0.2rem;
+  padding: 0.5rem 0.65rem;
+  text-align: left;
+}
+
+.radar-search__results button:hover { border-color: var(--color-accent); }
+.radar-search__results small { color: var(--color-muted); overflow-wrap: anywhere; }
+.radar-search__empty { color: var(--color-muted); }
 
 .radar-graph--expanded {
   position: fixed;
@@ -607,6 +676,10 @@ p {
 .radar-flow-node--critical { border-color: var(--color-danger) !important; }
 .radar-flow-node--incident { box-shadow: 0 0 1rem #f0656570; }
 .radar-flow-edge--incident path { stroke: var(--color-danger); stroke-width: 2; }
+.radar-flow-node--focused { filter: saturate(1.2); }
+.radar-flow-node--faded { opacity: 0.16; }
+.radar-flow-edge--focused path { stroke-width: 2; }
+.radar-flow-edge--faded { opacity: 0.1; }
 
 .radar-nodes {
   display: grid;

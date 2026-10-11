@@ -52,6 +52,7 @@ const riskEdgeTypes = values(responseSchema, "RiskEdge", "relationship");
 const probabilityMethods = values(responseSchema, "ProbabilityEstimate", "method");
 const confidenceLevels = values(responseSchema, "ProbabilityEstimate", "confidence");
 const recommendationDecisions = values(responseSchema, "Recommendation", "decision");
+const carryStatuses = values(responseSchema, "Carry", "status");
 const healthStatuses = definitionValues(radarSchema, "HealthStatus");
 const radarEntityTypes = definitionValues(radarSchema, "RadarEntityType");
 const incidentSeverities = definitionValues(radarSchema, "IncidentSeverity");
@@ -80,6 +81,7 @@ ${constArray("RISK_EDGE_TYPES", riskEdgeTypes)}
 ${constArray("PROBABILITY_METHODS", probabilityMethods)}
 ${constArray("CONFIDENCE_LEVELS", confidenceLevels)}
 ${constArray("RECOMMENDATION_DECISIONS", recommendationDecisions)}
+${constArray("CARRY_STATUSES", carryStatuses)}
 ${constArray("HEALTH_STATUSES", healthStatuses)}
 ${constArray("RADAR_ENTITY_TYPES", radarEntityTypes)}
 ${constArray("INCIDENT_SEVERITIES", incidentSeverities)}
@@ -102,6 +104,7 @@ export type RiskEdgeType = ${literalUnion(riskEdgeTypes)};
 export type ProbabilityMethod = ${literalUnion(probabilityMethods)};
 export type ConfidenceLevel = ${literalUnion(confidenceLevels)};
 export type RecommendationDecision = ${literalUnion(recommendationDecisions)};
+export type CarryStatus = ${literalUnion(carryStatuses)};
 export type HealthStatus = ${literalUnion(healthStatuses)};
 export type RadarEntityType = ${literalUnion(radarEntityTypes)};
 export type IncidentSeverity = ${literalUnion(incidentSeverities)};
@@ -250,8 +253,9 @@ export interface ExitEstimate {
 }
 
 /**
- * break_even_probability = exit_cost / impact (this scenario alone);
- * decision_flip_probability = (exit_cost - other_expected_loss) / impact
+ * With cost_of_exiting = exit_cost + forgone_yield:
+ * break_even_probability = cost_of_exiting / impact (this scenario alone);
+ * decision_flip_probability = (cost_of_exiting - other_expected_loss) / impact
  * (other scenarios held at their central estimates). Both are capped to
  * [0, 1] and null, with reasons, when an input is unknown.
  */
@@ -274,6 +278,24 @@ export interface BreakEven {
   exit_cost: DecimalString | null;
   points: BreakEvenPoint[];
   explanation: string;
+  forgone_yield?: DecimalString | null;
+  /** exit_cost + forgone_yield, the cost the thresholds use. */
+  cost_of_exiting?: DecimalString | null;
+}
+
+/**
+ * The position yield over the decision horizon. Lenders: forgone_yield =
+ * amount * apy * horizon_days / 365, assuming exited capital is held idle.
+ * "unknown": APY unavailable, zero is used and confidence is lowered.
+ * "not_applicable": borrower carry is not modelled.
+ */
+export interface Carry {
+  status: CarryStatus;
+  /** Annual APY as a fraction (0.045 = 4.5%), net of fees when available. */
+  apy: DecimalString | null;
+  apy_source: string | null;
+  horizon_days: number;
+  notes: string[];
 }
 
 export interface Recommendation {
@@ -287,6 +309,11 @@ export interface Recommendation {
   confidence: ConfidenceLevel;
   explanation: string;
   break_even?: BreakEven | null;
+  /** Yield given up over the horizon by exiting (EXIT iff expected_loss > exit_cost + forgone_yield). */
+  forgone_yield?: DecimalString | null;
+  /** exit_cost + forgone_yield. */
+  cost_of_exiting?: DecimalString | null;
+  carry?: Carry | null;
 }
 
 export interface AnalysisRequest {
@@ -342,11 +369,14 @@ export interface BookPocketResult {
   pocket_value: DecimalString | null;
   expected_loss: BookAmount | null;
   exit_cost: BookAmount | null;
+  /** expected_loss - (exit_cost + forgone_yield). */
   exit_advantage: BookAmount | null;
   break_even: BreakEven | null;
   unavailable_reasons: string[];
   explanation: string;
   analyzed_at: string | null;
+  /** Yield given up over the 30-day horizon by exiting this pocket. */
+  forgone_yield?: BookAmount | null;
 }
 
 export interface BookTotal {
@@ -370,6 +400,8 @@ export interface BookTotals {
   unavailable_count: number;
   complete: boolean;
   warnings: string[];
+  /** Yield given up by exiting the EXIT pockets; part of recommended_cost. */
+  forgone_yield_exit_pockets?: BookTotal | null;
 }
 
 export interface BookResponse {

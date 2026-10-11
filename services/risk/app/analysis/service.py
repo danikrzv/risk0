@@ -87,7 +87,9 @@ from app.analysis.recommendation import (
     CONFIDENCE_ORDER,
     LIVE_ORACLE_FAILURE,
     PROTOCOL_EMERGENCY,
+    CarryEstimate,
     LiveTrigger,
+    estimate_carry,
     make_recommendation,
 )
 from app.analysis.scenario_engine import ScenarioEngine
@@ -435,6 +437,7 @@ class AnalysisService:
             quality,
             live_triggers=self._live_triggers(oracles),
             numeraire=position.numeraire,
+            carry=_carry(position, snapshots),
         )
         return AnalysisResponse(
             graph=graph,
@@ -1353,6 +1356,16 @@ def _borrower_request(
         amount_in=amount_in,
         eth_price_usd=eth_usd,
     )
+
+
+def _carry(position: ValidatedPosition, snapshots: _Snapshots) -> CarryEstimate:
+    """The yield exiting gives up: the vault's APY for a vault, the market's otherwise."""
+    snapshot = snapshots.primary.value
+    if isinstance(snapshot, VaultSnapshot):
+        apy, source = snapshot.apy, "Morpho vault APY (net of fees when reported)"
+    else:
+        apy, source = snapshot.supply_apy, "Morpho market supply APY (net when reported)"
+    return estimate_carry(position.mode, position.amount, apy, apy_source=source)
 
 
 def _unavailable_exit(now: datetime, reason: str) -> ExitEstimate:

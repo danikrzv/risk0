@@ -1,6 +1,6 @@
-import type { AnalysisResponse, RecommendationDecision } from "@risk0/contracts"
+import type { AnalysisResponse, Carry, RecommendationDecision } from "@risk0/contracts"
 
-import { compareDecimal, formatQuantity } from "../lib/format"
+import { compareDecimal, formatPercent, formatQuantity } from "../lib/format"
 import { BreakEvenLine } from "./break-even"
 
 // UNAVAILABLE is a data-quality state; it must never look like a safe result.
@@ -10,6 +10,13 @@ const TONES: Record<RecommendationDecision, "safe" | "danger" | "unavailable"> =
   UNAVAILABLE: "unavailable",
 }
 
+/** Where the forgone yield comes from: "APY 4.50%", or why it is zero. */
+export function carryBasis(carry: Carry | null): string {
+  if (!carry) return "APY not reported"
+  if (carry.status === "not_applicable") return "borrower carry not modelled"
+  if (carry.status === "unknown" || carry.apy === null) return "APY unknown, counted as zero"
+  return `APY ${formatPercent(carry.apy)}`
+}
 
 export function RecommendationCard({
   analysis,
@@ -29,12 +36,17 @@ export function RecommendationCard({
   const dominant = recommendation.dominant_dependency
   const dominantLabel = dominant ? (graph.nodes.find((node) => node.node_id === dominant)?.label ?? dominant) : null
   const hasRange = recommendation.expected_loss_low != null && recommendation.expected_loss_high != null
+  const forgone = recommendation.forgone_yield ?? null
+  const carry = recommendation.carry ?? null
+  // The rule compares the expected loss with exit cost + forgone yield (older responses: exit cost).
+  const costOfExiting = recommendation.cost_of_exiting ?? recommendation.exit_cost
   const comparisonText =
     recommendation.decision === "UNAVAILABLE"
       ? "The comparison cannot support a decision with the current data."
-      : compareDecimal(recommendation.expected_loss, recommendation.exit_cost) === 1
+      : compareDecimal(recommendation.expected_loss, costOfExiting) === 1
         ? "Expected 30-day loss exceeds the cost of exiting now."
         : "Expected 30-day loss does not exceed the cost of exiting now."
+  const carryLine = forgone === null ? null : `Expected 30-day loss ${amount(recommendation.expected_loss)} vs exit cost ${amount(recommendation.exit_cost)} + forgone yield ${amount(forgone)} (${carryBasis(carry)})`
   const triggerOverride = recommendation.decision === "EXIT" && recommendation.triggers.length > 0
 
   return (
@@ -75,9 +87,27 @@ export function RecommendationCard({
           )}
           <dt>Cost of exiting now</dt>
           <dd>{amount(recommendation.exit_cost)}</dd>
+          {forgone !== null && (
+            <>
+              <dt>{`Forgone ${carry?.horizon_days ?? 30}-day yield`}</dt>
+              <dd>{amount(forgone)}</dd>
+              <dt>Exit cost plus forgone yield</dt>
+              <dd>{amount(costOfExiting)}</dd>
+            </>
+          )}
         </dl>
+        {carryLine && <p className="comparison__carry">{carryLine}</p>}
         <p>{comparisonText}</p>
-        <BreakEvenLine breakEven={recommendation.break_even} />
+        <BreakEvenLine breakEven={recommendation.break_even} numeraire={numeraire} />
+        {carry && carry.status === "unknown" ? (
+          <ul className="warnings" aria-label="Yield warnings">
+            {carry.notes.map((note) => (
+              <li key={note}>{note}</li>
+            ))}
+          </ul>
+        ) : (
+          carry && carry.notes.length > 0 && <p className="hint">{carry.notes.join(" ")}</p>
+        )}
         {triggerOverride && <p>A hard safety trigger requires exit regardless of the cost comparison.</p>}
       </div>
 

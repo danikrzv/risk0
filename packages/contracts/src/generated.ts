@@ -12,6 +12,7 @@ export const RISK_EDGE_TYPES = ["allocated_to","lends","borrows","uses_collatera
 export const PROBABILITY_METHODS = ["empirical_rolling_window","model_estimated_protocol","unavailable"] as const;
 export const CONFIDENCE_LEVELS = ["high","medium","low","unavailable"] as const;
 export const RECOMMENDATION_DECISIONS = ["STAY","EXIT","UNAVAILABLE"] as const;
+export const CARRY_STATUSES = ["known","unknown","not_applicable"] as const;
 export const HEALTH_STATUSES = ["HEALTHY","WARNING","CRITICAL","UNKNOWN"] as const;
 export const RADAR_ENTITY_TYPES = ["chain","protocol","vault","market","asset","oracle","irm","position"] as const;
 export const INCIDENT_SEVERITIES = ["WARNING","CRITICAL"] as const;
@@ -34,6 +35,7 @@ export type RiskEdgeType = "allocated_to" | "lends" | "borrows" | "uses_collater
 export type ProbabilityMethod = "empirical_rolling_window" | "model_estimated_protocol" | "unavailable";
 export type ConfidenceLevel = "high" | "medium" | "low" | "unavailable";
 export type RecommendationDecision = "STAY" | "EXIT" | "UNAVAILABLE";
+export type CarryStatus = "known" | "unknown" | "not_applicable";
 export type HealthStatus = "HEALTHY" | "WARNING" | "CRITICAL" | "UNKNOWN";
 export type RadarEntityType = "chain" | "protocol" | "vault" | "market" | "asset" | "oracle" | "irm" | "position";
 export type IncidentSeverity = "WARNING" | "CRITICAL";
@@ -182,8 +184,9 @@ export interface ExitEstimate {
 }
 
 /**
- * break_even_probability = exit_cost / impact (this scenario alone);
- * decision_flip_probability = (exit_cost - other_expected_loss) / impact
+ * With cost_of_exiting = exit_cost + forgone_yield:
+ * break_even_probability = cost_of_exiting / impact (this scenario alone);
+ * decision_flip_probability = (cost_of_exiting - other_expected_loss) / impact
  * (other scenarios held at their central estimates). Both are capped to
  * [0, 1] and null, with reasons, when an input is unknown.
  */
@@ -206,6 +209,24 @@ export interface BreakEven {
   exit_cost: DecimalString | null;
   points: BreakEvenPoint[];
   explanation: string;
+  forgone_yield?: DecimalString | null;
+  /** exit_cost + forgone_yield, the cost the thresholds use. */
+  cost_of_exiting?: DecimalString | null;
+}
+
+/**
+ * The position yield over the decision horizon. Lenders: forgone_yield =
+ * amount * apy * horizon_days / 365, assuming exited capital is held idle.
+ * "unknown": APY unavailable, zero is used and confidence is lowered.
+ * "not_applicable": borrower carry is not modelled.
+ */
+export interface Carry {
+  status: CarryStatus;
+  /** Annual APY as a fraction (0.045 = 4.5%), net of fees when available. */
+  apy: DecimalString | null;
+  apy_source: string | null;
+  horizon_days: number;
+  notes: string[];
 }
 
 export interface Recommendation {
@@ -219,6 +240,11 @@ export interface Recommendation {
   confidence: ConfidenceLevel;
   explanation: string;
   break_even?: BreakEven | null;
+  /** Yield given up over the horizon by exiting (EXIT iff expected_loss > exit_cost + forgone_yield). */
+  forgone_yield?: DecimalString | null;
+  /** exit_cost + forgone_yield. */
+  cost_of_exiting?: DecimalString | null;
+  carry?: Carry | null;
 }
 
 export interface AnalysisRequest {
@@ -274,11 +300,14 @@ export interface BookPocketResult {
   pocket_value: DecimalString | null;
   expected_loss: BookAmount | null;
   exit_cost: BookAmount | null;
+  /** expected_loss - (exit_cost + forgone_yield). */
   exit_advantage: BookAmount | null;
   break_even: BreakEven | null;
   unavailable_reasons: string[];
   explanation: string;
   analyzed_at: string | null;
+  /** Yield given up over the 30-day horizon by exiting this pocket. */
+  forgone_yield?: BookAmount | null;
 }
 
 export interface BookTotal {
@@ -302,6 +331,8 @@ export interface BookTotals {
   unavailable_count: number;
   complete: boolean;
   warnings: string[];
+  /** Yield given up by exiting the EXIT pockets; part of recommended_cost. */
+  forgone_yield_exit_pockets?: BookTotal | null;
 }
 
 export interface BookResponse {

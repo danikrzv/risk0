@@ -47,6 +47,10 @@ class MarketSnapshot(SnapshotModel):
     listed: bool | None
     last_accrual_timestamp: int | None
     sources: tuple[str, ...]
+    # Annual supply APY as a fraction (0.045 = 4.5%), net of fees and including
+    # rewards when Morpho reports it (`netSupplyApy`), else the gross
+    # `supplyApy`; None when unknown.
+    supply_apy: DecimalValue | None = None
 
 
 class VaultSnapshot(SnapshotModel):
@@ -64,6 +68,9 @@ class VaultSnapshot(SnapshotModel):
     liquidity_usd: DecimalValue | None
     listed: bool | None
     sources: tuple[str, ...]
+    # Annual depositor APY as a fraction, net of the vault fee when Morpho
+    # reports it (`netApy`), else the gross `apy`; None when unknown.
+    apy: DecimalValue | None = None
 
 
 class AllocationSnapshot(SnapshotModel):

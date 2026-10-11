@@ -190,4 +190,115 @@ describe("RecommendationCard", () => {
     )
     expect(comparison).toHaveTextContent("A hard safety trigger fired: the decision does not depend on any probability.")
   })
+
+  it("compares the expected loss with exit cost plus forgone yield", () => {
+    const carry = {
+      status: "known" as const,
+      apy: "0.045",
+      apy_source: "Morpho market supply APY (net when reported)",
+      horizon_days: 30,
+      notes: ["Assumes exited capital is held idle (no alternative yield)."],
+    }
+    render(
+      <RecommendationCard
+        analysis={withRecommendation({
+          decision: "STAY",
+          triggers: [],
+          expected_loss: "66",
+          exit_cost: "0.02",
+          forgone_yield: "369.863013698630136986",
+          cost_of_exiting: "369.883013698630136986",
+          carry,
+          break_even: {
+            probability_dependent: true,
+            dominant_scenario_id: "protocol-impairment",
+            exit_cost: "0.02",
+            forgone_yield: "369.863013698630136986",
+            cost_of_exiting: "369.883013698630136986",
+            points: [
+              {
+                scenario_id: "protocol-impairment",
+                dependency: "protocol:morpho",
+                impact: "30000",
+                other_expected_loss: "0",
+                break_even_probability: "0.012329433789954338",
+                decision_flip_probability: "0.012329433789954338",
+                current_probability: "0.0022",
+                current_probability_low: "0.001",
+                current_probability_high: "0.004",
+                reasons: [],
+              },
+            ],
+            explanation: "",
+          },
+        })}
+        numeraire="USDC"
+        onSelectDependency={() => {}}
+      />,
+    )
+
+    const comparison = within(card()).getByRole("group", { name: "Stay versus exit" })
+    expect(
+      within(comparison).getByText(
+        "Expected 30-day loss 66 USDC vs exit cost 0.02 USDC + forgone yield 369.863014 USDC (APY 4.50%)",
+      ),
+    ).toBeInTheDocument()
+    expect(within(comparison).getByText("Forgone 30-day yield")).toBeInTheDocument()
+    expect(within(comparison).getByText("Exit cost plus forgone yield")).toBeInTheDocument()
+    expect(within(comparison).getByText("369.883014 USDC")).toBeInTheDocument()
+    // 66 < 0.02 + 369.86: the forgone yield keeps the position, though 66 > 0.02.
+    expect(within(comparison).getByText("Expected 30-day loss does not exceed the cost of exiting now.")).toBeInTheDocument()
+    expect(comparison).toHaveTextContent(
+      "EXIT becomes optimal above 1.23% probability of Protocol impairment; current estimate 0.22%. Break-even against exit cost 0.02 USDC + forgone yield 369.863014 USDC = 369.883014 USDC.",
+    )
+    expect(within(comparison).getByText("Assumes exited capital is held idle (no alternative yield).")).toBeInTheDocument()
+    expect(within(card()).queryByRole("list", { name: "Yield warnings" })).not.toBeInTheDocument()
+  })
+
+  it("warns when the APY is unknown and says when borrower carry is not modelled", () => {
+    const unknownNote = "The position APY is unknown: the forgone yield is counted as zero, which biases toward EXIT."
+    const { rerender } = render(
+      <RecommendationCard
+        analysis={withRecommendation({
+          forgone_yield: "0",
+          cost_of_exiting: "0.122",
+          carry: { status: "unknown", apy: null, apy_source: null, horizon_days: 30, notes: [unknownNote] },
+        })}
+        numeraire="WETH"
+        onSelectDependency={() => {}}
+      />,
+    )
+
+    const comparison = within(card()).getByRole("group", { name: "Stay versus exit" })
+    expect(comparison).toHaveTextContent("+ forgone yield 0 WETH (APY unknown, counted as zero)")
+    expect(within(comparison).getByRole("list", { name: "Yield warnings" })).toHaveTextContent(unknownNote)
+
+    rerender(
+      <RecommendationCard
+        analysis={withRecommendation({
+          forgone_yield: "0",
+          cost_of_exiting: "0.122",
+          carry: {
+            status: "not_applicable",
+            apy: null,
+            apy_source: null,
+            horizon_days: 30,
+            notes: ["Borrower carry (borrow cost versus collateral yield) is not modelled: the forgone yield is zero."],
+          },
+        })}
+        numeraire="WETH"
+        onSelectDependency={() => {}}
+      />,
+    )
+    expect(comparison).toHaveTextContent("+ forgone yield 0 WETH (borrower carry not modelled)")
+    expect(comparison).toHaveTextContent("Borrower carry (borrow cost versus collateral yield) is not modelled")
+  })
+
+  it("keeps the exit-cost-only comparison for responses without carry", () => {
+    render(<RecommendationCard analysis={analysisResponse} numeraire="WETH" onSelectDependency={() => {}} />)
+
+    const comparison = within(card()).getByRole("group", { name: "Stay versus exit" })
+    expect(within(comparison).queryByText("Forgone 30-day yield")).not.toBeInTheDocument()
+    expect(comparison).not.toHaveTextContent("forgone yield")
+  })
 })

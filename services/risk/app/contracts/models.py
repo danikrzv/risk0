@@ -294,14 +294,41 @@ class ExitEstimate(ContractModel):
 ProbabilityValue = Annotated[DecimalValue, Field(ge=0, le=1)]
 
 
+class CarryStatus(StrEnum):
+    KNOWN = "known"
+    UNKNOWN = "unknown"
+    NOT_APPLICABLE = "not_applicable"
+
+
+class Carry(ContractModel):
+    """The position's yield over the decision horizon: what exiting gives up.
+
+    Lenders: `forgone_yield = amount * apy * horizon_days / 365` in the position
+    numeraire (the vault's net APY for a vault, the market's supply APY for a
+    market). Exited capital is assumed to be held idle (no alternative yield).
+    `UNKNOWN`: the APY is unavailable, the forgone yield is counted as zero
+    (biasing toward EXIT) and confidence is lowered. `NOT_APPLICABLE`: borrower
+    carry (borrow cost versus collateral yield) is not modelled; zero is used.
+    """
+
+    status: CarryStatus
+    apy: DecimalValue | None
+    apy_source: str | None
+    horizon_days: int = Field(ge=1)
+    notes: tuple[str, ...] = ()
+
+
 class BreakEvenPoint(ContractModel):
     """Where one scenario's 30-day probability flips the stay/exit comparison.
 
-    `break_even_probability` is `exit_cost / impact` (the probability at which
-    this scenario's expected loss alone equals the exit cost) and
-    `decision_flip_probability` is `(exit_cost - other_expected_loss) / impact`
-    (the same, holding the other scenarios at their central estimates), both
-    capped to [0, 1]. A value is null, with a reason, when an input is unknown.
+    The cost of exiting is `exit_cost + forgone_yield` (the exit cost now plus
+    the yield given up over the horizon). `break_even_probability` is
+    `cost_of_exiting / impact` (the probability at which this scenario's
+    expected loss alone equals the cost of exiting) and
+    `decision_flip_probability` is `(cost_of_exiting - other_expected_loss) /
+    impact` (the same, holding the other scenarios at their central estimates),
+    both capped to [0, 1]. A value is null, with a reason, when an input is
+    unknown.
     """
 
     scenario_id: NonEmptyString
@@ -322,6 +349,10 @@ class BreakEven(ContractModel):
     exit_cost: DecimalValue | None
     points: tuple[BreakEvenPoint, ...]
     explanation: str
+    # The yield given up by exiting and `exit_cost + forgone_yield`, the cost
+    # the thresholds use; null in older responses or when the exit cost is unknown.
+    forgone_yield: DecimalValue | None = None
+    cost_of_exiting: DecimalValue | None = None
 
 
 class Recommendation(ContractModel):
@@ -335,6 +366,13 @@ class Recommendation(ContractModel):
     confidence: ConfidenceLevel
     explanation: str
     break_even: BreakEven | None = None
+    # EXIT iff expected_loss > exit_cost + forgone_yield (absent hard triggers).
+    # `forgone_yield` is the yield given up over the horizon by exiting (zero
+    # when the APY is unknown or for a borrower; see `carry`), and
+    # `cost_of_exiting` is `exit_cost + forgone_yield`. Null in older responses.
+    forgone_yield: DecimalValue | None = None
+    cost_of_exiting: DecimalValue | None = None
+    carry: Carry | None = None
 
 
 class AnalysisRequest(ContractModel):
@@ -411,6 +449,8 @@ class BookPocketResult(ContractModel):
     unavailable_reasons: tuple[str, ...]
     explanation: str
     analyzed_at: datetime | None
+    # Yield given up over the horizon by exiting this pocket.
+    forgone_yield: BookAmount | None = None
 
 
 class BookTotal(ContractModel):
@@ -434,6 +474,8 @@ class BookTotals(ContractModel):
     unavailable_count: int = Field(ge=0)
     complete: bool
     warnings: tuple[str, ...]
+    # Yield given up by exiting the EXIT pockets (part of `recommended_cost`).
+    forgone_yield_exit_pockets: BookTotal | None = None
 
 
 class BookResponse(ContractModel):

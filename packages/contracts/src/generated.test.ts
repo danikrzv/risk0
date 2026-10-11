@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import {
+  CARRY_STATUSES,
   CATALOG_AVAILABILITIES,
   CATALOG_CHAIN_IDS,
   CATALOG_ENTITY_TYPES,
@@ -28,6 +29,7 @@ import {
   MAX_BOOK_POCKETS,
   type AnalysisRequest,
   type BookRequest,
+  type CarryStatus,
   type BookResponse,
   type CatalogEntry,
   type CatalogResponse,
@@ -49,6 +51,10 @@ type Assert<Value extends true> = Value;
 type RecommendationDecisionIsExact = Assert<
   Equal<RecommendationDecision, "STAY" | "EXIT" | "UNAVAILABLE">
 >;
+type CarryStatusIsExact = Assert<
+  Equal<CarryStatus, "known" | "unknown" | "not_applicable">
+>;
+const carryStatusIsExact: CarryStatusIsExact = true;
 type ProbabilityHorizonIsFixed = Assert<
   Equal<ProbabilityEstimate["horizon_days"], 30>
 >;
@@ -212,6 +218,7 @@ describe("generated contract parity", () => {
     ["ConfidenceLevel", CONFIDENCE_LEVELS],
     ["ProbabilityMethod", PROBABILITY_METHODS],
     ["RecommendationDecision", RECOMMENDATION_DECISIONS],
+    ["CarryStatus", CARRY_STATUSES],
     ["HealthStatus", HEALTH_STATUSES],
     ["RadarEntityType", RADAR_ENTITY_TYPES],
     ["IncidentSeverity", INCIDENT_SEVERITIES],

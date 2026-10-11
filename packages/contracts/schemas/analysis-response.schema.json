@@ -160,7 +160,37 @@
             { "$ref": "#/$defs/BreakEven" },
             { "type": "null" }
           ]
+        },
+        "forgone_yield": {
+          "description": "Yield given up over the horizon by exiting, in the position numeraire (zero when the APY is unknown or for a borrower; see carry). EXIT iff expected_loss > exit_cost + forgone_yield, absent hard triggers. Null in older responses.",
+          "$ref": "#/$defs/NullableDecimalString"
+        },
+        "cost_of_exiting": {
+          "description": "exit_cost + forgone_yield: the cost the expected loss is compared against. Null in older responses.",
+          "$ref": "#/$defs/NullableDecimalString"
+        },
+        "carry": {
+          "oneOf": [
+            { "$ref": "#/$defs/Carry" },
+            { "type": "null" }
+          ]
         }
+      }
+    },
+    "Carry": {
+      "description": "The position yield over the decision horizon. Lenders: forgone_yield = amount * apy * horizon_days / 365, assuming exited capital is held idle. unknown: the APY is unavailable, zero is used (biasing toward EXIT) and confidence is lowered. not_applicable: borrower carry is not modelled.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "apy", "apy_source", "horizon_days", "notes"],
+      "properties": {
+        "status": { "enum": ["known", "unknown", "not_applicable"] },
+        "apy": {
+          "description": "Annual APY as a fraction (0.045 = 4.5%), net of fees when available.",
+          "$ref": "#/$defs/NullableDecimalString"
+        },
+        "apy_source": { "type": ["string", "null"] },
+        "horizon_days": { "type": "integer", "minimum": 1 },
+        "notes": { "type": "array", "items": { "type": "string" } }
       }
     },
     "Probability": {
@@ -174,7 +204,7 @@
       ]
     },
     "BreakEvenPoint": {
-      "description": "break_even_probability = exit_cost / impact; decision_flip_probability = (exit_cost - other_expected_loss) / impact; both capped to [0, 1] and null (with reasons) when an input is unknown.",
+      "description": "With cost_of_exiting = exit_cost + forgone_yield: break_even_probability = cost_of_exiting / impact; decision_flip_probability = (cost_of_exiting - other_expected_loss) / impact; both capped to [0, 1] and null (with reasons) when an input is unknown.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -211,7 +241,12 @@
         "dominant_scenario_id": { "type": ["string", "null"] },
         "exit_cost": { "$ref": "#/$defs/NullableDecimalString" },
         "points": { "type": "array", "items": { "$ref": "#/$defs/BreakEvenPoint" } },
-        "explanation": { "type": "string" }
+        "explanation": { "type": "string" },
+        "forgone_yield": { "$ref": "#/$defs/NullableDecimalString" },
+        "cost_of_exiting": {
+          "description": "exit_cost + forgone_yield, the cost the thresholds use; null in older responses or when the exit cost is unknown.",
+          "$ref": "#/$defs/NullableDecimalString"
+        }
       }
     }
   }

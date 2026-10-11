@@ -45,7 +45,8 @@ function pocket(overrides: Partial<BookPocketResult>): BookPocketResult {
     pocket_value: "1000",
     expected_loss: { amount: "1", fraction_of_pocket: "0.001", fraction_of_book: "0.0001" },
     exit_cost: { amount: "5", fraction_of_pocket: "0.005", fraction_of_book: "0.0005" },
-    exit_advantage: { amount: "-4", fraction_of_pocket: "-0.004", fraction_of_book: "-0.0004" },
+    forgone_yield: { amount: "3", fraction_of_pocket: "0.003", fraction_of_book: "0.0003" },
+    exit_advantage: { amount: "-7", fraction_of_pocket: "-0.007", fraction_of_book: "-0.0007" },
     break_even: null,
     unavailable_reasons: [],
     explanation: "STAY",
@@ -64,7 +65,8 @@ const bookResponse: BookResponse = {
       decision: "EXIT",
       expected_loss: { amount: "200", fraction_of_pocket: "0.2", fraction_of_book: "0.02" },
       exit_cost: { amount: "110", fraction_of_pocket: "0.11", fraction_of_book: "0.011" },
-      exit_advantage: { amount: "90", fraction_of_pocket: "0.09", fraction_of_book: "0.009" },
+      forgone_yield: { amount: "4", fraction_of_pocket: "0.004", fraction_of_book: "0.0004" },
+      exit_advantage: { amount: "86", fraction_of_pocket: "0.086", fraction_of_book: "0.0086" },
       break_even: breakEven,
     }),
     pocket({ rank: 2 }),
@@ -84,9 +86,10 @@ const bookResponse: BookResponse = {
     numeraire: null,
     expected_loss_staying: { amount: null, fraction_of_book: "0.0201" },
     exit_cost_exit_pockets: { amount: null, fraction_of_book: "0.011" },
+    forgone_yield_exit_pockets: { amount: null, fraction_of_book: "0.0004" },
     expected_loss_stay_pockets: { amount: null, fraction_of_book: "0.0001" },
-    recommended_cost: { amount: null, fraction_of_book: "0.0111" },
-    net_benefit: { amount: null, fraction_of_book: "0.009" },
+    recommended_cost: { amount: null, fraction_of_book: "0.0115" },
+    net_benefit: { amount: null, fraction_of_book: "0.0086" },
     allocated_weight: "0.3",
     stay_weight: "0.1",
     exit_weight: "0.1",
@@ -166,6 +169,14 @@ describe("BookPanel", () => {
     expect(exitRow).toHaveTextContent("20.00% of pocket · 2.00% of book")
     expect(exitRow).toHaveTextContent("110 WETH")
     expect(exitRow).toHaveTextContent("11.00% of pocket")
+    expect(within(table).getByRole("columnheader", { name: "Forgone 30-day yield" })).toBeInTheDocument()
+    const forgoneColumn = within(table)
+      .getAllByRole("columnheader")
+      .findIndex((header) => header.textContent === "Forgone 30-day yield")
+    const forgoneCell = within(exitRow).getAllByRole("cell")[forgoneColumn - 1]
+    expect(forgoneCell).toHaveTextContent("4 WETH")
+    expect(forgoneCell).toHaveTextContent("0.40% of pocket · 0.04% of book")
+    expect(within(rows[1]).getAllByRole("cell")[forgoneColumn - 1]).toHaveTextContent("3 EURCV")
     expect(exitRow).toHaveTextContent("EXIT above 10.00% · estimate 20.00%")
 
     const unavailableRow = rows[2]
@@ -178,7 +189,9 @@ describe("BookPanel", () => {
 
     const totals = within(book()).getByRole("table", { name: "Book totals" })
     expect(within(totals).getByRole("row", { name: /Expected loss if staying in every pocket 2.01%/ })).toBeInTheDocument()
-    expect(within(totals).getByRole("row", { name: /Expected saving versus staying everywhere 0.90%/ })).toBeInTheDocument()
+    expect(within(totals).getByRole("row", { name: /Yield forgone by exiting the EXIT pockets 0.04%/ })).toBeInTheDocument()
+    expect(within(totals).getByRole("row", { name: /Book cost following the recommendations 1.15%/ })).toBeInTheDocument()
+    expect(within(totals).getByRole("row", { name: /Expected saving versus staying everywhere 0.86%/ })).toBeInTheDocument()
     expect(within(book()).getByText(/Totals are incomplete/)).toBeInTheDocument()
     expect(within(book()).getByRole("list", { name: "Book warnings" })).toHaveTextContent("1 pocket is UNAVAILABLE")
   })

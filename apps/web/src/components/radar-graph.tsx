@@ -299,6 +299,9 @@ export const RadarGraph = memo(function RadarGraph({
   const handlePaneClick = useCallback(() => clearFocus(), [clearFocus])
   const selectSearchResult = useCallback((entityId: string) => {
     setSearchQuery("")
+    setChainFilter("all")
+    setTypeFilter("all")
+    setHealthFilter("all")
     onSelectEntity?.(entityId)
   }, [onSelectEntity])
 

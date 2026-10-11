@@ -302,6 +302,24 @@ describe("RadarGraph", () => {
     expect(screen.getByRole("button", { name: "Exit expanded graph" })).toHaveAttribute("aria-pressed", "true")
   })
 
+  it.each([
+    ["chain", "Chain filter", "8453"],
+    ["entity type", "Entity type filter", "oracle"],
+    ["health", "Health filter", "WARNING"],
+  ])("clears a conflicting %s filter when a search result is selected", (_, filterLabel, filterValue) => {
+    const onSelectEntity = vi.fn()
+    const { rerender } = render(<RadarGraph graph={graph} healthStates={healthStates} onSelectEntity={onSelectEntity} />)
+
+    fireEvent.change(screen.getByLabelText(filterLabel), { target: { value: filterValue } })
+    fireEvent.change(screen.getByLabelText("Search graph"), { target: { value: "catalog vault" } })
+    fireEvent.click(within(screen.getByRole("list", { name: "Graph search results" })).getByRole("button", { name: /Catalog Vault/ }))
+
+    expect(screen.getByLabelText(filterLabel)).toHaveValue("all")
+    expect(onSelectEntity).toHaveBeenCalledWith("vault:1:catalog")
+    rerender(<RadarGraph graph={graph} healthStates={healthStates} selectedEntityId="vault:1:catalog" onSelectEntity={onSelectEntity} />)
+    expect(within(screen.getByRole("list", { name: "Radar nodes" })).getByRole("button", { name: /Catalog Vault/ })).toBeInTheDocument()
+  })
+
   it("promotes a selected search result beyond the canvas cap", () => {
     const many = Array.from({ length: MAX_CANVAS_NODES + 1 }, (_, index) => (
       entity(`vault:1:many-${index}`, index === MAX_CANVAS_NODES ? "Needle Vault" : `Many Vault ${index}`, { visible: true })
@@ -311,8 +329,10 @@ describe("RadarGraph", () => {
     vi.mocked(layeredLayout).mockClear()
     const { rerender } = render(<RadarGraph graph={cappedGraph} onSelectEntity={onSelectEntity} />)
 
+    fireEvent.change(screen.getByLabelText("Health filter"), { target: { value: "HEALTHY" } })
     fireEvent.change(screen.getByLabelText("Search graph"), { target: { value: "needle" } })
     fireEvent.click(within(screen.getByRole("list", { name: "Graph search results" })).getByRole("button", { name: /Needle Vault/ }))
+    expect(screen.getByLabelText("Health filter")).toHaveValue("all")
     expect(onSelectEntity).toHaveBeenCalledWith("vault:1:many-400")
 
     rerender(<RadarGraph graph={cappedGraph} selectedEntityId="vault:1:many-400" onSelectEntity={onSelectEntity} />)

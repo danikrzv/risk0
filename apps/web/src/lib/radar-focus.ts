@@ -24,7 +24,7 @@ export function rankRadarEntities(entities: RadarEntity[], query: string): Radar
 }
 
 export function relevantDependencyContext(
-  graph: Pick<RadarGraphResponse, "entities" | "relationships">,
+  graph: Pick<RadarGraphResponse, "entities" | "relationships" | "similarities">,
   selectedEntityId: string | null,
   impacts: IncidentImpact[],
 ): ReadonlySet<string> {
@@ -65,12 +65,17 @@ export function relevantDependencyContext(
     }
   }
 
-  for (const relationship of graph.relationships) {
-    if (relationship.relationship_type !== "similar_to") continue
-    const sourceRelevant = relevant.has(relationship.source_entity_id)
-    const targetRelevant = relevant.has(relationship.target_entity_id)
+  const similarityPairs = [
+    ...graph.similarities.map((similarity) => [similarity.catalog_entity_id, similarity.candidate_entity_id] as const),
+    ...graph.relationships
+      .filter((relationship) => relationship.relationship_type === "similar_to")
+      .map((relationship) => [relationship.source_entity_id, relationship.target_entity_id] as const),
+  ]
+  for (const [sourceId, targetId] of similarityPairs) {
+    const sourceRelevant = relevant.has(sourceId)
+    const targetRelevant = relevant.has(targetId)
     if (sourceRelevant === targetRelevant) continue
-    const peerId = sourceRelevant ? relationship.target_entity_id : relationship.source_entity_id
+    const peerId = sourceRelevant ? targetId : sourceId
     if (entitiesById.get(peerId)?.entity_type !== "vault") continue
     if ((dependencies.get(peerId) ?? []).some((dependencyId) => relevant.has(dependencyId))) relevant.add(peerId)
   }

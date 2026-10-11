@@ -80,7 +80,8 @@ describe("relevantDependencyContext", () => {
       relationship("vault:1:shared", "market:1:prime"),
       relationship("position:1:manual", "vault:1:alpha", "lends"),
     ],
-  } satisfies Pick<RadarGraphResponse, "entities" | "relationships">
+    similarities: [],
+  } satisfies Pick<RadarGraphResponse, "entities" | "relationships" | "similarities">
 
   it("walks dependencies outward, includes an attached manual position, and excludes unrelated dependents and similarity", () => {
     expect(relevantDependencyContext(graph, "vault:1:alpha", [])).toEqual(new Set([
@@ -120,6 +121,53 @@ describe("relevantDependencyContext", () => {
     ]))
   })
 
+  it("includes similarity records only when the candidate shares an involved causal dependency", () => {
+    const similarityGraph = {
+      entities: [
+        entity("vault:1:source", "Source Vault"),
+        entity("vault:1:shared-record", "Shared Record Vault"),
+        entity("vault:1:unrelated-record", "Unrelated Record Vault"),
+        entity("market:1:shared", "Shared Market", "market"),
+        entity("market:1:unrelated", "Unrelated Market", "market"),
+      ],
+      relationships: [
+        relationship("vault:1:source", "market:1:shared"),
+        relationship("vault:1:shared-record", "market:1:shared"),
+        relationship("vault:1:unrelated-record", "market:1:unrelated"),
+      ],
+      similarities: [
+        {
+          catalog_entity_id: "vault:1:source",
+          candidate_entity_id: "vault:1:shared-record",
+          score: "0.8",
+          components: { shared_markets: "1" },
+          missing_dimensions: [],
+          model_version: "vault-similarity-v1",
+          stored: true,
+          normally_visible: true,
+          computed_at: "2026-10-11T00:00:00Z",
+        },
+        {
+          catalog_entity_id: "vault:1:source",
+          candidate_entity_id: "vault:1:unrelated-record",
+          score: "0.7",
+          components: { shared_markets: "0" },
+          missing_dimensions: [],
+          model_version: "vault-similarity-v1",
+          stored: true,
+          normally_visible: true,
+          computed_at: "2026-10-11T00:00:00Z",
+        },
+      ],
+    } satisfies Pick<RadarGraphResponse, "entities" | "relationships" | "similarities">
+
+    expect(relevantDependencyContext(similarityGraph, "vault:1:source", [])).toEqual(new Set([
+      "vault:1:source",
+      "market:1:shared",
+      "vault:1:shared-record",
+    ]))
+  })
+
   it("stays bounded across duplicates, cycles, self-loops, and unknown endpoints", () => {
     const cyclic = {
       entities: [entity("a", "A"), entity("b", "B"), entity("c", "C")],
@@ -132,6 +180,7 @@ describe("relevantDependencyContext", () => {
         relationship("c", "missing"),
         relationship("unknown", "a"),
       ],
+      similarities: [],
     }
 
     expect([...relevantDependencyContext(cyclic, "a", [])]).toEqual(["a", "b", "c"])

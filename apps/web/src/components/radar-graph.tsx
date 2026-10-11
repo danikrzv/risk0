@@ -12,8 +12,10 @@ import type {
   RadarRelationship,
 } from "@risk0/contracts"
 import { Background, Controls, type Edge, MarkerType, MiniMap, type Node, type NodeMouseHandler, Position, ReactFlow } from "@xyflow/react"
-import { memo, useCallback, useMemo, useState } from "react"
+import { memo, type ReactNode, useCallback, useMemo, useRef, useState } from "react"
+import { createPortal } from "react-dom"
 
+import { useFillViewport } from "../hooks/use-fill-viewport"
 import { layeredLayout } from "../lib/layered-layout"
 import { rankRadarEntities, relevantDependencyContext } from "../lib/radar-focus"
 import { RadarEntityDetail } from "./radar-entity-detail"
@@ -151,6 +153,7 @@ export const RadarGraph = memo(function RadarGraph({
   loadingNeighboursId = null,
   onShowNeighbours,
   overlayRef,
+  detailContainer = null,
 }: {
   graph: RadarGraphResponse
   healthStates?: HealthState[]
@@ -170,6 +173,8 @@ export const RadarGraph = memo(function RadarGraph({
   onShowNeighbours?: (entityId: string) => void
   /** Receives an element over the canvas's right edge that callers can portal floating panels into. */
   overlayRef?: (element: HTMLDivElement | null) => void
+  /** Where the selected entity's details render (e.g. a side drawer); inline below the canvas when null. */
+  detailContainer?: HTMLElement | null
 }) {
   const [chainFilter, setChainFilter] = useState("all")
   const [typeFilter, setTypeFilter] = useState("all")
@@ -178,6 +183,9 @@ export const RadarGraph = memo(function RadarGraph({
   const [showOnlyRelevant, setShowOnlyRelevant] = useState(false)
   const [showRelationshipLabels, setShowRelationshipLabels] = useState(false)
   const [expanded, setExpanded] = useState(false)
+  // The canvas fills the viewport by default; the expanded mode has its own size.
+  const canvasRef = useRef<HTMLDivElement | null>(null)
+  const canvasHeight = useFillViewport(canvasRef, { enabled: !expanded })
   const [nodeLimit, showMoreNodes] = useListLimit(LIST_PAGE_SIZE)
   const [relationshipLimit, showMoreRelationships] = useListLimit(LIST_PAGE_SIZE)
   const health = useMemo(() => healthByEntity(graph.entities, healthStates), [graph.entities, healthStates])
@@ -317,6 +325,7 @@ export const RadarGraph = memo(function RadarGraph({
     onSelectEntity?.(null)
   }, [onSelectEntity])
   const handlePaneClick = useCallback(() => clearFocus(), [clearFocus])
+  const placeDetail = (detail: ReactNode) => (detailContainer ? createPortal(detail, detailContainer) : detail)
   const selectSearchResult = useCallback((entityId: string) => {
     setSearchQuery("")
     setChainFilter("all")
@@ -388,7 +397,11 @@ export const RadarGraph = memo(function RadarGraph({
           (incident path and catalog first). Narrow the filters to see the rest.
         </p>
       ) : null}
-      <div className="radar-graph__canvas">
+      <div
+        className="radar-graph__canvas"
+        ref={canvasRef}
+        style={canvasHeight !== null ? { height: canvasHeight } : undefined}
+      >
         <ReactFlow
           key={selectedIncident?.incident_id ?? "radar"}
           nodes={flowNodes}
@@ -409,7 +422,7 @@ export const RadarGraph = memo(function RadarGraph({
         </ReactFlow>
         {overlayRef ? <div className="radar-graph__overlay" ref={overlayRef} /> : null}
       </div>
-      {selectedEntity && onSelectEntity ? (
+      {selectedEntity && onSelectEntity ? placeDetail(
         <RadarEntityDetail
           key={selectedEntity.entity_id}
           entity={selectedEntity}

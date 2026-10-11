@@ -410,10 +410,10 @@ p {
   flex-direction: column;
 }
 
+/* Height is measured to fill the viewport (useFillViewport); a flex basis would override it. */
 .radar-stage .radar-graph__canvas {
-  flex: 1 1 34rem;
-  height: auto;
-  min-height: 34rem;
+  flex: none;
+  min-height: 30rem;
 }
 
 /* Exposure and incidents float over the canvas's right edge, one at a time,
@@ -437,17 +437,61 @@ p {
   inset: 0.75rem 0.75rem 0.75rem auto;
   z-index: 30;
   display: flex;
-  width: min(22rem, calc(100% - 1.5rem));
+  max-width: calc(100% - 1.5rem);
   pointer-events: none;
 }
 
 .floating-panels {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
-  width: 100%;
+  width: 22rem;
+  max-width: 100%;
   max-height: 100%;
   pointer-events: none;
+}
+
+/* Drag handle on the drawer's left edge; the accent line shows on hover/focus. */
+.panel-resizer {
+  position: absolute;
+  top: 2.4rem;
+  bottom: 0;
+  left: -0.55rem;
+  z-index: 2;
+  width: 0.7rem;
+  cursor: col-resize;
+  pointer-events: auto;
+  touch-action: none;
+}
+
+.panel-resizer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 2px;
+  transform: translateX(-50%);
+  background: var(--color-border-strong);
+  opacity: 0.5;
+  transition: opacity 120ms ease, background-color 120ms ease;
+}
+
+.panel-resizer:hover::after,
+.panel-resizer:focus-visible::after {
+  background: var(--color-accent);
+  opacity: 1;
+}
+
+.panel-resizer:focus-visible {
+  outline: none;
+}
+
+.floating-panel__empty {
+  margin: 0;
+  padding: 0.85rem;
+  color: var(--color-muted);
 }
 
 .floating-panels > * {
@@ -1619,6 +1663,17 @@ fieldset.panel legend,
     width: auto;
   }
 
+  .floating-panels {
+    width: auto;
+  }
+
+  /* Three launchers would reach the zoom controls on a phone: keep clear of
+     their column and wrap instead. */
+  .floating-panels__launchers {
+    flex-wrap: wrap;
+    margin-left: 3.25rem;
+  }
+
   /* Too large for a phone-sized canvas; zoom and pan remain. */
   .radar-graph__canvas .react-flow__minimap {
     display: none;
@@ -1636,7 +1691,7 @@ fieldset.panel legend,
 
 @media (min-width: 48.01rem) and (max-width: 75rem) {
   .radar-graph__overlay {
-    width: min(19rem, calc(100% - 1.5rem));
+    max-width: calc(100% - 1.5rem);
   }
 }
 

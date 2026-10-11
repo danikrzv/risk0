@@ -207,6 +207,51 @@ describe("Home", () => {
     expect(screen.getByRole("status")).toHaveTextContent("Exposure recorded")
   })
 
+  it("opens a selected node's details in the side drawer and closes them with the selection", async () => {
+    stubApi()
+    render(<Home />)
+    await screen.findByRole("region", { name: "Exposure" })
+
+    const nodes = screen.getByRole("list", { name: "Radar nodes" })
+    fireEvent.click(within(nodes).getByRole("button", { name: /Belem Sentinel USDC/ }))
+
+    const drawer = screen.getByRole("complementary", { name: "Node details" })
+    expect(within(drawer).getByRole("region", { name: "Selected radar entity" })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Hide details" })).toHaveAttribute("aria-expanded", "true")
+    // One drawer tab at a time: the exposure form is hidden (and kept).
+    expect(screen.queryByRole("region", { name: "Exposure" })).not.toBeInTheDocument()
+
+    fireEvent.click(within(drawer).getByRole("button", { name: "Close entity details" }))
+    expect(screen.queryByRole("complementary", { name: "Node details" })).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Details" })).toHaveAttribute("aria-expanded", "false")
+  })
+
+  it("resizes the side drawer from its edge and remembers the width", async () => {
+    window.localStorage.removeItem("risk0.sidePanelWidth")
+    stubApi()
+    const { unmount } = render(<Home />)
+    await screen.findByRole("region", { name: "Exposure" })
+
+    const handle = screen.getByRole("separator", { name: "Resize side panel" })
+    expect(handle).toHaveAttribute("aria-valuenow", "352")
+    fireEvent.keyDown(handle, { key: "ArrowLeft" })
+    expect(handle).toHaveAttribute("aria-valuenow", "376")
+    expect(handle.parentElement).toHaveStyle({ width: "376px" })
+    fireEvent.keyDown(handle, { key: "Home" })
+    expect(handle).toHaveAttribute("aria-valuenow", "288")
+    fireEvent.keyDown(handle, { key: "ArrowRight" })
+    expect(handle).toHaveAttribute("aria-valuenow", "288")
+
+    fireEvent.keyDown(handle, { key: "ArrowLeft" })
+    expect(window.localStorage.getItem("risk0.sidePanelWidth")).toBe("312")
+    unmount()
+
+    render(<Home />)
+    await screen.findByRole("region", { name: "Exposure" })
+    expect(screen.getByRole("separator", { name: "Resize side panel" })).toHaveAttribute("aria-valuenow", "312")
+    window.localStorage.removeItem("risk0.sidePanelWidth")
+  })
+
   it("shows that no active incident reaches a recorded exposure", async () => {
     stubApi()
     render(<Home />)

@@ -9,6 +9,7 @@ import { CatalogSelector, canAnalyze } from "../components/catalog-selector"
 import { DataQualityPanel } from "../components/data-quality"
 import { ExposureImpactPanel } from "../components/exposure-impact"
 import { ExposureRail } from "../components/exposure-rail"
+import { PanelResizer } from "../components/panel-resizer"
 import { IncidentRail } from "../components/incident-rail"
 import { NotificationCenter } from "../components/notification-center"
 import { PositionForm } from "../components/position-form"
@@ -61,6 +62,25 @@ const RADAR_REFRESH_DELAY_MS = 250
 
 // Below this width the floating panels become near-full-width overlays.
 const NARROW_VIEWPORT_QUERY = "(max-width: 48rem)"
+
+// The right-hand drawer's width (px): adjustable, remembered per browser.
+const PANEL_WIDTH_KEY = "risk0.sidePanelWidth"
+const PANEL_WIDTH_DEFAULT = 352
+const PANEL_WIDTH_MIN = 288
+const PANEL_WIDTH_MAX = 960
+// The drawer never covers more than this share of the canvas.
+const PANEL_MAX_CANVAS_SHARE = 0.8
+
+type SidePanel = "exposure" | "incidents" | "details"
+
+function readStoredPanelWidth(): number | null {
+  try {
+    const value = Number(window.localStorage.getItem(PANEL_WIDTH_KEY))
+    return Number.isFinite(value) && value >= PANEL_WIDTH_MIN ? value : null
+  } catch {
+    return null
+  }
+}
 
 const HEALTH_MARKERS: Record<HealthStatus, string> = {
   HEALTHY: "✓",
@@ -117,12 +137,18 @@ export default function Home() {
   const [radarGraph, setRadarGraph] = useState<RadarGraphResponse | null>(null)
   const [radarError, setRadarError] = useState<LoadError | null>(null)
   const [selectedIncident, setSelectedIncident] = useState<IncidentGraphResponse | null>(null)
-  // The exposure and incident panels share the canvas's right edge, which is too
-  // short for both (a long incident list would squeeze the form away), so at
-  // most one is open. Both stay mounted while hidden so form values and list
-  // state survive.
-  const [exposureOpen, setExposureOpen] = useState(true)
-  const [incidentsOpen, setIncidentsOpen] = useState(false)
+  // Exposure, incidents, and the selected node's details share one drawer on the
+  // canvas's right edge, too short for more than one (a long incident list would
+  // squeeze the form away), so one tab is open at a time. All stay mounted while
+  // hidden so form values and list state survive.
+  const [openPanel, setOpenPanel] = useState<SidePanel | null>("exposure")
+  const exposureOpen = openPanel === "exposure"
+  const incidentsOpen = openPanel === "incidents"
+  const detailsOpen = openPanel === "details"
+  const [panelWidth, setPanelWidth] = useState(PANEL_WIDTH_DEFAULT)
+  const [narrowViewport, setNarrowViewport] = useState(false)
+  // Drawer element the graph portals the selected node's details into.
+  const [detailSlot, setDetailSlot] = useState<HTMLDivElement | null>(null)
   // Canvas overlay the panels are portalled into (a state setter, so stable for the memoized graph).
   const [panelSlot, setPanelSlot] = useState<HTMLDivElement | null>(null)
   const [selectedRadarEntityId, setSelectedRadarEntityId] = useState<string | null>(null)
@@ -144,17 +170,38 @@ export default function Home() {
 
   // Narrow screens start graph-first: a near-full-width panel would hide the graph.
   useEffect(() => {
-    if (typeof window !== "undefined" && window.matchMedia?.(NARROW_VIEWPORT_QUERY).matches) setExposureOpen(false)
+    if (typeof window === "undefined") return
+    const narrow = window.matchMedia?.(NARROW_VIEWPORT_QUERY).matches ?? false
+    setNarrowViewport(narrow)
+    if (narrow) setOpenPanel(null)
+    const stored = readStoredPanelWidth()
+    if (stored !== null) setPanelWidth(stored)
   }, [])
 
-  function toggleExposure() {
-    if (!exposureOpen) setIncidentsOpen(false)
-    setExposureOpen(!exposureOpen)
+  function togglePanel(panel: SidePanel) {
+    setOpenPanel((current) => (current === panel ? null : panel))
   }
 
-  function toggleIncidents() {
-    if (!incidentsOpen) setExposureOpen(false)
-    setIncidentsOpen(!incidentsOpen)
+  // Selecting a node shows its details in the drawer; clearing it closes them.
+  // Setters only, so the memoized graph keeps a stable callback.
+  const selectRadarEntity = useCallback((entityId: string | null) => {
+    setSelectedRadarEntityId(entityId)
+    setOpenPanel((current) => (entityId !== null ? "details" : current === "details" ? null : current))
+  }, [])
+
+  // A canvas width of 0 means not laid out (hidden view): fall back to the absolute bound.
+  const canvasWidth = panelSlot?.parentElement?.clientWidth || null
+  const panelMaximum = canvasWidth === null
+    ? PANEL_WIDTH_MAX
+    : Math.max(PANEL_WIDTH_MIN, Math.min(PANEL_WIDTH_MAX, Math.floor(canvasWidth * PANEL_MAX_CANVAS_SHARE)))
+  const shownPanelWidth = Math.min(panelWidth, panelMaximum)
+
+  function commitPanelWidth(width: number) {
+    try {
+      window.localStorage.setItem(PANEL_WIDTH_KEY, String(width))
+    } catch {
+      // Storage unavailable (private window): the width still applies for this visit.
+    }
   }
 
   function placeFloatingPanels(panels: ReactNode) {
@@ -415,10 +462,10 @@ export default function Home() {
   }, [catalogByRadarEntity, selectEntry, selectedId])
 
   const focusRadarEntity = useCallback((entityId: string) => {
-    setSelectedRadarEntityId(entityId)
+    selectRadarEntity(entityId)
     setActiveCategory("graph")
     focusHeading("radar-heading")
-  }, [])
+  }, [selectRadarEntity])
 
   // The analyzed entry's radar entity, when the radar has it.
   const analysisRadarEntityId = entry
@@ -489,7 +536,7 @@ export default function Home() {
                 selectedIncident={selectedIncident?.incident ?? null}
                 impacts={displayedImpacts}
                 selectedEntityId={selectedRadarEntityId}
-                onSelectEntity={setSelectedRadarEntityId}
+                onSelectEntity={selectRadarEntity}
                 analyzableEntityIds={analyzableEntityIds}
                 onAnalyzeEntity={analyzeRadarEntity}
                 pinnedEntityIds={displayedPinnedEntityIds}
@@ -497,16 +544,30 @@ export default function Home() {
                 loadingNeighboursId={loadingNeighboursId}
                 onShowNeighbours={showNeighbours}
                 overlayRef={setPanelSlot}
+                detailContainer={detailSlot}
               />
               {/* Over the canvas when it is drawn; in page flow otherwise (empty radar). */}
-              {placeFloatingPanels(<div className="floating-panels">
+              {placeFloatingPanels(<div
+                className="floating-panels"
+                style={narrowViewport ? undefined : { width: shownPanelWidth }}
+              >
+                {openPanel !== null && !narrowViewport ? (
+                  <PanelResizer
+                    width={shownPanelWidth}
+                    minimum={PANEL_WIDTH_MIN}
+                    maximum={panelMaximum}
+                    controls={`${openPanel === "incidents" ? "incident-drawer" : openPanel === "details" ? "entity-detail" : "exposure"}-panel`}
+                    onResize={setPanelWidth}
+                    onCommit={commitPanelWidth}
+                  />
+                ) : null}
                 <div className="floating-panels__launchers">
                   <button
                     type="button"
                     className="floating-panels__launcher"
                     aria-expanded={exposureOpen}
                     aria-controls="exposure-panel"
-                    onClick={toggleExposure}
+                    onClick={() => togglePanel("exposure")}
                   >
                     {exposureOpen ? "Hide exposure" : "Exposure"}
                   </button>
@@ -515,9 +576,18 @@ export default function Home() {
                     className="floating-panels__launcher"
                     aria-expanded={incidentsOpen}
                     aria-controls="incident-drawer-panel"
-                    onClick={toggleIncidents}
+                    onClick={() => togglePanel("incidents")}
                   >
                     {incidentsOpen ? "Hide incidents" : `Incidents (${radarGraph.active_incidents.length})`}
+                  </button>
+                  <button
+                    type="button"
+                    className="floating-panels__launcher"
+                    aria-expanded={detailsOpen}
+                    aria-controls="entity-detail-panel"
+                    onClick={() => togglePanel("details")}
+                  >
+                    {detailsOpen ? "Hide details" : "Details"}
                   </button>
                 </div>
                 <div id="exposure-panel" className="floating-panel" hidden={!exposureOpen}>
@@ -542,6 +612,12 @@ export default function Home() {
                     selectedIncidentId={selectedIncident?.incident.incident_id ?? null}
                     onSelectIncident={focusIncident}
                   />
+                </aside>
+                <aside id="entity-detail-panel" className="floating-panel" aria-label="Node details" hidden={!detailsOpen}>
+                  <div ref={setDetailSlot} />
+                  {selectedRadarEntityId === null ? (
+                    <p className="floating-panel__empty">Select a node on the graph to see its details and how its health was computed.</p>
+                  ) : null}
                 </aside>
               </div>)}
             </div>

@@ -214,6 +214,26 @@ describe("RadarGraph", () => {
     expect(within(list).getByText(/allocated to/).closest("li")).toHaveAttribute("data-incident-path", "true")
   })
 
+  it("renders the selected entity's details into a supplied container", () => {
+    const container = document.createElement("div")
+    container.setAttribute("data-testid", "drawer")
+    document.body.appendChild(container)
+    render(<RadarGraph graph={graph} healthStates={healthStates} selectedEntityId="vault:1:catalog" onSelectEntity={vi.fn()} detailContainer={container} />)
+
+    expect(within(container).getByRole("region", { name: "Selected radar entity" })).toBeInTheDocument()
+    container.remove()
+  })
+
+  it("sizes the canvas to fill the viewport", () => {
+    // jsdom has no layout: report one client rect so the canvas counts as shown.
+    const rects = vi.spyOn(HTMLElement.prototype, "getClientRects").mockReturnValue([{}] as unknown as DOMRectList)
+    render(<RadarGraph graph={graph} healthStates={healthStates} />)
+    rects.mockRestore()
+
+    const canvas = document.querySelector<HTMLElement>(".radar-graph__canvas")
+    expect(canvas?.style.height).toMatch(/^\d+px$/)
+  })
+
   it("selects graph entities through accessible node controls", () => {
     const onSelectEntity = vi.fn()
     render(<RadarGraph graph={graph} healthStates={healthStates} onSelectEntity={onSelectEntity} />)

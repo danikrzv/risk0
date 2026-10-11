@@ -1,0 +1,217 @@
+[
+ {
+  "date": 1632873600,
+  "name": "Compound V2",
+  "classification": "Token & Share Accounting",
+  "technique": "Arithmetic Error",
+  "amount": 147000000,
+  "chain": [
+   "Ethereum"
+  ],
+  "bridgeHack": false,
+  "targetType": "DeFi Protocol",
+  "source": "",
+  "returnedFunds": null,
+  "defillamaId": "114",
+  "parentProtocolId": "parent#compound-finance",
+  "language": "Solidity"
+ },
+ {
+  "date": 1710892800,
+  "name": "Dolomite",
+  "classification": "Access Control",
+  "technique": "Improper Access Control",
+  "amount": 1800000,
+  "chain": [
+   "Ethereum"
+  ],
+  "bridgeHack": false,
+  "targetType": "DeFi Protocol",
+  "source": "",
+  "returnedFunds": null,
+  "defillamaId": null,
+  "language": "Solidity"
+ },
+ {
+  "date": 1773532800,
+  "name": "Venus Core Pool",
+  "classification": "Token & Share Accounting",
+  "technique": "Donation Attack",
+  "amount": 3700000,
+  "chain": [
+   "BSC"
+  ],
+  "bridgeHack": false,
+  "targetType": "DeFi Protocol",
+  "source": "",
+  "returnedFunds": null,
+  "defillamaId": "212",
+  "parentProtocolId": "parent#venus-finance",
+  "language": "Solidity"
+ },
+ {
+  "date": 1743206400,
+  "name": "Venus Core Pool",
+  "classification": "Token & Share Accounting",
+  "technique": "Donation Attack",
+  "amount": 902000,
+  "chain": [
+   "zkSync Era"
+  ],
+  "bridgeHack": false,
+  "targetType": "DeFi Protocol",
+  "source": "",
+  "returnedFunds": null,
+  "defillamaId": "212",
+  "parentProtocolId": "parent#venus-finance",
+  "language": "Solidity"
+ },
+ {
+  "date": 1702252800,
+  "name": "Venus Protocol",
+  "classification": "Oracle Manipulation",
+  "technique": "Oracle Misconfiguration",
+  "amount": 274000,
+  "chain": [
+   "BSC"
+  ],
+  "bridgeHack": false,
+  "targetType": "DeFi Protocol",
+  "source": "",
+  "returnedFunds": null,
+  "defillamaId": null,
+  "language": "Solidity"
+ },
+ {
+  "date": 1621296000,
+  "name": "Venus Protocol",
+  "classification": "Oracle Manipulation",
+  "technique": "Spot Price Manipulation",
+  "amount": 100000000,
+  "chain": [
+   "BSC"
+  ],
+  "bridgeHack": false,
+  "targetType": "DeFi Protocol",
+  "source": "",
+  "returnedFunds": null,
+  "defillamaId": null,
+  "language": "Solidity"
+ },
+ {
+  "date": 1652313600,
+  "name": "Venus Protocol",
+  "classification": "Oracle Manipulation",
+  "technique": "Stale Oracle Price",
+  "amount": 11200000,
+  "chain": [
+   "Binance Smart Chain"
+  ],
+  "bridgeHack": false,
+  "targetType": "DeFi Protocol",
+  "source": "",
+  "returnedFunds": null,
+  "defillamaId": null,
+  "language": "Solidity"
+ },
+ {
+  "date": 1678665600,
+  "name": "Euler V1",
+  "classification": "Token & Share Accounting",
+  "technique": "Donation Attack",
+  "amount": 197000000,
+  "chain": [
+   "Ethereum"
+  ],
+  "bridgeHack": false,
+  "targetType": "DeFi Protocol",
+  "source": "",
+  "returnedFunds": 240000000,
+  "defillamaId": "1183",
+  "parentProtocolId": "parent#euler",
+  "language": "Solidity"
+ },
+ {
+  "date": 1728864000,
+  "name": "LeadBlock's Morpho Blue Market",
+  "classification": "Oracle Manipulation",
+  "technique": "Oracle Misconfiguration",
+  "amount": 250000,
+  "chain": [
+   "Ethereum"
+  ],
+  "bridgeHack": false,
+  "targetType": "DeFi Protocol",
+  "source": "",
+  "returnedFunds": null,
+  "defillamaId": null,
+  "language": "Solidity"
+ },
+ {
+  "date": 1583971200,
+  "name": "MakerDAO",
+  "classification": "Oracle Manipulation",
+  "technique": "Stale Oracle Price",
+  "amount": 8320000,
+  "chain": [
+   "Ethereum"
+  ],
+  "bridgeHack": false,
+  "targetType": "DeFi Protocol",
+  "source": "",
+  "returnedFunds": null,
+  "defillamaId": null,
+  "language": "Solidity"
+ },
+ {
+  "date": 1773273600,
+  "name": "Aave V3",
+  "classification": "Oracle Manipulation",
+  "technique": "Oracle Misconfiguration",
+  "amount": 862000,
+  "chain": [
+   "Ethereum"
+  ],
+  "bridgeHack": false,
+  "targetType": "DeFi Protocol",
+  "source": "",
+  "returnedFunds": 862000,
+  "defillamaId": "1599",
+  "parentProtocolId": "parent#aave",
+  "language": "Solidity"
+ },
+ {
+  "date": 1662076800,
+  "name": "Bad Guys by RPF",
+  "classification": "Token & Share Accounting",
+  "technique": "Incorrect Share Accounting",
+  "amount": null,
+  "chain": [
+   "Ethereum"
+  ],
+  "bridgeHack": false,
+  "targetType": "NFTfi",
+  "source": "",
+  "returnedFunds": null,
+  "defillamaId": null,
+  "language": "Solidity"
+ },
+ {
+  "date": 1699574400,
+  "name": "Poloniex",
+  "classification": "Social Engineering",
+  "technique": "Malware",
+  "amount": 126000000,
+  "chain": [
+   "Tron",
+   "Ethereum",
+   "Bitcoin"
+  ],
+  "bridgeHack": false,
+  "targetType": "CEX",
+  "source": "",
+  "returnedFunds": null,
+  "defillamaId": null,
+  "language": null
+ }
+]

@@ -39,7 +39,8 @@ test("Belem RWA EURCV lender with default scenarios is a fixture-defined STAY", 
   await expect(graph.getByRole("heading", { name: "Dependency graph" })).toBeVisible()
   const nodes = graph.getByRole("list", { name: "Dependency nodes" })
   await expect(nodes.getByRole("button", { name: /\(position\)$/ })).toHaveCount(1)
-  await expect(nodes.getByRole("button", { name: /\(protocol\)$/ })).toHaveCount(1)
+  // Morpho is the one deployment protocol; issuer look-through adds issuer protocol nodes.
+  await expect(nodes.getByRole("button", { name: "Morpho (protocol)", exact: true })).toHaveCount(1)
   const vault = nodes.getByRole("button", { name: /Belem RWA EURCV.*\(vault\)$/ })
   await vault.click()
   await expect(vault).toHaveAttribute("aria-pressed", "true")
@@ -61,7 +62,9 @@ test("Belem RWA EURCV lender with default scenarios is a fixture-defined STAY", 
   await expect(book.getByText(/^Book analyzed: \d+ STAY, \d+ EXIT, \d+ UNAVAILABLE\.$/)).toBeVisible()
   const ranked = book.getByRole("table", { name: /Pockets ranked by expected loss minus exit cost/ })
   await expect(ranked.locator("tbody tr")).toHaveCount(10)
-  await expect(ranked.locator('tbody tr[data-decision="STAY"]').first()).toContainText("Belem RWA EURCV")
+  // Belem stays; it is no longer the first STAY since lenders are charged bad debt, not the
+  // collateral fall, which lowers the other lender pockets' expected loss too.
+  await expect(ranked.locator('tbody tr[data-decision="STAY"]', { hasText: "Belem RWA EURCV" })).toHaveCount(1)
   // UNAVAILABLE pockets are never styled as safe.
   for (const marker of await ranked.locator('tr[data-decision="UNAVAILABLE"] [data-tone]').all()) {
     await expect(marker).toHaveAttribute("data-tone", "unavailable")

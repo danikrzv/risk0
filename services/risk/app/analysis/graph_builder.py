@@ -32,6 +32,11 @@ allocated-market details, oracle health, pool depth, a liquidity figure that
 cannot be expressed in the numeraire) is reported in `completeness_warnings`
 and never substituted.
 
+Protocol TVL (optional, DeFiLlama): the Morpho node carries `tvl_usd`,
+`chain_tvl_usd`, `chain_borrowed_usd`, `chain_defi_tvl_usd`, `chain_tvl_share`,
+`entity_tvl_usd` and `entity_share_of_protocol_tvl` (see `app.domain.protocol`),
+plus a concentration warning when a share reaches its named threshold.
+
 Metric keys read by `app.analysis.scenario_engine`: `symbol` on asset nodes,
 `lltv` on market nodes, `available_liquidity` (position-numeraire units) on
 vault and market nodes, `liquidity_depth` on pool nodes, and `age_seconds` and
@@ -64,6 +69,12 @@ from app.domain.graph import (
     GraphConstructionError,
     GraphContext,
     node_id,
+)
+from app.domain.protocol import (
+    ENTITY_PROTOCOL_TVL_SHARE_WARNING,
+    PROTOCOL_CHAIN_TVL_SHARE_WARNING,
+    SHARE_QUANTUM,
+    ProtocolTvlSnapshot,
 )
 from app.domain.position import (
     USD,
@@ -250,14 +261,25 @@ class _Builder:
         )
 
     def _add_protocol_and_chain(self) -> str:
+        metrics: dict[str, MetricValue] = {"name": "Morpho Blue", "protocol": MORPHO_KEY}
+        provenance, freshness, observed_at = (
+            CATALOG_PROVENANCE,
+            FreshnessStatus.FRESH,
+            self.generated_at,
+        )
+        tvl = self.context.protocol_tvl
+        if tvl is not None:
+            metrics.update(self._protocol_tvl_metrics(tvl.value))
+            provenance = f"{CATALOG_PROVENANCE}; TVL: {public_source(tvl.source)}"
+            freshness, observed_at = tvl.freshness, tvl.fetched_at
         morpho_id = self._add_node(
             RiskNodeType.PROTOCOL,
             MORPHO_KEY,
             "Morpho",
-            {"name": "Morpho Blue", "protocol": MORPHO_KEY},
-            provenance=CATALOG_PROVENANCE,
-            freshness=FreshnessStatus.FRESH,
-            observed_at=self.generated_at,
+            metrics,
+            provenance=provenance,
+            freshness=freshness,
+            observed_at=observed_at,
         )
         ethereum_id = self._add_node(
             RiskNodeType.CHAIN,
@@ -270,6 +292,43 @@ class _Builder:
         )
         self._add_edge(morpho_id, ethereum_id, RiskEdgeType.DEPLOYED_ON)
         return morpho_id
+
+    def _protocol_tvl_metrics(self, tvl: ProtocolTvlSnapshot) -> dict[str, MetricValue]:
+        """TVL concentration of the protocol on its chain and of the analysed entity in it."""
+        if self.context.market is not None:
+            entity_usd = self.context.market.value.total_supply_usd
+        elif self.context.vault is not None:
+            entity_usd = self.context.vault.value.total_assets_usd
+        else:
+            entity_usd = None
+        gross = tvl.chain_gross_deposits_usd
+        entity_share = None
+        if entity_usd is not None and gross is not None and gross > ZERO:
+            entity_share = (entity_usd / gross).quantize(SHARE_QUANTUM)
+        share = tvl.chain_tvl_share
+        if share is not None and share >= PROTOCOL_CHAIN_TVL_SHARE_WARNING:
+            self._warn(
+                f"TVL concentration: {tvl.label} holds {_percent(share)} of {tvl.chain} DeFi TVL "
+                f"(DeFiLlama; threshold {_percent(PROTOCOL_CHAIN_TVL_SHARE_WARNING)}), so a "
+                "protocol-wide impairment would also reach the collateral and exit markets "
+                "this position depends on."
+            )
+        if entity_share is not None and entity_share >= ENTITY_PROTOCOL_TVL_SHARE_WARNING:
+            self._warn(
+                f"TVL concentration: {self.context.entry.name} is {_percent(entity_share)} of "
+                f"{tvl.label}'s gross {tvl.chain} deposits (threshold "
+                f"{_percent(ENTITY_PROTOCOL_TVL_SHARE_WARNING)})."
+            )
+        return {
+            "tvl_usd": tvl.tvl_usd,
+            "tvl_chain": tvl.chain,
+            "chain_tvl_usd": tvl.chain_tvl_usd,
+            "chain_borrowed_usd": tvl.chain_borrowed_usd,
+            "chain_defi_tvl_usd": tvl.chain_defi_tvl_usd,
+            "chain_tvl_share": share,
+            "entity_tvl_usd": entity_usd,
+            "entity_share_of_protocol_tvl": entity_share,
+        }
 
     def _add_market(
         self,
@@ -680,6 +739,10 @@ def public_source(source: str) -> str:
         return source
     host = parts.netloc.rpartition("@")[2]
     return urlunsplit((parts.scheme, host, parts.path, "", ""))
+
+
+def _percent(share: Decimal) -> str:
+    return f"{(share * HUNDRED).quantize(Decimal('0.1')):f}%"
 
 
 def _pool_label(pool: PoolSnapshot) -> str:

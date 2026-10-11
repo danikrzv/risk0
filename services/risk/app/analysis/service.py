@@ -34,7 +34,11 @@ Probabilities (`HybridProbabilityProvider`):
   USDC -> USDC/USD, WETH -> ETH/USD. Assets without a feed (EURCV has no EURCV/EUR
   feed, wstETH's risk is its ETH ratio, WBTC has no BTC feed in the catalog) make
   the estimate UNAVAILABLE; it is never approximated by an unrelated feed.
-- protocol impairment: model-estimated from protocol evidence (Task 8).
+- protocol impairment: model-estimated from protocol evidence (Task 8) and the
+  empirical DeFiLlama base rate for large lending protocols
+  (`app.evidence.defillama`). With both, the higher estimate is used
+  (`combine_conservative`); with only the base rate (no DeFiScan or DeFiSafety
+  review of Morpho exists), it is used alone at LOW confidence.
 - oracle failure and liquidity collapse: UNAVAILABLE. Hourly history cannot
   resolve the 30-minute staleness threshold, and no comparison-market or pool
   depth history is available. Live oracle breaches still act as hard triggers.
@@ -100,6 +104,7 @@ from app.contracts.models import (
 from app.domain.exit import NUMERAIRE_PLACES, ExitQuote, GasAssumptions, QuoteRequest
 from app.domain.graph import GraphConstructionError, GraphContext, OracleObservation, node_id
 from app.domain.position import PositionValidationError, ValidatedPosition, validate_position
+from app.domain.protocol import ProtocolTvlSnapshot
 from app.domain.scenario import (
     ORACLE_DEVIATION_THRESHOLD,
     ORACLE_STALE_THRESHOLD_SECONDS,
@@ -157,6 +162,9 @@ CHAINLINK_MEMO_TTL = timedelta(seconds=60)
 # Spec § 9: risk evidence refreshes daily.
 DEFISCAN_TTL = timedelta(days=1)
 DEFISCAN_FAILURE_TTL = timedelta(minutes=5)
+PROTOCOL_TVL_UNAVAILABLE = (
+    "Morpho TVL concentration is unknown: DeFiLlama TVL data is unavailable."
+)
 
 SNAPSHOT_SOURCE = "Morpho entity snapshot"
 ORACLE_SOURCE = "live oracle"
@@ -256,7 +264,16 @@ class EmpiricalHistory(Protocol):
 
 
 class ProtocolEvidenceSource(Protocol):
+    """Protocol evidence scores. A source may also offer an empirical base rate as
+    `impairment_base_rate(protocol, *, now) -> ProbabilityEstimate`."""
+
     def evidence(self, protocol: str, *, now: datetime) -> CombinedEvidence: ...
+
+
+class ProtocolTvlProvider(Protocol):
+    def protocol_tvl(
+        self, protocol: str, *, now: datetime
+    ) -> DataEnvelope[ProtocolTvlSnapshot] | None: ...
 
 
 class NoIncidents:
@@ -293,7 +310,9 @@ class AnalysisService:
         incidents: IncidentProvider | None = None,
         engine: ScenarioEngine | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        protocol_tvl: ProtocolTvlProvider | None = None,
     ) -> None:
+        self._protocol_tvl = protocol_tvl
         self._catalog = catalog
         self._morpho = morpho
         self._probabilities = probabilities
@@ -512,6 +531,7 @@ class AnalysisService:
             allocations=snapshots.allocations,
             allocation_markets=snapshots.allocation_markets,
             oracles=oracles,
+            protocol_tvl=self._protocol_tvl_envelope(now),
         )
         try:
             graph = build_risk_graph(position, context, clock=lambda: now)
@@ -520,7 +540,19 @@ class AnalysisService:
             raise AnalysisProviderError(
                 "Provider data for this entry is inconsistent; analysis is unavailable."
             ) from None
+        if self._protocol_tvl is not None and context.protocol_tvl is None:
+            graph = _with_warning(graph, PROTOCOL_TVL_UNAVAILABLE)
         return _mark_unresolved_markets(graph, snapshots.unresolved_markets)
+
+    def _protocol_tvl_envelope(self, now: datetime) -> DataEnvelope[ProtocolTvlSnapshot] | None:
+        """Morpho TVL for the protocol node; a provider gap is a completeness warning, never fatal."""
+        if self._protocol_tvl is None:
+            return None
+        try:
+            return self._protocol_tvl.protocol_tvl(MORPHO_PROTOCOL, now=now)
+        except Exception as error:  # provider boundary: never leak provider text
+            logger.warning("protocol tvl unavailable: %s", type(error).__name__)
+            return None
 
     def _assess(
         self,
@@ -865,9 +897,51 @@ class HybridProbabilityProvider:
         from app.evidence.scoring import map_score_to_probability, score_evidence
 
         score = score_evidence(self._evidence.evidence(MORPHO_PROTOCOL, now=now))
+        scored = map_score_to_probability(score)
+        conflicts = tuple(score.quality.conflicts)
+        base_rate = getattr(self._evidence, "impairment_base_rate", None)
+        if base_rate is None:
+            return ProbabilityAssessment(scored, conflicts)
+        return combine_protocol_estimates(scored, base_rate(MORPHO_PROTOCOL, now=now), conflicts)
+
+
+def combine_protocol_estimates(
+    scored: ProbabilityEstimate,
+    base_rate: ProbabilityEstimate,
+    conflicts: tuple[DataConflict, ...] = (),
+) -> ProbabilityAssessment:
+    """Evidence-score estimate and empirical base rate for protocol impairment.
+
+    Both usable: the conservative merge of spec § 15. Only the base rate: it is
+    used alone at LOW confidence and the explanation says why the evidence score
+    is missing. Only the score: unchanged. Neither: UNAVAILABLE with both reasons.
+    """
+    if scored.central is not None and base_rate.central is not None:
+        merged = combine_conservative("probability:protocol-impairment", (scored, base_rate))
+        return ProbabilityAssessment(merged.estimate, (*conflicts, *merged.conflicts))
+    if base_rate.central is not None:
         return ProbabilityAssessment(
-            map_score_to_probability(score), tuple(score.quality.conflicts)
+            base_rate.model_copy(
+                update={
+                    "confidence": ConfidenceLevel.LOW,
+                    "explanation": (
+                        f"{base_rate.explanation} Used alone because protocol evidence "
+                        f"scores are unavailable: {scored.explanation}"
+                    ),
+                }
+            ),
+            conflicts,
         )
+    if scored.central is not None:
+        return ProbabilityAssessment(scored, conflicts)
+    return ProbabilityAssessment(
+        scored.model_copy(
+            update={
+                "explanation": f"{scored.explanation} Empirical base rate: {base_rate.explanation}"
+            }
+        ),
+        conflicts,
+    )
 
 
 def combine_conservative(
@@ -1043,6 +1117,14 @@ def _shocked_symbols(graph: RiskGraph, scenario: ScenarioId) -> tuple[str, ...]:
         if label.casefold() in wanted:
             symbols.setdefault(label.casefold(), label)
     return tuple(symbols[key] for key in sorted(symbols))
+
+
+def _with_warning(graph: RiskGraph, warning: str) -> RiskGraph:
+    if warning in graph.completeness_warnings:
+        return graph
+    return graph.model_copy(
+        update={"completeness_warnings": (*graph.completeness_warnings, warning)}
+    )
 
 
 def _mark_unresolved_markets(graph: RiskGraph, market_ids: Iterable[str]) -> RiskGraph:
@@ -1288,6 +1370,11 @@ class FileAndDefiScanEvidence:
     The bundle's own `retrieved_at` is kept, so scoring still sees its true age.
     An in-process cache is used because `EvidenceBundle` is a nested dataclass
     with no serializer for `SQLiteCache`.
+
+    With a `DefiLlamaClient`, it also offers `impairment_base_rate`: the empirical
+    annual rate of material exploits at large lending protocols
+    (`app.evidence.defillama`) as a 30-day probability. DeFiLlama data is cached
+    daily by the client; the computed estimate is memoized per data version.
     """
 
     def __init__(
@@ -1295,13 +1382,48 @@ class FileAndDefiScanEvidence:
         defisafety_path: Path,
         defiscan=None,
         *,
+        defillama=None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._path = defisafety_path
         self._defiscan = defiscan
+        self._defillama = defillama
         self._clock = clock
         self._reviews: dict[str, tuple[datetime, object]] = {}
+        self._base_rates: dict[tuple, ProbabilityEstimate] = {}
         self._lock = threading.Lock()
+
+    def impairment_base_rate(self, protocol: str, *, now: datetime) -> ProbabilityEstimate:
+        from app.evidence.defillama import base_rate_estimate, observation_window
+
+        if self._defillama is None:
+            return unavailable_estimate(now, "No DeFiLlama source is configured.")
+        try:
+            hacks = self._defillama.hacks()
+            protocols = self._defillama.protocols()
+        except Exception as error:  # provider boundary: never leak provider text
+            logger.warning("defillama unavailable: %s", type(error).__name__)
+            return unavailable_estimate(
+                now, "The DeFiLlama exploit and protocol data could not be retrieved."
+            )
+        key = (
+            protocol,
+            observation_window(now),
+            hacks.fetched_at,
+            hacks.freshness,
+            protocols.fetched_at,
+            protocols.freshness,
+        )
+        with self._lock:
+            cached = self._base_rates.get(key)
+        if cached is not None:
+            return cached
+        estimate = base_rate_estimate(protocol, hacks, protocols, now=now) or unavailable_estimate(
+            now, "DeFiLlama lists no lending protocol-years for the base rate."
+        )
+        with self._lock:
+            self._base_rates = {key: estimate}
+        return estimate
 
     def _review(self, protocol: str):
         """The cached review, a fresh one, or None after a (cached) failure."""
@@ -1342,3 +1464,28 @@ class FileAndDefiScanEvidence:
                     )
                 )
         return CombinedEvidence(protocol=protocol, bundles=tuple(bundles), evaluated_at=now)
+
+
+class DefiLlamaProtocolTvl:
+    """Protocol TVL and chain TVL share from DeFiLlama `/protocols` and `/v2/chains`."""
+
+    def __init__(self, client) -> None:
+        self._client = client
+
+    def protocol_tvl(
+        self, protocol: str, *, now: datetime
+    ) -> DataEnvelope[ProtocolTvlSnapshot] | None:
+        from app.evidence.defillama import protocol_tvl_snapshot
+
+        protocols = self._client.protocols()
+        chains = self._client.chains()
+        snapshot = protocol_tvl_snapshot(protocol, protocols.value, chains.value)
+        if snapshot is None:
+            return None
+        order = (FreshnessStatus.FRESH, FreshnessStatus.STALE_USABLE, FreshnessStatus.EXPIRED)
+        return DataEnvelope[ProtocolTvlSnapshot](
+            value=snapshot,
+            source=f"{protocols.source}; {chains.source}",
+            fetched_at=min(protocols.fetched_at, chains.fetched_at),
+            freshness=max((protocols.freshness, chains.freshness), key=order.index),
+        )

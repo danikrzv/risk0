@@ -38,7 +38,9 @@ def build_default_analysis_service() -> AnalysisService:
     quotes, gas, and history become UNAVAILABLE, and with no live oracle provider
     every graph oracle is missing critical data, so the recommendation is
     UNAVAILABLE (never STAY) instead of failing the request."""
+    from app.adapters.defillama import DefiLlamaClient
     from app.adapters.defiscan import DefiScanClient
+    from app.analysis.service import DefiLlamaProtocolTvl
     from app.config import Settings
 
     catalog_path = Path(
@@ -52,7 +54,8 @@ def build_default_analysis_service() -> AnalysisService:
     evidence_path = REPOSITORY_ROOT / "data" / "evidence" / "defisafety.ethereum.json"
     cache = SQLiteCache(cache_path)
     morpho = MorphoClient(os.environ.get("MORPHO_API_URL", DEFAULT_BASE_URL), cache=cache)
-    evidence = FileAndDefiScanEvidence(evidence_path, DefiScanClient())
+    defillama = DefiLlamaClient(cache=cache)
+    evidence = FileAndDefiScanEvidence(evidence_path, DefiScanClient(), defillama=defillama)
 
     try:
         settings = Settings.from_environment()
@@ -83,6 +86,7 @@ def build_default_analysis_service() -> AnalysisService:
         gas=gas,
         prices=prices,
         oracles=oracles,
+        protocol_tvl=DefiLlamaProtocolTvl(defillama),
     )
 
 

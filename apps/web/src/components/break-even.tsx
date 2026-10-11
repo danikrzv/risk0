@@ -1,6 +1,6 @@
 import type { BreakEven, BreakEvenPoint } from "@risk0/contracts"
 
-import { compareDecimal, formatPercent } from "../lib/format"
+import { compareDecimal, formatPercent, formatQuantity } from "../lib/format"
 import { scenarioName } from "./scenario-panel"
 
 /**
@@ -51,13 +51,33 @@ export function breakEvenSummary(breakEven: BreakEven | null | undefined): strin
     return `No probability of ${name} makes EXIT cheaper than staying; ${estimate}.`
   }
   if (compareDecimal(threshold, "0") <= 0) {
-    return `EXIT is optimal at any non-zero probability of ${name}: the other scenarios already reach the exit cost; ${estimate}.`
+    return `EXIT is optimal at any non-zero probability of ${name}: the other scenarios already reach the cost of exiting; ${estimate}.`
   }
   return `EXIT becomes optimal above ${formatProbability(threshold)} probability of ${name}; ${estimate}.`
 }
 
-export function BreakEvenLine({ breakEven }: { breakEven: BreakEven | null | undefined }) {
+/**
+ * The cost the thresholds use: exit cost plus the yield exiting gives up.
+ * Null for older responses without carry, or when the exit cost is unknown.
+ */
+export function breakEvenCostText(breakEven: BreakEven | null | undefined, numeraire: string): string | null {
+  if (!breakEven?.probability_dependent) return null
+  const total = breakEven.cost_of_exiting ?? null
+  const forgone = breakEven.forgone_yield ?? null
+  if (total === null || forgone === null || breakEven.exit_cost === null) return null
+  const amount = (value: string) => `${formatQuantity(value)} ${numeraire}`
+  return `Break-even against exit cost ${amount(breakEven.exit_cost)} + forgone yield ${amount(forgone)} = ${amount(total)}.`
+}
+
+export function BreakEvenLine({
+  breakEven,
+  numeraire = "",
+}: {
+  breakEven: BreakEven | null | undefined
+  numeraire?: string
+}) {
   const summary = breakEvenSummary(breakEven)
   if (!summary) return null
-  return <p className="break-even">{summary}</p>
+  const cost = breakEvenCostText(breakEven, numeraire)
+  return <p className="break-even">{cost ? `${summary} ${cost}` : summary}</p>
 }

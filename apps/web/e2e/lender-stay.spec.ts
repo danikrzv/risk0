@@ -30,6 +30,9 @@ test("Belem RWA EURCV lender with default scenarios is a fixture-defined STAY", 
   await expect(card).toContainText("Expected 30-day loss does not exceed the cost of exiting now.")
   await expect(card).toContainText("No hard safety trigger fired.")
   await expect(card).toContainText(/expected 30-day staying loss [0-9.]+ EURCV .* versus exit cost now [0-9.]+ EURCV/)
+  // Exiting also gives up the yield; the recorded fixtures carry no APY, so it counts as zero.
+  await expect(card).toContainText(/vs exit cost [0-9.]+ EURCV \+ forgone yield 0 EURCV \(APY unknown, counted as zero\)/)
+  await expect(card.getByRole("list", { name: "Yield warnings" })).toContainText("The position APY is unknown")
   await expect(card).toContainText("Confidence:")
   // Break-even: how far the estimate is from flipping the decision.
   await expect(card.locator(".break-even")).toContainText(/EXIT becomes optimal above [0-9.]+% probability of .+; current estimate [0-9.]+%/)
@@ -63,6 +66,7 @@ test("Belem RWA EURCV lender with default scenarios is a fixture-defined STAY", 
   await expect(book.getByText(/^Book analyzed: \d+ STAY, \d+ EXIT, \d+ UNAVAILABLE\.$/)).toBeVisible()
   const ranked = book.getByRole("table", { name: /Pockets ranked by expected loss minus exit cost/ })
   await expect(ranked.locator("tbody tr")).toHaveCount(10)
+  await expect(ranked.getByRole("columnheader", { name: "Forgone 30-day yield" })).toBeVisible()
   await expect(ranked.locator('tbody tr[data-decision="STAY"]').first()).toContainText("Belem RWA EURCV")
   // UNAVAILABLE pockets are never styled as safe.
   for (const marker of await ranked.locator('tr[data-decision="UNAVAILABLE"] [data-tone]').all()) {

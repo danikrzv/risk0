@@ -260,7 +260,7 @@ function BookResult({ result, names }: { result: BookResponse; names: Map<string
       </p>
       <div className="book__table-wrap">
         <table className="components book__table">
-          <caption>Pockets ranked by expected loss minus exit cost (largest first)</caption>
+          <caption>Pockets ranked by expected loss minus exit cost and forgone yield (largest first)</caption>
           <thead>
             <tr>
               <th scope="col">Rank</th>
@@ -269,6 +269,7 @@ function BookResult({ result, names }: { result: BookResponse; names: Map<string
               <th scope="col">Decision</th>
               <th scope="col">Expected 30-day loss</th>
               <th scope="col">Exit cost</th>
+              <th scope="col">Forgone 30-day yield</th>
               <th scope="col">Break-even vs estimate</th>
             </tr>
           </thead>
@@ -294,6 +295,7 @@ function BookResult({ result, names }: { result: BookResponse; names: Map<string
                   </td>
                   <AmountCell amount={pocket.expected_loss} numeraire={pocket.numeraire} />
                   <AmountCell amount={pocket.exit_cost} numeraire={pocket.numeraire} />
+                  <AmountCell amount={pocket.forgone_yield ?? null} numeraire={pocket.numeraire} />
                   <td>{breakEvenCompact(pocket)}</td>
                 </tr>
               )
@@ -315,6 +317,9 @@ function BookResult({ result, names }: { result: BookResponse; names: Map<string
         <tbody>
           <TotalRow label="Expected loss if staying in every pocket" total={totals.expected_loss_staying} numeraire={totals.numeraire} />
           <TotalRow label="Cost of exiting the EXIT pockets" total={totals.exit_cost_exit_pockets} numeraire={totals.numeraire} />
+          {totals.forgone_yield_exit_pockets && (
+            <TotalRow label="Yield forgone by exiting the EXIT pockets" total={totals.forgone_yield_exit_pockets} numeraire={totals.numeraire} />
+          )}
           <TotalRow label="Expected loss of the STAY pockets" total={totals.expected_loss_stay_pockets} numeraire={totals.numeraire} />
           <TotalRow label="Book cost following the recommendations" total={totals.recommended_cost} numeraire={totals.numeraire} />
           <TotalRow label="Expected saving versus staying everywhere" total={totals.net_benefit} numeraire={totals.numeraire} />

@@ -1,7 +1,7 @@
 import type { BreakEven, BreakEvenPoint } from "@risk0/contracts"
 import { describe, expect, it } from "vitest"
 
-import { breakEvenSummary, formatProbability } from "./break-even"
+import { breakEvenCostText, breakEvenSummary, formatProbability } from "./break-even"
 
 const point: BreakEvenPoint = {
   scenario_id: "collateral-shock",
@@ -81,5 +81,24 @@ describe("breakEvenSummary", () => {
     expect(breakEvenSummary(null)).toBeNull()
     expect(breakEvenSummary(undefined)).toBeNull()
     expect(breakEvenSummary(view({}, { dominant_scenario_id: null, points: [] }))).toContain("no break-even probability")
+  })
+})
+
+describe("breakEvenCostText", () => {
+  it("states the exit cost plus forgone yield the thresholds use", () => {
+    expect(breakEvenCostText(view({}, { forgone_yield: "300", cost_of_exiting: "305" }), "USDC")).toBe(
+      "Break-even against exit cost 5 USDC + forgone yield 300 USDC = 305 USDC.",
+    )
+  })
+
+  it("is absent without carry, with an unknown exit cost, or when a hard trigger fired", () => {
+    expect(breakEvenCostText(view(), "USDC")).toBeNull()
+    expect(breakEvenCostText(view({}, { exit_cost: null, forgone_yield: "300", cost_of_exiting: null }), "USDC")).toBeNull()
+    expect(
+      breakEvenCostText(
+        view({}, { probability_dependent: false, forgone_yield: "300", cost_of_exiting: "305" }),
+        "USDC",
+      ),
+    ).toBeNull()
   })
 })

@@ -384,7 +384,7 @@ export default function Home() {
     if (catalogId !== selectedId) selectEntry(catalogId)
     setActiveCategory("position-analysis")
     requestAnimationFrame(() => {
-      document.getElementById("position-analysis")?.scrollIntoView({ behavior: "smooth", block: "start" })
+      document.getElementById("position-analysis")?.scrollIntoView?.({ behavior: "smooth", block: "start" })
     })
     focusHeading("position-analysis-heading")
   }, [catalogByRadarEntity, selectEntry, selectedId])

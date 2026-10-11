@@ -11,6 +11,10 @@ dependencies while retaining the original lender/borrower analysis flow. Risk0:
 4. prices an exit now through Uniswap (slippage, fees, gas, price impact);
 5. returns an explainable `STAY`, `EXIT`, or `UNAVAILABLE` recommendation.
 
+Built for the Belem Capital *DeFi Risk Dependency Challenge*: see
+[`docs/judging-map.md`](docs/judging-map.md) for how each judging criterion is
+met and what to show live.
+
 **Scope: read-only and non-advisory.** Risk0 never asks for a wallet, private
 key, signature, or approval, and never sends a transaction. Manual exposures are
 hypothetical records stored only in the local radar database. Results are a
@@ -238,32 +242,34 @@ version-controlled entries.
   processed and hidden until an incident path reveals them. A hidden node is not
   ignored by the backend.
 
-- **Two kinds of probability.** Stablecoin depeg and collateral shock use
-  *empirical* rolling 30-day windows over hourly Chainlink history. Protocol
-  impairment is *model-estimated* from protocol evidence with a demonstration
-  heuristic (`protocol-evidence-v1`), not an actuarial estimate. The UI labels
-  each estimate with its method.
-- **Coverage gaps become UNAVAILABLE.** Only USDC (USDC/USD) and WETH (ETH/USD)
-  have price-history and oracle-health feeds. EURCV (no EURCV/EUR feed), wstETH
-  (its risk is the stETH/ETH ratio), WBTC, cbBTC, and other collateral have
-  none. Their empirical probabilities and live oracle observations are
-  unavailable rather than approximated by an unrelated feed. In live mode,
-  oracle-failure and liquidity-collapse probabilities are always unavailable:
-  hourly history cannot resolve a 30-minute staleness window, and no pool-depth
-  history is collected. A default five-scenario live run therefore usually
-  returns `UNAVAILABLE`. Live oracle breaches still act as hard triggers.
-- **Oracle staleness is an interpretation.** The spec's "stale for 30 minutes"
-  is read as *older than the feed's heartbeat plus 30 minutes* (ETH/USD 1 h,
-  USDC/USD and EUR/USD 24 h). A literal 30 minutes would fire on healthy feeds.
-  This interpretation is a deliberate choice, flagged for review.
-- **DeFiSafety scores are not captured.** `data/evidence/defisafety.ethereum.json`
-  records Morpho and Uniswap V3 as `not_captured`, because defisafety.com has no
-  documented data endpoint. Protocol scoring relies on DeFiScan with lower
-  confidence.
-- **No exit-pool depth source.** Exit cost comes from a live QuoterV2 simulation
-  at the current block, refreshed once if older than 30 s or 20 blocks. There
-  is no historical depth, so liquidity-collapse impact cannot be weighted by an
-  observed probability.
+- **Probability methods are labelled.** Stablecoin depeg, collateral shock, and
+  oracle failure are *empirical*: rolling 30-day windows over a year of Chainlink
+  rounds read on-chain (Multicall3-batched `getRoundData`, so a free-tier RPC is
+  enough). Oracle failure is staleness beyond the feed's heartbeat plus 30
+  minutes, from exact round timestamps; an on-chain exchange-rate adapter cannot
+  be stale (*structural* 0). Protocol impairment is an empirical *industry base
+  rate* from DeFiLlama (lending/CDP protocols ≥ $100M TVL, 2021–2025), labelled
+  LOW confidence because DeFiScan has no Morpho review and no DeFiSafety score is
+  captured. Liquidity collapse has no probability (no pool-depth history).
+- **Heartbeats.** Documented heartbeats (ETH/USD, stETH/USD, BTC/USD 1 h;
+  USDC/USD, EUR/USD, WBTC/BTC, BTC/ETH 24 h) are strict. An undocumented feed's
+  heartbeat is inferred from its last 90 days of rounds, tolerates one missed
+  cycle, is judged over the same 90 days, and caps confidence at LOW. A
+  third-party feed with no published heartbeat and no readable history is
+  reported with its age but never judged stale.
+- **Lender losses are bad debt.** A collateral price fall costs a lender only the
+  bad debt of the markets it supplies, from live Morpho borrower positions under
+  an instantaneous gap with no liquidation (conservative); without positions, an
+  explicit all-at-LLTV worst-case bound with lowered confidence.
+- **The decision counts forgone yield.** EXIT requires the expected 30-day loss
+  to exceed the exit cost plus the 30-day yield given up (live Morpho net APY;
+  exited capital assumed idle). An unknown APY counts as 0 (toward EXIT) with a
+  warning and lower confidence.
+- **Coverage gaps stay UNAVAILABLE.** Assets without a price-history feed (e.g.
+  EURCV) and oracles that cannot be decoded are reported as unavailable, never
+  approximated by an unrelated feed or assumed healthy.
+- **No exit-pool depth history.** Exit cost comes from a live QuoterV2 simulation
+  at the current block, refreshed once if older than 30 s or 20 blocks.
 - **Fixture-mode numbers are illustrative.** In fixture mode, the probabilities,
   quotes, gas, and oracle observations are fixed demo values labelled `fixture:*`.
 
@@ -271,5 +277,6 @@ version-controlled entries.
 
 - Design spec: `docs/superpowers/specs/2026-10-07-risk0-mvp-design.md`
 - Implementation plan: `docs/superpowers/plans/2026-10-07-risk0-mvp.md`
+- Belem challenge judging map: `docs/judging-map.md`
 - Demo script: `docs/demo-script.md`
 - Algorithms and formulas: `docs/risk0-algorithms.tex`

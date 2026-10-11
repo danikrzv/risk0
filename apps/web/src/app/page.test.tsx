@@ -493,6 +493,7 @@ describe("Home", () => {
 
     const recommendation = await screen.findByRole("region", { name: "Recommendation" })
     expect(within(recommendation).getByRole("heading", { name: "EXIT" })).toBeInTheDocument()
+    expect(screen.getByRole("region", { name: "Two loss models" })).toBeInTheDocument()
 
     const [, init] = fetchMock.mock.calls.find(([url]) => url === "/api/analysis") as unknown as [
       string,

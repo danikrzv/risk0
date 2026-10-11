@@ -10,6 +10,7 @@ import { DataQualityPanel } from "../components/data-quality"
 import { ExposureImpactPanel } from "../components/exposure-impact"
 import { ExposureRail } from "../components/exposure-rail"
 import { HealthJustification } from "../components/health-justification"
+import { LossModelComparison } from "../components/loss-model-comparison"
 import { PanelResizer } from "../components/panel-resizer"
 import { IncidentRail } from "../components/incident-rail"
 import { NotificationCenter } from "../components/notification-center"
@@ -797,6 +798,7 @@ export default function Home() {
             onSelectDependency={setSelectedNodeId}
             onViewDependencies={viewAnalysisDependencies}
           />
+          <LossModelComparison analysis={analysis.result} numeraire={analysis.numeraire} />
           <RiskGraph
             graph={analysis.result.graph}
             selectedNodeId={selectedNodeId}

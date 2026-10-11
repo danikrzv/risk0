@@ -352,6 +352,37 @@ def test_oracle_failure_probability_comes_from_exact_round_gaps(morpho_client, c
     assert response.recommendation.decision is not RecommendationDecision.UNAVAILABLE
 
 
+def test_inferred_heartbeat_staleness_is_judged_only_over_its_inference_window(
+    morpho_client, clock, tmp_path
+):
+    market = weth_usdc_market(morpho_client)
+    chain = healthy_chain(market, clock, eth_feed=UNLISTED_ETH_USD)
+    eth_answer = int(market.collateral_asset.price_usd.scaleb(8))
+    # An unlisted feed: every 12 hours until 90 days ago, hourly since. Its
+    # heartbeat is inferred (hourly) from the last 90 days only.
+    ages = sorted(
+        {3600 * h + 600 for h in range(0, 90 * 24)} | {3600 * h + 600 for h in range(90 * 24, 200 * 24, 12)},
+        reverse=True,
+    )
+    rounds = [(k, eth_answer, ago(clock, age)) for k, age in enumerate(ages, start=1)]
+    chain.add_feed(UNLISTED_ETH_USD, Feed("ETH / USD", 8, {2: rounds}))
+    usdc = int(market.loan_asset.price_usd.scaleb(8))
+    chain.add_feed(
+        USDC_USD,
+        Feed("USDC / USD", 8, {4: [(k, usdc, ago(clock, 86400 * (202 - k))) for k in range(1, 203)]}),
+    )
+
+    service = staleness_service(morpho_client, clock, chain, tmp_path, lookback=timedelta(days=200))
+    response = analyze(service, oracle_failure_request())
+
+    (result,) = response.scenario_results
+    probability = result.probability
+    # The older 12-hour gaps are not judged against the recent hourly cadence.
+    assert probability.central == 0
+    assert probability.confidence is ConfidenceLevel.LOW
+    assert "judged over the same 90 days" in probability.explanation
+
+
 def test_oracle_failure_without_any_gap_is_zero_with_an_upper_bound(morpho_client, clock, tmp_path):
     market = weth_usdc_market(morpho_client)
     chain = healthy_chain(market, clock)

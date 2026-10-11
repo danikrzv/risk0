@@ -994,14 +994,20 @@ class HybridProbabilityProvider:
                         unavailable_estimate(now, f"The heartbeat of {name} is unknown.")
                     )
                     continue
+                source = feed.metrics.get("heartbeat_source")
+                inferred = isinstance(source, str) and source.startswith(
+                    INFERRED_HEARTBEAT_SOURCE_PREFIX
+                )
+                # An inferred cadence only describes the period it was inferred
+                # from; judging older gaps against it would count a feed's
+                # earlier, slower cadence as failures.
+                feed_start = max(start, end - HEARTBEAT_INFERENCE_LOOKBACK) if inferred else start
                 evidence = estimate_staleness(
-                    address, int(heartbeat), start, end, now=now, label=name
+                    address, int(heartbeat), feed_start, end, now=now, label=name
                 )
                 estimate = evidence.probability
-                source = feed.metrics.get("heartbeat_source")
                 if (
-                    isinstance(source, str)
-                    and source.startswith(INFERRED_HEARTBEAT_SOURCE_PREFIX)
+                    inferred
                     and estimate.central is not None
                 ):
                     estimate = estimate.model_copy(
@@ -1009,7 +1015,10 @@ class HybridProbabilityProvider:
                             "confidence": min(
                                 estimate.confidence, ConfidenceLevel.LOW, key=CONFIDENCE_ORDER.index
                             ),
-                            "explanation": f"{estimate.explanation} Heartbeat {source}.",
+                            "explanation": (
+                                f"{estimate.explanation} Heartbeat {source}; staleness is "
+                                f"judged over the same {HEARTBEAT_INFERENCE_LOOKBACK.days} days."
+                            ),
                         }
                     )
                 estimates.append(estimate)

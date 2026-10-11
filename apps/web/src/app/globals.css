@@ -188,9 +188,9 @@ p {
 }
 
 .terminal-workspace {
-  width: min(100%, 96rem);
+  width: 100%;
   margin: 0 auto;
-  padding: 1.25rem 1rem 4rem;
+  padding: 0.75rem 0.75rem 4rem;
 }
 
 .terminal-statusbar {
@@ -225,18 +225,13 @@ p {
   white-space: nowrap;
 }
 
-.masthead p {
-  max-width: 48rem;
-  color: var(--color-muted);
-  margin-bottom: 0;
-}
-
 .terminal-actions {
   position: relative;
   z-index: 20;
   display: flex;
   justify-content: flex-end;
-  margin-top: -2.6rem;
+  min-height: 2.25rem;
+  margin-bottom: 0.5rem;
 }
 
 .terminal-actions > section > button {
@@ -315,26 +310,86 @@ p {
   background: #17090df2;
 }
 
-.radar-layout > * {
+.radar-command-surface > * {
   min-width: 0;
 }
 
-.radar-layout {
+.radar-command-surface {
   display: grid;
-  grid-template-areas:
-    "graph graph"
-    "exposure incidents";
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(18rem, 21rem) minmax(0, 1fr);
   gap: 0.75rem;
-  align-items: start;
+  min-height: calc(100dvh - 8.5rem);
+  align-items: stretch;
 }
 
-.radar-layout > .radar-graph { grid-area: graph; }
-.radar-layout > .exposure-rail { grid-area: exposure; }
-.radar-layout > .incident-rail { grid-area: incidents; }
+.exposure-dock {
+  position: sticky;
+  top: 0.75rem;
+  align-self: start;
+  max-height: calc(100dvh - 4rem);
+  overflow: auto;
+}
 
-.radar-layout > .panel {
-  margin-top: 1.25rem;
+.exposure-dock > .panel {
+  margin: 0;
+}
+
+.radar-stage {
+  position: relative;
+  min-width: 0;
+  min-height: calc(100dvh - 8.5rem);
+}
+
+.radar-stage > .radar-graph {
+  min-height: 100%;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.radar-stage .radar-graph__canvas {
+  flex: 1 1 34rem;
+  height: auto;
+  min-height: 34rem;
+}
+
+.incident-drawer {
+  position: absolute;
+  top: 5.25rem;
+  right: 0;
+  z-index: 30;
+  display: flex;
+  align-items: flex-start;
+  max-width: calc(100% - 1rem);
+  filter: drop-shadow(-0.8rem 0.8rem 1.5rem #000a);
+}
+
+.incident-drawer__toggle {
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--color-border-strong);
+  background: #08111bea;
+  color: var(--color-accent);
+  font: inherit;
+  font-size: 0.68rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+  writing-mode: vertical-rl;
+}
+
+.incident-drawer__panel {
+  width: min(24rem, calc(100vw - 24rem));
+  max-height: calc(100dvh - 15rem);
+  overflow: auto;
+  border: 1px solid var(--color-border-strong);
+  background: #070c13f2;
+  backdrop-filter: blur(12px);
+}
+
+.incident-drawer__panel > .incident-rail {
+  margin: 0;
+  border: 0;
+  box-shadow: none;
 }
 
 .exposure-rail form,
@@ -683,6 +738,8 @@ p {
 .incident-rail__empty { color: var(--color-safe); }
 
 .position-analysis-module {
+  width: min(100%, 96rem);
+  margin-inline: auto;
   margin-top: 2.5rem;
   padding-top: 1.5rem;
   border-top: 1px solid var(--color-border-strong);
@@ -1200,9 +1257,30 @@ fieldset.panel legend,
     margin-top: 1rem;
   }
 
-  .radar-layout {
-    grid-template-areas: "exposure" "graph" "incidents";
+  .radar-command-surface {
     grid-template-columns: 1fr;
+    min-height: auto;
+  }
+
+  .exposure-dock {
+    position: static;
+    max-height: none;
+  }
+
+  .radar-stage {
+    min-height: calc(100dvh - 7rem);
+  }
+
+  .incident-drawer {
+    position: fixed;
+    top: 7rem;
+    right: 0.5rem;
+    max-width: calc(100vw - 1rem);
+  }
+
+  .incident-drawer__panel {
+    width: min(24rem, calc(100vw - 3.5rem));
+    max-height: calc(100dvh - 9rem);
   }
 
   .radar-filters {
@@ -1216,8 +1294,11 @@ fieldset.panel legend,
 }
 
 @media (min-width: 48.01rem) and (max-width: 75rem) {
-  .radar-layout {
-    grid-template-areas: "graph graph" "exposure incidents";
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .radar-command-surface {
+    grid-template-columns: minmax(17rem, 19rem) minmax(0, 1fr);
+  }
+
+  .incident-drawer__panel {
+    width: min(21rem, calc(100vw - 22rem));
   }
 }

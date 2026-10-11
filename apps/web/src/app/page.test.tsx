@@ -65,6 +65,23 @@ describe("Home", () => {
     expect(screen.getByRole("status")).toHaveTextContent("Exposure recorded")
   })
 
+  it("uses a full radar workspace with a foldable incident drawer", async () => {
+    stubApi()
+    render(<Home />)
+
+    expect(await screen.findByRole("heading", { name: "Morpho radar graph" })).toBeInTheDocument()
+    expect(screen.queryByText("Monitor dependencies, propagation, and portfolio impact")).not.toBeInTheDocument()
+    expect(screen.getByRole("region", { name: "Exposure" })).toBeInTheDocument()
+    expect(screen.getByRole("heading", { name: "Incidents" })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole("button", { name: "Hide incidents" }))
+    expect(screen.queryByRole("heading", { name: "Incidents" })).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Incidents (0)" })).toHaveAttribute("aria-expanded", "false")
+
+    fireEvent.click(screen.getByRole("button", { name: "Incidents (0)" }))
+    expect(screen.getByRole("heading", { name: "Incidents" })).toBeInTheDocument()
+  })
+
   it("runs the select → inputs → scenarios → result flow", async () => {
     const fetchMock = stubApi()
     render(<Home />)
@@ -295,7 +312,8 @@ describe("Home", () => {
     render(<Home />)
 
     expect(await screen.findByText("Radar has no data yet — discovery runs hourly")).toBeInTheDocument()
-    expect(screen.queryByRole("region", { name: "Exposure" })).not.toBeInTheDocument()
+    expect(screen.getByRole("region", { name: "Exposure" })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Add exposure" })).toBeDisabled()
   })
 
   it("retries the catalog and radar with backoff while the risk service is busy", async () => {

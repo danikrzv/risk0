@@ -86,6 +86,7 @@ export default function Home() {
   const [radarGraph, setRadarGraph] = useState<RadarGraphResponse | null>(null)
   const [radarError, setRadarError] = useState<LoadError | null>(null)
   const [selectedIncident, setSelectedIncident] = useState<IncidentGraphResponse | null>(null)
+  const [incidentsOpen, setIncidentsOpen] = useState(true)
   const [selectedRadarEntityId, setSelectedRadarEntityId] = useState<string | null>(null)
   // Neighborhoods fetched with `focus`, keyed by the expanded entity.
   const [focusGraphs, setFocusGraphs] = useState<ReadonlyMap<string, RadarGraphResponse>>(() => new Map())
@@ -349,46 +350,54 @@ export default function Home() {
         />
       }
     >
-      <header className="masthead">
-        <span className="eyebrow">CURRENT MODULE / CONTINUOUS RISK RADAR</span>
-        <h2>Monitor dependencies, propagation, and portfolio impact</h2>
-        <p>
-          Compare Morpho vaults, markets, assets, oracles, and chains every five minutes. Hidden similar vaults are
-          revealed when an incident propagates through a shared dependency.
-        </p>
-      </header>
-
       <div className="terminal-actions"><NotificationCenter onIncidentClick={focusIncident} /></div>
       {radarError && catalog.status !== "error" ? <LoadErrorMessage error={radarError} /> : null}
       {focusError ? <p role="alert" className="alert">{focusError}</p> : null}
-      {displayedGraph && radarGraph && displayedGraph.entities.length === 0 ? (
-        <RadarGraph graph={displayedGraph} />
-      ) : displayedGraph && radarGraph ? (
-        <div className="radar-layout">
-          <ExposureRail entities={radarGraph.entities} onSubmit={addExposure} busy={exposureBusy} />
-          <RadarGraph
-            graph={displayedGraph}
-            selectedIncident={selectedIncident?.incident ?? null}
-            impacts={displayedImpacts}
-            selectedEntityId={selectedRadarEntityId}
-            onSelectEntity={setSelectedRadarEntityId}
-            analyzableEntityIds={analyzableEntityIds}
-            onAnalyzeEntity={analyzeRadarEntity}
-            pinnedEntityIds={pinnedEntityIds}
-            expandedEntityIds={expandedEntityIds}
-            loadingNeighboursId={loadingNeighboursId}
-            onShowNeighbours={showNeighbours}
-          />
-          <IncidentRail
-            incidents={radarGraph.active_incidents}
-            entities={displayedGraph.entities}
-            selectedIncidentId={selectedIncident?.incident.incident_id ?? null}
-            onSelectIncident={focusIncident}
-          />
+      {displayedGraph && radarGraph ? (
+        <div className="radar-command-surface">
+          <div className="exposure-dock">
+            <ExposureRail entities={radarGraph.entities} onSubmit={addExposure} busy={exposureBusy} />
+            {exposureStatus?.kind === "ok" ? <p role="status" className="exposure-status">{exposureStatus.message}</p> : null}
+            {exposureStatus?.kind === "error" ? <p role="alert" className="alert">{exposureStatus.message}</p> : null}
+          </div>
+          <div className="radar-stage">
+            <RadarGraph
+              graph={displayedGraph}
+              selectedIncident={selectedIncident?.incident ?? null}
+              impacts={displayedImpacts}
+              selectedEntityId={selectedRadarEntityId}
+              onSelectEntity={setSelectedRadarEntityId}
+              analyzableEntityIds={analyzableEntityIds}
+              onAnalyzeEntity={analyzeRadarEntity}
+              pinnedEntityIds={pinnedEntityIds}
+              expandedEntityIds={expandedEntityIds}
+              loadingNeighboursId={loadingNeighboursId}
+              onShowNeighbours={showNeighbours}
+            />
+            <aside className={`incident-drawer${incidentsOpen ? " incident-drawer--open" : ""}`} aria-label="Incident drawer">
+              <button
+                type="button"
+                className="incident-drawer__toggle"
+                aria-expanded={incidentsOpen}
+                aria-controls="incident-drawer-panel"
+                onClick={() => setIncidentsOpen((open) => !open)}
+              >
+                {incidentsOpen ? "Hide incidents" : `Incidents (${radarGraph.active_incidents.length})`}
+              </button>
+              {incidentsOpen ? (
+                <div id="incident-drawer-panel" className="incident-drawer__panel">
+                  <IncidentRail
+                    incidents={radarGraph.active_incidents}
+                    entities={displayedGraph.entities}
+                    selectedIncidentId={selectedIncident?.incident.incident_id ?? null}
+                    onSelectIncident={focusIncident}
+                  />
+                </div>
+              ) : null}
+            </aside>
+          </div>
         </div>
       ) : radarError && !radarError.retrying ? null : <RadarSkeleton />}
-      {exposureStatus?.kind === "ok" ? <p role="status" className="exposure-status">{exposureStatus.message}</p> : null}
-      {exposureStatus?.kind === "error" ? <p role="alert" className="alert">{exposureStatus.message}</p> : null}
 
       <section id="position-analysis" className="position-analysis-module" aria-labelledby="position-analysis-heading">
         <header className="module-heading">

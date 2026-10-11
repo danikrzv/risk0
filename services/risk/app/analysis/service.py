@@ -39,7 +39,11 @@ Probabilities (`HybridProbabilityProvider`):
   that has a feed: USDC -> USDC/USD, WETH -> ETH/USD, wstETH -> stETH/USD (the
   wstETH/stETH exchange-rate caveat is in the explanation), WBTC -> WBTC/BTC x
   BTC/USD. Assets without a feed (EURCV has no EURCV/EUR feed) make the estimate
-  UNAVAILABLE; it is never approximated by an unrelated feed.
+  UNAVAILABLE; it is never approximated by an unrelated feed. For stablecoin
+  depeg only, an asset without a feed falls back to its DeFiLlama market-price
+  history against its registry fiat peg (`app.history.market_price`: EURCV /
+  Chainlink EUR/USD, same event and estimator, confidence at most MEDIUM); if
+  that fails too, the estimate stays UNAVAILABLE.
 - protocol impairment: model-estimated from protocol evidence (Task 8) and the
   empirical DeFiLlama base rate for large lending protocols
   (`app.evidence.defillama`). With both, the higher estimate is used
@@ -328,6 +332,21 @@ class EmpiricalHistory(Protocol):
     def estimate(
         self,
         feed: str,
+        start: datetime,
+        end: datetime,
+        event: EventPredicate,
+        *,
+        now: datetime,
+    ) -> EmpiricalProbabilityEvidence: ...
+
+
+class MarketPriceHistory(Protocol):
+    """`MarketPriceDepegHistory.estimate`: depeg evidence from market prices."""
+
+    def estimate(
+        self,
+        address: str,
+        symbol: str,
         start: datetime,
         end: datetime,
         event: EventPredicate,
@@ -930,9 +949,11 @@ class HybridProbabilityProvider:
         stablecoin_feeds: Mapping[str, tuple[str, ...]] = DEFAULT_STABLECOIN_FEEDS,
         collateral_feeds: Mapping[str, tuple[str, ...]] = DEFAULT_COLLATERAL_FEEDS,
         lookback: timedelta = HISTORY_LOOKBACK,
+        market_prices: MarketPriceHistory | None = None,
     ) -> None:
         self._history = history
         self._evidence = evidence
+        self._market_prices = market_prices
         self._stablecoin_feeds = {key.casefold(): value for key, value in stablecoin_feeds.items()}
         self._collateral_feeds = {key.casefold(): value for key, value in collateral_feeds.items()}
         self._lookback = lookback
@@ -1174,23 +1195,38 @@ class HybridProbabilityProvider:
                     now, f"No asset affected by {scenario} is in this position's graph."
                 )
             )
+        end = now.astimezone(UTC)
+        start = end - self._lookback
         missing = [symbol for symbol in symbols if not feeds.get(symbol.casefold())]
+        fallback: dict[str, ProbabilityEstimate] = {}
         if missing:
-            return ProbabilityAssessment(
-                unavailable_estimate(
-                    now,
-                    f"No price-history feed for {', '.join(missing)}; the {scenario} probability "
-                    "is unavailable rather than approximated by an unrelated feed.",
-                )
+            reason = (
+                f"No price-history feed for {', '.join(missing)}; the {scenario} probability "
+                "is unavailable rather than approximated by an unrelated feed."
             )
-        if self._history is None:
+            if (
+                selection.scenario_id is not ScenarioId.STABLECOIN_DEPEG
+                or self._market_prices is None
+            ):
+                return ProbabilityAssessment(unavailable_estimate(now, reason))
+            for symbol in missing:
+                estimate = self._market_price_estimate(graph, symbol, start, end, event, now)
+                if estimate.central is None:
+                    return ProbabilityAssessment(
+                        unavailable_estimate(
+                            now, f"{reason} Market-price fallback: {estimate.explanation}"
+                        )
+                    )
+                fallback[symbol] = estimate
+        if self._history is None and len(fallback) < len(symbols):
             return ProbabilityAssessment(
                 unavailable_estimate(now, "Ethereum price history is not configured.")
             )
-        end = now.astimezone(UTC)
-        start = end - self._lookback
         per_asset: list[ProbabilityAssessment] = []
         for symbol in symbols:
+            if symbol in fallback:
+                per_asset.append(ProbabilityAssessment(fallback[symbol]))
+                continue
             estimates: list[ProbabilityEstimate] = []
             for feed in feeds[symbol.casefold()]:
                 predicate = event() if _is_factory(event) else event
@@ -1216,6 +1252,30 @@ class HybridProbabilityProvider:
             best.estimate.model_copy(update={"confidence": lowest}),
             tuple(conflict for item in per_asset for conflict in item.conflicts),
         )
+
+    def _market_price_estimate(
+        self,
+        graph: RiskGraph,
+        symbol: str,
+        start: datetime,
+        end: datetime,
+        event: EventPredicate | Callable[[], EventPredicate],
+        now: datetime,
+    ) -> ProbabilityEstimate:
+        addresses = {
+            node.metrics["address"]
+            for node in graph.nodes
+            if node.node_type is RiskNodeType.ASSET
+            and isinstance(node.metrics.get("address"), str)
+            and str(node.metrics.get("symbol") or node.label).casefold() == symbol.casefold()
+        }
+        if len(addresses) != 1:
+            return unavailable_estimate(now, f"{symbol} has no single token address in the graph.")
+        predicate = event() if _is_factory(event) else event
+        evidence = self._market_prices.estimate(  # type: ignore[union-attr]
+            addresses.pop(), symbol, start, end, predicate, now=now
+        )
+        return evidence.probability
 
     def _protocol(self, now: datetime) -> ProbabilityAssessment:
         if self._evidence is None:

@@ -1639,3 +1639,123 @@ fieldset.panel legend,
     width: min(19rem, calc(100% - 1.5rem));
   }
 }
+
+/* Health computation (radar entity detail) */
+.health-computation {
+  display: grid;
+  gap: 0.5rem;
+  min-width: 0;
+  color: var(--color-text);
+}
+
+.health-computation p {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.health-computation__result {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: baseline;
+}
+
+.health-mark {
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.health-computation__explanation {
+  padding: 0.5rem 0.65rem;
+  border-left: 2px solid var(--color-accent);
+  background: var(--color-surface);
+}
+
+.health-computation__mapping,
+.health-computation__totals,
+.health-computation__note,
+.health-computation__status {
+  color: var(--color-muted);
+  font-size: 0.8rem;
+}
+
+.health-computation__note {
+  color: var(--color-stale);
+}
+
+.health-computation__status button {
+  margin-top: 0.35rem;
+}
+
+/* Tables scroll inside the panel instead of widening it in narrow layouts. */
+.health-computation__scroll {
+  display: grid;
+  gap: 0.35rem;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.health-computation .metrics {
+  width: 100%;
+  margin-top: 0;
+  font-size: 0.8rem;
+}
+
+.health-computation .metrics caption {
+  padding-bottom: 0.25rem;
+  color: var(--color-muted);
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.health-computation .metrics thead th {
+  color: var(--color-muted);
+  font-size: 0.7rem;
+}
+
+.health-computation__checks th small,
+.health-computation__checks td small {
+  display: block;
+  color: var(--color-muted);
+  font-size: 0.7rem;
+}
+
+.health-computation__checks tr[data-outcome="breach"] td:last-child,
+.health-computation__checks tr[data-outcome="missing"] td:last-child {
+  color: var(--color-stale);
+}
+
+.health-computation__decisive th,
+.health-computation__decisive td {
+  font-weight: 700;
+  background: var(--color-surface);
+}
+
+.health-computation__decisive th[scope="row"] {
+  box-shadow: inset 3px 0 0 var(--color-accent);
+  padding-left: 0.45rem;
+}
+
+.health-computation__badge {
+  display: inline-block;
+  margin-left: 0.4rem;
+  padding: 0 0.3rem;
+  border: 1px solid currentColor;
+  font-size: 0.65rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.health-computation__hysteresis {
+  font-size: 0.85rem;
+}
+
+.health-computation__hysteresis span,
+.health-computation__meta dt {
+  color: var(--color-muted);
+}
+
+.radar-detail .health-computation__meta {
+  font-size: 0.8rem;
+}

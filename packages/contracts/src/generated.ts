@@ -18,6 +18,8 @@ export const RADAR_ENTITY_TYPES = ["chain","protocol","vault","market","asset","
 export const INCIDENT_SEVERITIES = ["WARNING","CRITICAL"] as const;
 export const INCIDENT_STATUSES = ["OPEN","RESOLVED"] as const;
 export const RADAR_RELATIONSHIP_TYPES = ["allocated_to","lends","borrows","uses_collateral","uses_oracle","uses_irm","backed_by","deployed_on","exits_through","similar_to"] as const;
+export const HEALTH_DERIVATION_STAGES = ["dependencies","freshness","metrics","hysteresis"] as const;
+export const HEALTH_CHECK_OUTCOMES = ["breach","within","missing","info"] as const;
 export const SIMILARITY_STORAGE_THRESHOLD = "0.33" as const;
 export const SIMILARITY_VISIBILITY_THRESHOLD = "0.60" as const;
 export const SIMILARITY_VISIBLE_LIMIT = 10 as const;
@@ -41,6 +43,8 @@ export type RadarEntityType = "chain" | "protocol" | "vault" | "market" | "asset
 export type IncidentSeverity = "WARNING" | "CRITICAL";
 export type IncidentStatus = "OPEN" | "RESOLVED";
 export type RadarRelationshipType = "allocated_to" | "lends" | "borrows" | "uses_collateral" | "uses_oracle" | "uses_irm" | "backed_by" | "deployed_on" | "exits_through" | "similar_to";
+export type HealthDerivationStage = "dependencies" | "freshness" | "metrics" | "hysteresis";
+export type HealthCheckOutcome = "breach" | "within" | "missing" | "info";
 export type DecimalString = string;
 export type MetricValue = string | boolean | null;
 
@@ -375,6 +379,79 @@ export interface StateSnapshot {
   missing_fields: string[];
 }
 
+/**
+ * One rule as evaluated: `metric operator threshold` is the condition under
+ * which the rule produces `leads_to`. `decisive` marks the rule that decided
+ * the raw status, or the hysteresis step when it held the status.
+ */
+export interface HealthCheck {
+  stage: HealthDerivationStage;
+  rule: string;
+  metric: string | null;
+  observed: DecimalString | null;
+  /** Non-numeric observation: freshness, explicit status, missing field names. */
+  note: string | null;
+  operator: ">" | ">=" | "<" | "<=" | null;
+  threshold: DecimalString | null;
+  outcome: HealthCheckOutcome;
+  leads_to: HealthStatus | null;
+  decisive: boolean;
+}
+
+export interface HealthDependencyContribution {
+  entity_id: string;
+  status: HealthStatus;
+  /** "weighted" dependencies count by allocation share; "full" ones by status alone. */
+  counted: "weighted" | "full";
+  weight: DecimalString | null;
+}
+
+export type HealthStatusTotals = Record<HealthStatus, DecimalString>;
+
+export interface HealthDependencyAggregation {
+  dependencies: HealthDependencyContribution[];
+  /** Allocation share held in dependencies of each status (weighted ones only). */
+  weighted_totals: HealthStatusTotals;
+  material_allocation: DecimalString;
+  status: HealthStatus;
+  reason: string;
+}
+
+export interface HealthHysteresis {
+  previous_status: HealthStatus | null;
+  raw_status: HealthStatus;
+  rule: "immediate" | "already_abnormal" | "warning_confirmation" | "recovery_confirmation" | "none";
+  consecutive_abnormal: number;
+  consecutive_normal: number;
+  /** Consecutive cycles counted including this evaluation, for confirmation rules. */
+  counter: number | null;
+  cycles_required: number | null;
+  held: boolean;
+  final_status: HealthStatus;
+}
+
+export interface HealthScoreMapping {
+  HEALTHY: "1";
+  WARNING: "0.5";
+  CRITICAL: "0";
+  UNKNOWN: null;
+}
+
+/** How a health state was computed, in evaluation order. */
+export interface HealthDerivation {
+  entity_type: RadarEntityType;
+  freshness: FreshnessStatus;
+  checks: HealthCheck[];
+  dependencies: HealthDependencyAggregation | null;
+  raw_status: HealthStatus;
+  raw_reasons: string[];
+  hysteresis: HealthHysteresis;
+  final_status: HealthStatus;
+  score: DecimalString | null;
+  score_mapping: HealthScoreMapping;
+  rule_version: string;
+}
+
 export interface HealthState {
   entity_id: string;
   status: HealthStatus;
@@ -383,6 +460,8 @@ export interface HealthState {
   missing_fields: string[];
   evaluated_at: string;
   rule_version: string;
+  /** Null for states recorded without an explanation (older rows). */
+  derivation?: HealthDerivation | null;
 }
 
 export interface SimilarityPolicy {
@@ -490,6 +569,14 @@ export interface EntityHistoryResponse {
   snapshots: StateSnapshot[];
   health_states: HealthState[];
   next_cursor: string | null;
+  generated_at: string;
+}
+
+export interface EntityHealthResponse {
+  schema_version: "1.0.0";
+  entity_id: string;
+  /** Latest recorded evaluation, or null before the entity is first evaluated. */
+  health: HealthState | null;
   generated_at: string;
 }
 

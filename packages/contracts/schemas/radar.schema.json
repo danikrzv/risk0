@@ -109,6 +109,110 @@
         "missing_fields": { "type": "array", "items": { "type": "string", "minLength": 1 } }
       }
     },
+    "HealthDerivationStage": {
+      "enum": ["dependencies", "freshness", "metrics", "hysteresis"]
+    },
+    "HealthCheckOutcome": {
+      "enum": ["breach", "within", "missing", "info"]
+    },
+    "HealthCheck": {
+      "description": "One rule as evaluated. `metric operator threshold` is the condition under which the rule produces `leads_to`.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stage", "rule", "metric", "observed", "note", "operator", "threshold", "outcome", "leads_to", "decisive"],
+      "properties": {
+        "stage": { "$ref": "#/$defs/HealthDerivationStage" },
+        "rule": { "type": "string", "minLength": 1 },
+        "metric": { "oneOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }] },
+        "observed": { "oneOf": [{ "$ref": "#/$defs/DecimalString" }, { "type": "null" }] },
+        "note": { "oneOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }] },
+        "operator": { "oneOf": [{ "enum": [">", ">=", "<", "<="] }, { "type": "null" }] },
+        "threshold": { "oneOf": [{ "$ref": "#/$defs/DecimalString" }, { "type": "null" }] },
+        "outcome": { "$ref": "#/$defs/HealthCheckOutcome" },
+        "leads_to": { "oneOf": [{ "$ref": "#/$defs/HealthStatus" }, { "type": "null" }] },
+        "decisive": { "type": "boolean" }
+      }
+    },
+    "HealthDependencyContribution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entity_id", "status", "counted", "weight"],
+      "properties": {
+        "entity_id": { "type": "string", "minLength": 1 },
+        "status": { "$ref": "#/$defs/HealthStatus" },
+        "counted": { "enum": ["weighted", "full"] },
+        "weight": { "oneOf": [{ "$ref": "#/$defs/DecimalString" }, { "type": "null" }] }
+      }
+    },
+    "HealthStatusTotals": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["HEALTHY", "WARNING", "CRITICAL", "UNKNOWN"],
+      "properties": {
+        "HEALTHY": { "$ref": "#/$defs/DecimalString" },
+        "WARNING": { "$ref": "#/$defs/DecimalString" },
+        "CRITICAL": { "$ref": "#/$defs/DecimalString" },
+        "UNKNOWN": { "$ref": "#/$defs/DecimalString" }
+      }
+    },
+    "HealthDependencyAggregation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dependencies", "weighted_totals", "material_allocation", "status", "reason"],
+      "properties": {
+        "dependencies": { "type": "array", "items": { "$ref": "#/$defs/HealthDependencyContribution" } },
+        "weighted_totals": { "$ref": "#/$defs/HealthStatusTotals" },
+        "material_allocation": { "$ref": "#/$defs/RatioString" },
+        "status": { "$ref": "#/$defs/HealthStatus" },
+        "reason": { "type": "string", "minLength": 1 }
+      }
+    },
+    "HealthHysteresis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["previous_status", "raw_status", "rule", "consecutive_abnormal", "consecutive_normal", "counter", "cycles_required", "held", "final_status"],
+      "properties": {
+        "previous_status": { "oneOf": [{ "$ref": "#/$defs/HealthStatus" }, { "type": "null" }] },
+        "raw_status": { "$ref": "#/$defs/HealthStatus" },
+        "rule": { "enum": ["immediate", "already_abnormal", "warning_confirmation", "recovery_confirmation", "none"] },
+        "consecutive_abnormal": { "type": "integer", "minimum": 0 },
+        "consecutive_normal": { "type": "integer", "minimum": 0 },
+        "counter": { "type": ["integer", "null"], "minimum": 1 },
+        "cycles_required": { "type": ["integer", "null"], "minimum": 1 },
+        "held": { "type": "boolean" },
+        "final_status": { "$ref": "#/$defs/HealthStatus" }
+      }
+    },
+    "HealthScoreMapping": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["HEALTHY", "WARNING", "CRITICAL", "UNKNOWN"],
+      "properties": {
+        "HEALTHY": { "const": "1" },
+        "WARNING": { "const": "0.5" },
+        "CRITICAL": { "const": "0" },
+        "UNKNOWN": { "type": "null" }
+      }
+    },
+    "HealthDerivation": {
+      "description": "How a health state was computed: checks in evaluation order, the dependency aggregation, and the hysteresis step.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entity_type", "freshness", "checks", "dependencies", "raw_status", "raw_reasons", "hysteresis", "final_status", "score", "score_mapping", "rule_version"],
+      "properties": {
+        "entity_type": { "$ref": "#/$defs/RadarEntityType" },
+        "freshness": { "enum": ["fresh", "stale_usable", "expired"] },
+        "checks": { "type": "array", "items": { "$ref": "#/$defs/HealthCheck" } },
+        "dependencies": { "oneOf": [{ "$ref": "#/$defs/HealthDependencyAggregation" }, { "type": "null" }] },
+        "raw_status": { "$ref": "#/$defs/HealthStatus" },
+        "raw_reasons": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "hysteresis": { "$ref": "#/$defs/HealthHysteresis" },
+        "final_status": { "$ref": "#/$defs/HealthStatus" },
+        "score": { "oneOf": [{ "$ref": "#/$defs/RatioString" }, { "type": "null" }] },
+        "score_mapping": { "$ref": "#/$defs/HealthScoreMapping" },
+        "rule_version": { "type": "string", "minLength": 1 }
+      }
+    },
     "HealthState": {
       "type": "object",
       "additionalProperties": false,
@@ -120,7 +224,8 @@
         "reasons": { "type": "array", "items": { "type": "string", "minLength": 1 } },
         "missing_fields": { "type": "array", "items": { "type": "string", "minLength": 1 } },
         "evaluated_at": { "$ref": "#/$defs/UtcTimestamp" },
-        "rule_version": { "type": "string", "minLength": 1 }
+        "rule_version": { "type": "string", "minLength": 1 },
+        "derivation": { "oneOf": [{ "$ref": "#/$defs/HealthDerivation" }, { "type": "null" }] }
       }
     },
     "SimilarityRecord": {
@@ -266,6 +371,17 @@
         "snapshots": { "type": "array", "items": { "$ref": "#/$defs/StateSnapshot" } },
         "health_states": { "type": "array", "items": { "$ref": "#/$defs/HealthState" } },
         "next_cursor": { "type": ["string", "null"] },
+        "generated_at": { "$ref": "#/$defs/UtcTimestamp" }
+      }
+    },
+    "EntityHealthResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "entity_id", "health", "generated_at"],
+      "properties": {
+        "schema_version": { "const": "1.0.0" },
+        "entity_id": { "type": "string", "minLength": 1 },
+        "health": { "oneOf": [{ "$ref": "#/$defs/HealthState" }, { "type": "null" }] },
         "generated_at": { "$ref": "#/$defs/UtcTimestamp" }
       }
     },

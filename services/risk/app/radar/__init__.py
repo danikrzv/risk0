@@ -1,7 +1,9 @@
 from app.radar.contracts import (
+    EntityHealthResponse,
     EntityHistoryResponse,
     ExposureCreateRequest,
     ExposureImpactResponse,
+    HealthDerivation,
     HealthState,
     HealthStatus,
     Incident,
@@ -24,9 +26,11 @@ from app.radar.contracts import (
 )
 
 __all__ = [
+    "EntityHealthResponse",
     "EntityHistoryResponse",
     "ExposureCreateRequest",
     "ExposureImpactResponse",
+    "HealthDerivation",
     "HealthState",
     "HealthStatus",
     "Incident",

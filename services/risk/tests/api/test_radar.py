@@ -405,3 +405,115 @@ def test_graph_is_served_from_cache_until_the_database_changes(cached_context, m
         assert calls["entities"] == 3
     finally:
         app.dependency_overrides.clear()
+
+
+def evaluated_market_health():
+    from app.radar.analysis import HealthEvaluator, HealthHistory
+
+    market = entity(entity_type=RadarEntityType.MARKET, key="market-a", visible=False)
+    observed = snapshot(
+        MARKET,
+        NOW,
+        metrics={
+            "utilization": Decimal("0.93"),
+            "available_liquidity": Decimal("100"),
+            "lender_hhi": Decimal("0.10"),
+            "borrower_hhi": Decimal("0.10"),
+            "near_liquidation_debt_ratio": Decimal("0.05"),
+            "bad_debt": Decimal("0"),
+        },
+    ).model_copy(update={"state_type": RadarEntityType.MARKET})
+    return HealthEvaluator().evaluate(
+        market, observed, (), HealthHistory(consecutive_abnormal=1)
+    )
+
+
+def radar_schema_validator(definition: str):
+    import json
+    from pathlib import Path
+
+    from jsonschema import Draft202012Validator, FormatChecker
+
+    schema = json.loads(
+        (Path(__file__).resolve().parents[4] / "packages/contracts/schemas/radar.schema.json").read_text()
+    )
+    return Draft202012Validator(
+        {"$ref": f"#/$defs/{definition}", "$defs": schema["$defs"]},
+        format_checker=FormatChecker(),
+    )
+
+
+def test_entity_health_returns_the_latest_state_with_its_derivation(client, radar_context):
+    seed_graph(radar_context)
+    state = evaluated_market_health()
+    radar_context.states.set_health(state)
+
+    response = client.get(f"/v1/graph/entities/{MARKET}/health")
+
+    assert response.status_code == 200
+    body = response.json()
+    radar_schema_validator("EntityHealthResponse").validate(body)
+    assert body["entity_id"] == MARKET
+    assert body["health"]["status"] == "WARNING"
+    assert body["health"]["score"] == "0.5"
+    derivation = body["health"]["derivation"]
+    assert derivation["final_status"] == "WARNING"
+    assert derivation["score_mapping"] == {
+        "HEALTHY": "1",
+        "WARNING": "0.5",
+        "CRITICAL": "0",
+        "UNKNOWN": None,
+    }
+    [decisive] = [
+        check
+        for check in derivation["checks"]
+        if check["decisive"] and check["stage"] == "metrics"
+    ]
+    assert (decisive["metric"], decisive["observed"], decisive["operator"], decisive["threshold"]) == (
+        "utilization",
+        "0.93",
+        ">=",
+        "0.90",
+    )
+    # The graph keeps only the summary.
+    graph = client.get("/v1/graph").json()
+    assert all("derivation" not in str(item["metadata"]) for item in graph["entities"])
+
+
+def test_entity_health_without_a_recorded_derivation_returns_null(client, radar_context):
+    seed_graph(radar_context)
+
+    seeded = client.get(f"/v1/graph/entities/{VAULT}/health")
+    never_evaluated = client.get(f"/v1/graph/entities/{MARKET}/health")
+
+    assert seeded.status_code == 200
+    radar_schema_validator("EntityHealthResponse").validate(seeded.json())
+    assert seeded.json()["health"]["status"] == "WARNING"
+    assert seeded.json()["health"]["derivation"] is None
+    assert never_evaluated.status_code == 200
+    assert never_evaluated.json()["health"] is None
+
+
+def test_entity_health_of_an_unknown_entity_is_404(client):
+    response = client.get("/v1/graph/entities/vault:1:missing/health")
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Entity not found."}
+
+
+def test_fixture_radar_seeds_evaluated_healthy_states_with_derivations(client, radar_context):
+    from app.fixture_mode import FIXTURE_RADAR_CATALOG_VAULT, seed_fixture_radar
+
+    seed_fixture_radar(radar_context)
+
+    graph = client.get("/v1/graph").json()
+    assert {item["metadata"]["health_status"] for item in graph["entities"]} == {"HEALTHY"}
+    for item in graph["entities"]:
+        body = client.get(f"/v1/graph/entities/{item['entity_id']}/health").json()
+        assert body["health"]["derivation"]["final_status"] == "HEALTHY"
+    vault = client.get(f"/v1/graph/entities/{FIXTURE_RADAR_CATALOG_VAULT}/health").json()
+    aggregation = vault["health"]["derivation"]["dependencies"]
+    assert [(item["counted"], item["weight"], item["status"]) for item in aggregation["dependencies"]] == [
+        ("weighted", "0.60", "HEALTHY")
+    ]
+    assert aggregation["weighted_totals"]["HEALTHY"] == "0.60"

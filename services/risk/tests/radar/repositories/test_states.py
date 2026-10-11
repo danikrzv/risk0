@@ -338,3 +338,74 @@ def test_latest_health_for_returns_each_entitys_newest_evaluation(states):
     assert list(latest) == [CATALOG_VAULT]
     assert latest[CATALOG_VAULT].status is HealthStatus.WARNING
     assert states.latest_health_for(()) == {}
+
+
+def evaluated_health(evaluated_at=NOW, allocation_hhi: str = "0.30"):
+    """A real evaluation of the catalog vault entity, carrying a derivation."""
+    from app.contracts.models import FreshnessStatus
+    from app.radar.analysis import HealthEvaluator, HealthHistory
+    from app.radar.contracts import StateSnapshot
+
+    vault = entity()
+    observed = StateSnapshot(
+        snapshot_id=f"derivation:{evaluated_at.isoformat()}",
+        entity_id=vault.entity_id,
+        state_type=vault.entity_type,
+        observed_at=evaluated_at,
+        retrieved_at=evaluated_at,
+        source="fixture",
+        source_identity="fixture",
+        freshness=FreshnessStatus.FRESH,
+        metrics={
+            "withdrawal_liquidity": Decimal("100"),
+            "allocation_hhi": Decimal(allocation_hhi),
+            "unmodelled_allocation_ratio": Decimal("0"),
+        },
+    )
+    return HealthEvaluator().evaluate(
+        vault, observed, (), HealthHistory(consecutive_abnormal=1)
+    )
+
+
+def test_health_derivation_round_trips_through_history_and_latest(states):
+    state = evaluated_health()
+    assert state.derivation is not None
+
+    assert states.set_health(state) is True
+
+    assert states.latest_health(CATALOG_VAULT) == state
+    assert states.latest_health(CATALOG_VAULT).derivation == state.derivation
+    assert states.health_at(CATALOG_VAULT, NOW) == state
+
+
+def test_bulk_health_reads_leave_the_derivation_out(states):
+    state = evaluated_health()
+    states.set_health(state)
+    summary = state.model_copy(update={"derivation": None})
+
+    assert states.latest_health_all() == {CATALOG_VAULT: summary}
+    assert states.latest_health_for((CATALOG_VAULT,)) == {CATALOG_VAULT: summary}
+    assert states.history(CATALOG_VAULT).health_states == (summary,)
+
+
+def test_latest_derivation_follows_the_latest_recorded_state(states):
+    first = evaluated_health(NOW, "0.30")
+    later = evaluated_health(NOW + timedelta(minutes=5), "0.40")
+    legacy = health(evaluated_at=NOW + timedelta(minutes=10))
+
+    states.record_health((first, later))
+    assert states.latest_health(CATALOG_VAULT).derivation == later.derivation
+
+    # A state recorded without a derivation clears it rather than keeping a stale one.
+    states.set_health(legacy)
+    assert states.latest_health(CATALOG_VAULT) == legacy
+    assert states.latest_health(CATALOG_VAULT).derivation is None
+
+
+def test_unreadable_stored_derivation_is_returned_as_null(states, database):
+    state = evaluated_health()
+    states.set_health(state)
+    with database.transaction() as connection:
+        connection.execute("UPDATE latest_health_states SET derivation = '{\"checks\": 1}'")
+
+    assert states.latest_health(CATALOG_VAULT) == state.model_copy(update={"derivation": None})

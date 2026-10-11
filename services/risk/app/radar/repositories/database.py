@@ -64,15 +64,30 @@ class RadarDatabase:
             for migration in sorted(MIGRATIONS_DIRECTORY.glob("*.sql")):
                 if migration.stem in applied:
                     continue
-                # Every statement is IF NOT EXISTS and the version insert is
-                # OR IGNORE, so a concurrent or interrupted migration re-runs safely.
-                connection.executescript(
-                    "BEGIN IMMEDIATE;\n"
-                    + migration.read_text()
-                    + "\nINSERT OR IGNORE INTO radar_schema_migrations "
-                    f"(version, applied_at) VALUES ('{migration.stem}', "
-                    f"'{encode_timestamp(datetime.now(UTC))}');\nCOMMIT;"
-                )
+                # Each migration and its version row commit together, and the
+                # version is re-checked under the write lock: a concurrent
+                # migrator that got there first makes this one a no-op, which
+                # non-idempotent statements (ALTER TABLE ADD COLUMN) rely on.
+                # An interrupted migration rolls back and re-runs.
+                # (`executescript` would commit the open transaction first, so
+                # statements run one at a time.)
+                connection.execute("BEGIN IMMEDIATE")
+                try:
+                    if connection.execute(
+                        "SELECT 1 FROM radar_schema_migrations WHERE version = ?",
+                        (migration.stem,),
+                    ).fetchone() is None:
+                        for statement in _statements(migration.read_text()):
+                            connection.execute(statement)
+                        connection.execute(
+                            "INSERT OR IGNORE INTO radar_schema_migrations "
+                            "(version, applied_at) VALUES (?, ?)",
+                            (migration.stem, encode_timestamp(datetime.now(UTC))),
+                        )
+                except BaseException:
+                    connection.rollback()
+                    raise
+                connection.commit()
         self._bump_revision()
 
     def applied_migrations(self) -> tuple[str, ...]:
@@ -137,6 +152,20 @@ class RadarDatabase:
             yield connection
         finally:
             connection.close()
+
+
+def _statements(script: str) -> Iterator[str]:
+    """Split a migration script into complete SQL statements."""
+    pending = ""
+    for line in script.splitlines(keepends=True):
+        if not pending and line.lstrip().startswith("--"):
+            continue
+        pending += line
+        if sqlite3.complete_statement(pending):
+            yield pending.strip()
+            pending = ""
+    if pending.strip():
+        raise ValueError("migration ends with an incomplete SQL statement")
 
 
 def encode_timestamp(value: datetime) -> str:

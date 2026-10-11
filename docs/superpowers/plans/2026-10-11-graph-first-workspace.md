@@ -183,21 +183,21 @@ git commit -m "feat(web): float controls and link analysis to graph"
 **Interfaces:**
 - Consume Tasks 1–3; add no new production abstraction unless a failing browser test proves it necessary.
 
-- [ ] **Step 1: Update existing E2E flows first**
+- [x] **Step 1: Update existing E2E flows first**
 
 Test category navigation, health-list-to-graph selection, panel hiding, Position Analysis handoff, responsive exclusivity, and no horizontal overflow by extending existing specs rather than creating a large new suite.
 
-- [ ] **Step 2: Extend the scale test**
+- [x] **Step 2: Extend the scale test**
 
 Search for a node beyond the initial cap, assert it reaches the canvas and can be focused, then retain existing payload, render-time, long-task, click-time, and 400-node budgets.
 
-- [ ] **Step 3: Verify browser RED where integration is incomplete**
+- [x] **Step 3: Verify browser RED where integration is incomplete**
 
 Run: `UV_CACHE_DIR=/private/tmp/risk0-uv-cache pnpm --filter @risk0/web test:e2e`
 
 Run: `UV_CACHE_DIR=/private/tmp/risk0-uv-cache pnpm --filter @risk0/web test:e2e:scale`
 
-- [ ] **Step 4: Apply only integration fixes and verify the full matrix**
+- [x] **Step 4: Apply only integration fixes and verify the full matrix**
 
 Run: `pnpm --filter @risk0/contracts test`
 

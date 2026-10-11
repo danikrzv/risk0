@@ -6,6 +6,7 @@ import { expect, test } from "@playwright/test"
 // and must not look safe.
 test("expired oracle data and a failed quote refresh are UNAVAILABLE, never safe", async ({ page }) => {
   await page.goto("/")
+  await page.getByRole("button", { name: "Position Analysis", exact: true }).click()
 
   await page.getByRole("radio", { name: /WBTC collateral \/ USDC debt/ }).check()
   await page.getByRole("radio", { name: "Borrower", exact: true }).check()

@@ -561,7 +561,8 @@ describe("Home", () => {
     render(<Home />)
     await screen.findByRole("heading", { name: "Morpho radar graph" })
     const chooseFromCategory = (label: string) => {
-      fireEvent.click(screen.getByRole("button", { name: "Incidents" }))
+      // Scoped queries: whole-document role lookups are slow on this large DOM.
+      fireEvent.click(within(screen.getByRole("navigation", { name: "Primary" })).getByRole("button", { name: "Incidents" }))
       const list = screen.getByRole("list", { name: "Active incident categories" })
       fireEvent.click(within(list).getByRole("button", { name: new RegExp(label) }))
     }

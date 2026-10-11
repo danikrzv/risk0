@@ -2,8 +2,28 @@ import { expect, test } from "@playwright/test"
 
 // Golden flow 2 (fixture mode): a wstETH/WETH borrower at the preset LTV is
 // liquidated by the 15% collateral shock, so the recommendation is EXIT.
+// The fixture radar uses synthetic addresses, so the analyzed market is added
+// to the graph response to exercise the analysis → graph handoff.
+const ANALYZED_MARKET = {
+  entity_id: "market:1:0xb8fc70e82bc5bb53e773626fcc6a23f7eefa036918d7ef216ecfb1950a94a85e",
+  entity_type: "market",
+  chain_id: 1,
+  address_or_key: "0xb8fc70e82bc5bb53e773626fcc6a23f7eefa036918d7ef216ecfb1950a94a85e",
+  label: "wstETH / WETH 96.5%",
+  source: "fixture:e2e",
+  catalog: true,
+  visible: true,
+  metadata: { health_status: "WARNING" },
+}
+
 test("wstETH/WETH borrower at the preset LTV exits on a 15% collateral shock", async ({ page }) => {
+  await page.route("**/api/graph", async (route) => {
+    const response = await route.fetch()
+    const graph = await response.json()
+    await route.fulfill({ response, json: { ...graph, entities: [...graph.entities, ANALYZED_MARKET] } })
+  })
   await page.goto("/")
+  await page.getByRole("button", { name: "Position Analysis", exact: true }).click()
 
   await page.getByRole("radio", { name: /wstETH collateral \/ WETH debt/ }).check()
   await page.getByRole("radio", { name: "Borrower", exact: true }).check()
@@ -36,4 +56,13 @@ test("wstETH/WETH borrower at the preset LTV exits on a 15% collateral shock", a
   await expect(shock.getByRole("list", { name: "Hard triggers" })).toHaveText("liquidation")
   await expect(shock).toContainText(/Affected path[\s\S]*wstETH/)
   await expect(card).toContainText(/Route: wstETH → WETH/)
+
+  // Hand the result off to the graph, focused on the analyzed market, and back.
+  await card.getByRole("button", { name: "View dependencies" }).click()
+  await expect(page.getByRole("button", { name: "Graph", exact: true })).toHaveAttribute("aria-current", "page")
+  const detail = page.getByRole("region", { name: "Selected radar entity" })
+  await expect(detail.getByRole("heading", { name: "wstETH / WETH 96.5%" })).toBeVisible()
+  await expect(page.locator(".react-flow__node.selected")).toHaveCount(1)
+  await page.getByRole("button", { name: "Position Analysis", exact: true }).click()
+  await expect(card.getByRole("heading", { level: 3 })).toHaveText("EXIT")
 })

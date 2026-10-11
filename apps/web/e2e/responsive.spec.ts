@@ -13,4 +13,18 @@ test("phone width has no horizontal scroll and keeps the disclaimer visible", as
   })
   expect(overflow).toBeLessThanOrEqual(0)
   await expect(page.getByRole("contentinfo").getByText(/NOT INVESTMENT ADVICE/)).toBeVisible()
+
+  // Graph first: both panels start closed, and only one opens at a time.
+  const exposure = page.getByRole("region", { name: "Exposure" })
+  await expect(exposure).toBeHidden()
+  await page.getByRole("button", { name: "Exposure", exact: true }).click()
+  await expect(exposure).toBeVisible()
+  await page.getByRole("button", { name: /^Incidents \(\d+\)$/ }).click()
+  await expect(page.getByRole("heading", { name: "Incidents", exact: true })).toBeVisible()
+  await expect(exposure).toBeHidden()
+  const overflowWithPanel = await page.evaluate(() => {
+    const root = document.scrollingElement ?? document.documentElement
+    return root.scrollWidth - root.clientWidth
+  })
+  expect(overflowWithPanel).toBeLessThanOrEqual(0)
 })

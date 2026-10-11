@@ -1,0 +1,57 @@
+{
+  "chain_id": 1,
+  "description": "Published heartbeats of non-Chainlink (third-party) price feeds read by Morpho market oracles on Ethereum. An entry exists only where the provider, or the documented upstream feed whose update time the contract returns unchanged, publishes the feed's maximum interval between updates. Values are never inferred here. An entry applies only when the feed's on-chain description() equals `description`. Feeds without an entry (for example Midas mGLOeuro/EUR 0x8b7b1689396ef4468df1c0fab181d29b47089609, for which no published update cadence was found on 2026-10-11) have an unknown heartbeat.",
+  "verified_at": "2026-10-11",
+  "feeds": [
+    {
+      "address": "0x62c69ee85613942d53cc16fc480e0606c7611b5d",
+      "description": "RedStone Price Feed for oTFYe_FUNDAMENTAL",
+      "provider": "RedStone",
+      "heartbeat_seconds": 86400,
+      "deviation_threshold_percent": 0.5,
+      "source_url": "https://github.com/redstone-finance/redstone-oracles-monorepo/blob/4ec694c582ed04aaa9fc1ccaf49e908ef223f5d9/packages/relayer-remote-config/main/relayer-manifests-multi-feed/ethereumMultiFeed.json",
+      "source_quote": "\"oTFYe_FUNDAMENTAL\": {\"priceFeedAddress\": \"0x62C69EE85613942D53cC16Fc480E0606c7611b5d\", \"updateTriggersOverrides\": {\"deviationPercentage\": 0.5, \"timeSinceLastUpdateInMilliseconds\": 86400000}}",
+      "note": "RedStone's public relayer manifest for its Ethereum multi-feed push feeds; timeSinceLastUpdateInMilliseconds is the heartbeat (RedStone push-model docs: UPDATE_PRICE_INTERVAL 'states how often prices should be updated (aka heartbeat)')."
+    },
+    {
+      "address": "0x33c6f75916db4267e52209a8e6b270b22d983b53",
+      "description": "RedStone Price Feed for trUSD_FUNDAMENTAL",
+      "provider": "RedStone",
+      "heartbeat_seconds": 43200,
+      "deviation_threshold_percent": 0.5,
+      "source_url": "https://github.com/redstone-finance/redstone-oracles-monorepo/blob/4ec694c582ed04aaa9fc1ccaf49e908ef223f5d9/packages/relayer-remote-config/main/relayer-manifests-multi-feed/ethereumMultiFeed.json",
+      "source_quote": "\"trUSD_FUNDAMENTAL\": {\"priceFeedAddress\": \"0x33c6F75916Db4267e52209A8E6B270b22d983B53\", \"updateTriggersOverrides\": {\"deviationPercentage\": 0.5, \"timeSinceLastUpdateInMilliseconds\": 43200000}}",
+      "note": "RedStone's public relayer manifest for its Ethereum multi-feed push feeds."
+    },
+    {
+      "address": "0x835cfff06a60a16fd1880c3b0befac9968abd659",
+      "description": "RedStone Price Feed for etrUSD_FUNDAMENTAL/USD",
+      "provider": "RedStone",
+      "heartbeat_seconds": 21600,
+      "deviation_threshold_percent": 0.1,
+      "source_url": "https://github.com/redstone-finance/redstone-oracles-monorepo/blob/4ec694c582ed04aaa9fc1ccaf49e908ef223f5d9/packages/relayer-remote-config/main/relayer-manifests-multi-feed/ethereumMultiFeed.json",
+      "source_quote": "\"etrUSD_FUNDAMENTAL/USD\": {\"priceFeedAddress\": \"0x835Cfff06A60a16FD1880C3b0BEFac9968ABd659\", \"updateTriggersOverrides\": {\"deviationPercentage\": 0.1, \"timeSinceLastUpdateInMilliseconds\": 21600000}}",
+      "note": "RedStone's public relayer manifest for its Ethereum multi-feed push feeds."
+    },
+    {
+      "address": "0x7fda577c085330e69df3179a2a5867751a9d0caa",
+      "description": "RedStone Price Feed for strUSD_FUNDAMENTAL",
+      "provider": "RedStone",
+      "heartbeat_seconds": 21600,
+      "deviation_threshold_percent": 0.1,
+      "source_url": "https://github.com/redstone-finance/redstone-oracles-monorepo/blob/4ec694c582ed04aaa9fc1ccaf49e908ef223f5d9/packages/relayer-remote-config/main/relayer-manifests-multi-feed/ethereumMultiFeed.json",
+      "source_quote": "\"strUSD_FUNDAMENTAL\": {\"priceFeedAddress\": \"0x7fdA577c085330E69df3179A2A5867751A9D0cAA\", \"updateTriggersOverrides\": {\"deviationPercentage\": 0.1, \"timeSinceLastUpdateInMilliseconds\": 21600000}}",
+      "note": "RedStone's public relayer manifest for its Ethereum multi-feed push feeds."
+    },
+    {
+      "address": "0x4f67e4d9bd67efa28236013288737d39aef48e79",
+      "description": "Custom price feed for wstETH / ETH",
+      "provider": "Chainlink (STETH / ETH via Compound WstETHPriceFeed)",
+      "heartbeat_seconds": 86400,
+      "deviation_threshold_percent": 0.5,
+      "source_url": "https://reference-data-directory.vercel.app/feeds-mainnet.json",
+      "source_quote": "{\"name\": \"STETH / ETH\", \"proxyAddress\": \"0x86392dC19c0b719886221c78AB11eb8Cf5c52812\", \"heartbeat\": 86400, \"threshold\": 0.5}",
+      "note": "Compound's verified WstETHPriceFeed (https://github.com/compound-finance/comet/blob/main/contracts/pricefeeds/WstETHPriceFeed.sol; constructor stETHtoETHPriceFeed_ = 0x86392dC19c0b719886221c78AB11eb8Cf5c52812) returns the roundId, startedAt and updatedAt of Chainlink's STETH / ETH feed unchanged and recomputes only the price, so its age is that feed's age and the published heartbeat is Chainlink's for STETH / ETH (Chainlink feed directory, the data behind data.chain.link)."
+    }
+  ]
+}

@@ -1,4 +1,9 @@
-"""An in-memory Ethereum `eth_call` responder: Chainlink proxies, rate adapters, Morpho oracles.
+"""An in-memory Ethereum `eth_call` responder: Chainlink proxies, rate adapters, Morpho oracles,
+third-party AggregatorV3 feeds and feeds that compute their answer when read.
+
+Multicall3's `getBlockNumber()` / `getCurrentBlockTimestamp()` answer only when
+`block_timestamp` is set (12 s per block); otherwise they revert, as on a chain
+without them. An `eth_call` pinned to an earlier block sees that block's time.
 
 Contracts are answered by selector, Multicall3 `aggregate3` is executed call by
 call (with per-call failure), and aggregators refuse reads that arrive through
@@ -70,6 +75,17 @@ class FakeChain:
         self.calls: list[tuple[str, str]] = []
         self.eth_calls = 0
         self.fail = False
+        self.block_number = 1000
+        self.block_timestamp: int | None = None
+        self.blocks_called: list[str] = []
+        self._at_block: int | None = None
+
+    def now(self) -> int:
+        """The timestamp of the block the current call executes in."""
+        if self.block_timestamp is None:
+            raise Revert("no block time")
+        block = self.block_number if self._at_block is None else self._at_block
+        return self.block_timestamp - 12 * (self.block_number - block)
 
     # Contracts
 
@@ -127,6 +143,63 @@ class FakeChain:
 
         self.handlers[address.lower()] = handle
 
+    def add_third_party_feed(
+        self,
+        address: str,
+        description: str,
+        decimals: int,
+        rounds: list[tuple[int, int, int]],
+        *,
+        history: bool = True,
+    ) -> list[tuple[int, int, int]]:
+        """An AggregatorV3 feed without `phaseId()`; `rounds` are (round id, answer, updated_at)."""
+
+        def handle(data: str, via_multicall: bool) -> bytes:
+            selector = data[:10]
+            if selector == "0x7284e416":
+                return string_result(description)
+            if selector == "0x313ce567":
+                return word(decimals)
+            if selector == "0xfeaf968c":
+                return round_result(*rounds[-1])
+            if selector == "0x9a6fc8f5" and history:
+                wanted = int(data[10:], 16)
+                found = next((item for item in rounds if item[0] == wanted), None)
+                if found is None:
+                    raise Revert("no round")
+                return round_result(*found)
+            raise Revert(selector)
+
+        self.handlers[address.lower()] = handle
+        return rounds
+
+    def add_computed_feed(
+        self,
+        address: str,
+        description: str,
+        answer: int,
+        *,
+        decimals: int = 18,
+        round_id: int = 0,
+        zero_time: bool = False,
+        any_round: bool = False,
+    ) -> dict:
+        """A feed computing its answer when read: `updatedAt` is 0 or the block's own time."""
+        state = {"answer": answer}
+
+        def handle(data: str, via_multicall: bool) -> bytes:
+            selector = data[:10]
+            if selector == "0x7284e416":
+                return string_result(description)
+            if selector == "0x313ce567":
+                return word(decimals)
+            if selector == "0xfeaf968c" or (selector == "0x9a6fc8f5" and any_round):
+                return round_result(round_id, state["answer"], 0 if zero_time else self.now())
+            raise Revert(selector)
+
+        self.handlers[address.lower()] = handle
+        return state
+
     def add_oracle(
         self,
         address: str,
@@ -173,18 +246,29 @@ class FakeChain:
             self.eth_calls += 1
             target = params[0]["to"].lower()
             data = params[0]["data"]
-            if target == MULTICALL:
-                return "0x" + self._aggregate3(data).hex()
+            tag = params[1] if len(params) > 1 else "latest"
+            self.blocks_called.append(str(tag))
+            self._at_block = None if tag == "latest" else int(str(tag), 16)
             try:
+                if target == MULTICALL:
+                    return "0x" + self._aggregate3(data).hex()
                 return "0x" + self._execute(target, data, via_multicall=False).hex()
             except Revert:
                 raise EthereumCallReverted("execution reverted") from None
+            finally:
+                self._at_block = None
         if method == "eth_blockNumber":
             return hex(1)
         raise AssertionError(f"unexpected method {method}")
 
     def _execute(self, target: str, data: str, *, via_multicall: bool) -> bytes:
         self.calls.append((target, data[:10]))
+        if target == MULTICALL:
+            if data[:10] == "0x42cbb15c" and self.block_timestamp is not None:
+                return word(self.block_number if self._at_block is None else self._at_block)
+            if data[:10] == "0x0f28c97d":
+                return word(self.now())
+            raise Revert(data[:10])
         handler = self.handlers.get(target)
         if handler is None:
             raise Revert("no code")

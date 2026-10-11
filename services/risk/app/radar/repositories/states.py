@@ -7,7 +7,15 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal, localcontext
 
 from app.contracts.models import FreshnessStatus, MetricValue
-from app.radar.contracts import HealthState, HealthStatus, RadarEntityType, StateSnapshot
+from pydantic import ValidationError
+
+from app.radar.contracts import (
+    HealthDerivation,
+    HealthState,
+    HealthStatus,
+    RadarEntityType,
+    StateSnapshot,
+)
 from app.radar.repositories.database import (
     RadarDatabase,
     decode_cursor,
@@ -29,6 +37,11 @@ MAX_HISTORY_LIMIT = 1000
 # Ages computed from the collection clock (see the collectors): they change on
 # every read even when the source state has not, so they are not a state change.
 CLOCK_DERIVED_METRICS = frozenset({"state_age_seconds", "head_age_seconds"})
+# Bulk health reads (every entity per monitoring cycle, the graph) leave the
+# derivation column unread; single-entity reads return it.
+_HEALTH_SUMMARY_COLUMNS = (
+    "entity_id, evaluated_at, status, score, reasons, missing_fields, rule_version"
+)
 _FRESHNESS_ORDER = (
     FreshnessStatus.FRESH,
     FreshnessStatus.STALE_USABLE,
@@ -167,7 +180,13 @@ class StateRepository:
         return self.record_health((state,)) == 1
 
     def record_health(self, states: Iterable[HealthState]) -> int:
-        """Record evaluations in one transaction; returns how many were new."""
+        """Record evaluations in one transaction; returns how many were new.
+
+        Each state's derivation is stored with it. Callers decide which states
+        to record (see the monitoring service: changes plus an hourly
+        heartbeat); the derivation never takes part in that decision, so a
+        stored derivation explains the evaluation that produced the stored state.
+        """
         rows = [
             (
                 state.entity_id,
@@ -177,6 +196,7 @@ class StateRepository:
                 encode_strings(state.reasons),
                 encode_strings(state.missing_fields),
                 state.rule_version,
+                None if state.derivation is None else state.derivation.model_dump_json(),
             )
             for state in states
         ]
@@ -188,8 +208,8 @@ class StateRepository:
                 """
                 INSERT OR IGNORE INTO health_states (
                     entity_id, evaluated_at, status, score, reasons, missing_fields,
-                    rule_version
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    rule_version, derivation
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 rows,
             )
@@ -198,15 +218,16 @@ class StateRepository:
                 """
                 INSERT INTO latest_health_states (
                     entity_id, evaluated_at, status, score, reasons, missing_fields,
-                    rule_version
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    rule_version, derivation
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(entity_id) DO UPDATE SET
                     evaluated_at = excluded.evaluated_at,
                     status = excluded.status,
                     score = excluded.score,
                     reasons = excluded.reasons,
                     missing_fields = excluded.missing_fields,
-                    rule_version = excluded.rule_version
+                    rule_version = excluded.rule_version,
+                    derivation = excluded.derivation
                 WHERE excluded.evaluated_at > latest_health_states.evaluated_at
                 """,
                 rows,
@@ -214,6 +235,7 @@ class StateRepository:
             return inserted
 
     def latest_health(self, entity_id: str) -> HealthState | None:
+        """Latest evaluation of one entity, with its derivation when recorded."""
         with self._db.read() as connection:
             row = connection.execute(
                 """
@@ -235,8 +257,9 @@ class StateRepository:
     def latest_health_all(self) -> dict[str, HealthState]:
         with self._db.read() as connection:
             rows = connection.execute(
-                """
-                SELECT * FROM latest_health_states ORDER BY entity_id
+                f"""
+                SELECT {_HEALTH_SUMMARY_COLUMNS} FROM latest_health_states
+                ORDER BY entity_id
                 """
             ).fetchall()
         return {row["entity_id"]: _health(row) for row in rows}
@@ -248,7 +271,9 @@ class StateRepository:
         with self._db.read() as connection:
             rows = connection.execute(
                 """
-                SELECT h.* FROM json_each(?) AS ids
+                SELECT h.entity_id, h.evaluated_at, h.status, h.score, h.reasons,
+                       h.missing_fields, h.rule_version
+                FROM json_each(?) AS ids
                 JOIN latest_health_states h ON h.entity_id = ids.value
                 """,
                 (json.dumps(list(entity_ids)),),
@@ -273,7 +298,10 @@ class StateRepository:
             rows = connection.execute(snapshot_sql, params).fetchall()
             page = rows[:limit]
             has_more = len(rows) > limit
-            health_sql = "SELECT * FROM health_states WHERE entity_id = ?"
+            # Pages stay small: derivations come from the latest-health read.
+            health_sql = (
+                f"SELECT {_HEALTH_SUMMARY_COLUMNS} FROM health_states WHERE entity_id = ?"
+            )
             health_params: list[object] = [entity_id]
             if upper is not None:
                 health_sql += " AND evaluated_at < ?"
@@ -459,7 +487,19 @@ def _health(row: sqlite3.Row) -> HealthState:
         missing_fields=decode_strings(row["missing_fields"]),
         evaluated_at=decode_timestamp(row["evaluated_at"]),
         rule_version=row["rule_version"],
+        derivation=_derivation(row),
     )
+
+
+def _derivation(row: sqlite3.Row) -> HealthDerivation | None:
+    if "derivation" not in row.keys() or row["derivation"] is None:
+        return None
+    try:
+        return HealthDerivation.model_validate_json(row["derivation"])
+    except ValidationError:
+        # A derivation written by another contract version is not shown
+        # rather than failing the state it explains.
+        return None
 
 
 def _same_state(previous: StateSnapshot, current: StateSnapshot) -> bool:

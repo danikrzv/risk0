@@ -571,6 +571,51 @@ def test_unchanged_observations_confirm_hysteresis_without_rewriting_history(dat
     ]
 
 
+def test_changing_metric_values_alone_do_not_rewrite_health(database):
+    """The derivation changes every cycle; health is still written only on change."""
+    states = StateRepository(database)
+    utilization = [Decimal("0.95"), Decimal("0.96"), Decimal("0.955"), Decimal("0.951")]
+    service = build_service(
+        database,
+        PerCycleCollector(
+            lambda now: (
+                snapshot(
+                    MARKET,
+                    now,
+                    metrics={
+                        **WARNING_MARKET_METRICS,
+                        "utilization": utilization[(now - NOW) // FIVE_MINUTES],
+                    },
+                ),
+            )
+        ),
+        discovery=FixedDiscovery(markets_batch(entity(RadarEntityType.MARKET, "market-a"))),
+        chain_collector=AnyTimeChainCollector(),
+        states=states,
+        events=RecordingEvents(),
+    )
+    service.run_discovery(NOW)
+
+    for cycle in range(4):
+        service.run_monitoring(NOW + FIVE_MINUTES * cycle)
+
+    # Pending warning, then the confirmed warning; later cycles only changed values.
+    assert [h.status for h in states.history(MARKET).health_states] == [
+        HealthStatus.WARNING,
+        HealthStatus.HEALTHY,
+    ]
+    latest = states.latest_health(MARKET)
+    assert latest.evaluated_at == NOW + FIVE_MINUTES
+    # The stored derivation explains the stored evaluation, not the last cycle.
+    utilization_check = next(
+        check
+        for check in latest.derivation.checks
+        if check.metric == "utilization" and check.leads_to is HealthStatus.WARNING
+    )
+    assert utilization_check.observed == Decimal("0.96")
+    assert latest.derivation.final_status is HealthStatus.WARNING
+
+
 def test_one_cycle_emits_one_graph_update_and_a_bounded_number_of_incident_events(database):
     from app.radar.service import MAX_INCIDENT_EVENTS, MAX_NOTIFICATION_EVENTS
 

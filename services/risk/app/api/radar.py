@@ -15,6 +15,7 @@ from app.api.events import RadarEventBroker, get_event_broker
 from app.config import radar_chain_ids
 from app.radar.analysis import ExposureImpactEstimator
 from app.radar.contracts import (
+    EntityHealthResponse,
     EntityHistoryResponse,
     ExposureCreateRequest,
     ExposureImpactResponse,
@@ -346,6 +347,28 @@ def incident_graph(
         similarities=similarities,
         exposures=exposures,
         impacts=impacts,
+        generated_at=datetime.now(UTC),
+    )
+
+
+@router.get(
+    "/graph/entities/{entity_id}/health", response_model=EntityHealthResponse
+)
+def entity_health(
+    entity_id: str, context: RadarContext = Depends(get_radar_context)
+) -> EntityHealthResponse:
+    """Latest health of one entity with how it was computed.
+
+    Kept out of GET /v1/graph so the graph payload stays small. The derivation
+    is the one recorded with the stored state (health is persisted on change
+    or hourly), so it explains `evaluated_at`, not necessarily the last cycle;
+    it is null for states recorded without one.
+    """
+    if context.topology.get_entity(entity_id) is None:
+        raise _not_found("Entity")
+    return EntityHealthResponse(
+        entity_id=entity_id,
+        health=context.states.latest_health(entity_id),
         generated_at=datetime.now(UTC),
     )
 

@@ -357,13 +357,7 @@ def build_fixture_analysis_service():
 
 def seed_fixture_radar(context) -> None:
     """Seed a deterministic healthy topology for UI and E2E demos."""
-    from app.radar.contracts import (
-        HealthState,
-        RadarEntity,
-        RadarRelationship,
-        SimilarityRecord,
-        StateSnapshot,
-    )
+    from app.radar.contracts import RadarEntity, RadarRelationship, SimilarityRecord
 
     observed_at = datetime(2026, 10, 10, 12, tzinfo=UTC)
     chain = "chain:1:ethereum"
@@ -404,31 +398,83 @@ def seed_fixture_radar(context) -> None:
             SimilarityRecord(catalog_entity_id=catalog_vault, candidate_entity_id=hidden_neighbor, score=Decimal("0.48"), components={"shared_markets": Decimal("0.25"), "asset_overlap": Decimal("0.15"), "same_chain": Decimal("0.05"), "lltv_proximity": Decimal("0.03")}, stored=True, normally_visible=False, computed_at=observed_at),
         ),
     )
-    for entity in entities:
-        context.states.append_snapshot(
-            StateSnapshot(
-                snapshot_id=f"{entity.entity_id}|fixture|{observed_at.isoformat()}",
-                entity_id=entity.entity_id,
-                state_type=entity.entity_type,
-                observed_at=observed_at,
-                retrieved_at=observed_at,
-                source="fixture:radar",
-                source_identity="fixture:radar",
-                freshness="fresh",
-                metrics={"status": "HEALTHY"},
-            )
+    _seed_fixture_health(context, entities, relationships, observed_at)
+
+
+# Healthy measurements per seeded entity type, evaluated by the real health
+# rules so the seeded states carry the same derivation a radar cycle records.
+# Chain, protocol and asset have no numeric rule: the fixture source states
+# their status explicitly, as a live source may.
+_FIXTURE_METRICS = {
+    "chain": {"status": "HEALTHY"},
+    "protocol": {"status": "HEALTHY"},
+    "asset": {"status": "HEALTHY"},
+    "oracle": {"oracle_price": Decimal("2450.12")},
+    "market": {
+        "utilization": Decimal("0.72"),
+        "available_liquidity": Decimal("18500000"),
+        "lender_hhi": Decimal("0.08"),
+        "borrower_hhi": Decimal("0.11"),
+        "near_liquidation_debt_ratio": Decimal("0.03"),
+        "bad_debt": Decimal("0"),
+    },
+    "vault": {
+        "withdrawal_liquidity": Decimal("4200000"),
+        "allocation_hhi": Decimal("0.18"),
+        "unmodelled_allocation_ratio": Decimal("0"),
+    },
+}
+
+
+def _seed_fixture_health(context, entities, relationships, observed_at: datetime) -> None:
+    """Record one evaluated, HEALTHY state (with its derivation) per entity."""
+    from app.radar.analysis import HealthEvaluator, HealthHistory
+    from app.radar.contracts import HealthStatus, RadarRelationshipType, StateSnapshot
+
+    dependency_ids: dict[str, list[str]] = {}
+    allocations: dict[str, dict[str, Decimal]] = {}
+    for relationship in relationships:
+        dependency_ids.setdefault(relationship.source_entity_id, []).append(
+            relationship.target_entity_id
         )
-        context.states.set_health(
-            HealthState(
-                entity_id=entity.entity_id,
-                status="HEALTHY",
-                score=Decimal("1"),
-                reasons=("fixture measurements normal",),
-                missing_fields=(),
-                evaluated_at=observed_at,
-                rule_version="fixture-health-v1",
-            )
+        if (
+            relationship.relationship_type is RadarRelationshipType.ALLOCATED_TO
+            and relationship.weight is not None
+        ):
+            allocations.setdefault(relationship.source_entity_id, {})[
+                relationship.target_entity_id
+            ] = relationship.weight
+    order = ("chain", "asset", "oracle", "irm", "protocol", "market", "vault", "position")
+    evaluator = HealthEvaluator()
+    evaluated = {}
+    for entity in sorted(entities, key=lambda item: (order.index(item.entity_type.value), item.entity_id)):
+        snapshot = StateSnapshot(
+            snapshot_id=f"{entity.entity_id}|fixture|{observed_at.isoformat()}",
+            entity_id=entity.entity_id,
+            state_type=entity.entity_type,
+            observed_at=observed_at,
+            retrieved_at=observed_at,
+            source="fixture:radar",
+            source_identity="fixture:radar",
+            freshness="fresh",
+            metrics=_FIXTURE_METRICS[entity.entity_type.value],
         )
+        context.states.append_snapshot(snapshot)
+        state = evaluator.evaluate(
+            entity,
+            snapshot,
+            tuple(
+                evaluated[dependency]
+                for dependency in dependency_ids.get(entity.entity_id, ())
+                if dependency in evaluated
+            ),
+            HealthHistory(),
+            allocations=allocations.get(entity.entity_id),
+        )
+        if state.status is not HealthStatus.HEALTHY:
+            raise RuntimeError(f"fixture entity {entity.entity_id} must seed HEALTHY")
+        evaluated[entity.entity_id] = state
+        context.states.set_health(state)
 
 
 def open_fixture_radar_incident(context, broker, now: datetime | None = None):

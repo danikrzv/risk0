@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel, ConfigDict
 
 from app.contracts.models import CatalogEntry, DecimalValue, HexIdentifier, RiskNodeType
+from app.domain.protocol import ProtocolTvlSnapshot
 from app.domain.snapshots import (
     AllocationSnapshot,
     DataEnvelope,
@@ -63,6 +64,7 @@ class GraphContext:
     - `asset_registry`: issuer and underlying registry used to look through each asset
       to what backs it. `None` disables look-through (and its warnings) entirely; the
       analysis service always supplies the version-controlled registry.
+    - `protocol_tvl`: Morpho's TVL and chain TVL share (DeFiLlama) for the protocol node.
     """
 
     entry: CatalogEntry
@@ -74,6 +76,7 @@ class GraphContext:
     oracles: Mapping[str, DataEnvelope[OracleObservation]] = field(default_factory=dict)
     pool_depths: Mapping[str, Decimal] = field(default_factory=dict)
     asset_registry: "AssetRegistry | None" = None
+    protocol_tvl: DataEnvelope[ProtocolTvlSnapshot] | None = None
 
 
 def node_id(node_type: RiskNodeType, key: str, chain_id: int = CHAIN_ID) -> str:

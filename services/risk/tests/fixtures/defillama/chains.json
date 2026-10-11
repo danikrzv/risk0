@@ -1,0 +1,29 @@
+[
+ {
+  "gecko_id": null,
+  "gasTokenGeckoId": "ethereum",
+  "tvl": 6209979972.531421,
+  "tokenSymbol": null,
+  "cmcId": null,
+  "name": "Base",
+  "chainId": 8453
+ },
+ {
+  "gecko_id": "ethereum",
+  "gasTokenGeckoId": "ethereum",
+  "tvl": 51524257395.28339,
+  "tokenSymbol": "ETH",
+  "cmcId": "1027",
+  "name": "Ethereum",
+  "chainId": 1
+ },
+ {
+  "gecko_id": "solana",
+  "gasTokenGeckoId": "solana",
+  "tvl": 6219199779.281822,
+  "tokenSymbol": "SOL",
+  "cmcId": "5426",
+  "name": "Solana",
+  "chainId": null
+ }
+]

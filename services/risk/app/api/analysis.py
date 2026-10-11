@@ -40,9 +40,12 @@ def build_default_analysis_service() -> AnalysisService:
     every graph oracle is missing critical data, so the recommendation is
     UNAVAILABLE (never STAY) instead of failing the request."""
     from app.adapters.defillama import DefiLlamaClient
+    from app.adapters.defillama_coins import DefiLlamaCoinsClient
     from app.adapters.defiscan import DefiScanClient
     from app.analysis.service import DefiLlamaProtocolTvl
+    from app.catalog.assets import default_asset_registry
     from app.config import Settings
+    from app.history.market_price import MarketPriceDepegHistory
 
     catalog_path = Path(
         os.environ.get(
@@ -64,7 +67,7 @@ def build_default_analysis_service() -> AnalysisService:
         logger.warning("ETHEREUM_RPC_URL is not configured; Ethereum-backed data is unavailable")
         settings = None
 
-    quotes = gas = prices = history = oracles = None
+    quotes = gas = prices = history = oracles = ethereum = None
     if settings is not None:
         from app.adapters.ethereum import EthereumClient
         from app.adapters.uniswap import UniswapClient
@@ -86,10 +89,16 @@ def build_default_analysis_service() -> AnalysisService:
             feed_notes=ethereum.feed_notes(),
         )
 
+    # Stablecoin depeg for an asset without a Chainlink feed (EURCV): DeFiLlama
+    # market prices against the registry peg (EUR via Chainlink EUR/USD).
+    market_prices = MarketPriceDepegHistory(
+        DefiLlamaCoinsClient(cache=cache), ethereum, default_asset_registry()
+    )
+
     return AnalysisService(
         CatalogRepository(catalog_path),
         morpho,
-        probabilities=HybridProbabilityProvider(history, evidence),
+        probabilities=HybridProbabilityProvider(history, evidence, market_prices=market_prices),
         quotes=quotes,
         gas=gas,
         prices=prices,

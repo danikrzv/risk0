@@ -7,6 +7,7 @@ import { POST as postBook } from "./book/route"
 import { GET } from "./catalog/route"
 import { GET as getEvents } from "./events/route"
 import { GET as getExposureImpact, POST as createExposure } from "./exposures/route"
+import { GET as getEntityHealth } from "./graph/health/route"
 import { GET as getGraph } from "./graph/route"
 import { POST as markAllNotificationsRead } from "./notifications/read-all/route"
 import { GET as getNotifications, POST as markNotificationRead } from "./notifications/route"
@@ -580,6 +581,151 @@ describe("POST /api/exposures", () => {
 
     expect(response.status).toBe(502)
     expect(await response.json()).toEqual({ error: "Risk service returned an invalid response" })
+  })
+})
+
+const entityHealthResponse = {
+  schema_version: "1.0.0",
+  entity_id: "market:1:weth/usdc",
+  health: {
+    entity_id: "market:1:weth/usdc",
+    status: "WARNING",
+    score: "0.5",
+    reasons: ["utilization exceeds warning threshold"],
+    missing_fields: [],
+    evaluated_at: "2026-10-10T12:05:00Z",
+    rule_version: "radar-health-v1",
+    derivation: {
+      entity_type: "market",
+      freshness: "fresh",
+      checks: [{
+        stage: "metrics",
+        rule: "Utilization at or above the warning threshold",
+        metric: "utilization",
+        observed: "0.93",
+        note: null,
+        operator: ">=",
+        threshold: "0.90",
+        outcome: "breach",
+        leads_to: "WARNING",
+        decisive: true,
+      }],
+      dependencies: {
+        dependencies: [{ entity_id: "oracle:1:a", status: "HEALTHY", counted: "full", weight: null }],
+        weighted_totals: { HEALTHY: "0", WARNING: "0", CRITICAL: "0", UNKNOWN: "0" },
+        material_allocation: "0.05",
+        status: "HEALTHY",
+        reason: "dependencies normal",
+      },
+      raw_status: "WARNING",
+      raw_reasons: ["utilization exceeds warning threshold"],
+      hysteresis: {
+        previous_status: "HEALTHY",
+        raw_status: "WARNING",
+        rule: "warning_confirmation",
+        consecutive_abnormal: 1,
+        consecutive_normal: 0,
+        counter: 2,
+        cycles_required: 2,
+        held: false,
+        final_status: "WARNING",
+      },
+      final_status: "WARNING",
+      score: "0.5",
+      score_mapping: { HEALTHY: "1", WARNING: "0.5", CRITICAL: "0", UNKNOWN: null },
+      rule_version: "radar-health-v1",
+    },
+  },
+  generated_at: "2026-10-10T12:06:00Z",
+}
+
+describe("GET /api/graph/health", () => {
+  it("proxies one entity's health with an encoded ID, no-store, and a bounded timeout", async () => {
+    const fetchMock = vi.fn(async () => Response.json(entityHealthResponse))
+    vi.stubGlobal("fetch", fetchMock)
+
+    const response = await getEntityHealth(
+      new Request("http://localhost/api/graph/health?entity_id=market%3A1%3Aweth%2Fusdc"),
+    )
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual(entityHealthResponse)
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toBe(`${UPSTREAM}/v1/graph/entities/market%3A1%3Aweth%2Fusdc/health`)
+    expect(init.cache).toBe("no-store")
+    expect(init.signal).toBeInstanceOf(AbortSignal)
+  })
+
+  it("accepts states without a derivation and entities never evaluated", async () => {
+    for (const body of [
+      { ...entityHealthResponse, health: { ...entityHealthResponse.health, derivation: null } },
+      { ...entityHealthResponse, health: null },
+    ]) {
+      vi.stubGlobal("fetch", vi.fn(async () => Response.json(body)))
+      const response = await getEntityHealth(new Request("http://localhost/api/graph/health?entity_id=a"))
+      expect(response.status).toBe(200)
+      expect(await response.json()).toEqual(body)
+    }
+  })
+
+  it("rejects a missing entity ID before calling upstream", async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal("fetch", fetchMock)
+
+    const response = await getEntityHealth(new Request("http://localhost/api/graph/health"))
+
+    expect(response.status).toBe(400)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it("rejects responses whose derivation does not match the contract", async () => {
+    const derivation = entityHealthResponse.health.derivation
+    for (const broken of [
+      { ...derivation, checks: [{ ...derivation.checks[0], decisive: "yes" }] },
+      { ...derivation, checks: [{ ...derivation.checks[0], outcome: "maybe" }] },
+      { ...derivation, hysteresis: { ...derivation.hysteresis, held: null } },
+      { ...derivation, dependencies: { ...derivation.dependencies, weighted_totals: {} } },
+    ]) {
+      const body = { ...entityHealthResponse, health: { ...entityHealthResponse.health, derivation: broken } }
+      vi.stubGlobal("fetch", vi.fn(async () => Response.json(body)))
+      const response = await getEntityHealth(new Request("http://localhost/api/graph/health?entity_id=a"))
+      expect(response.status).toBe(502)
+      expect(await response.json()).toEqual({ error: "Risk service returned an invalid response" })
+    }
+  })
+
+  it("maps upstream failures without leaking them", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ detail: `missing at ${UPSTREAM}` }, { status: 404 })))
+    const missing = await getEntityHealth(new Request("http://localhost/api/graph/health?entity_id=a"))
+    const missingText = await missing.text()
+    expect(missing.status).toBe(404)
+    expect(JSON.parse(missingText)).toEqual({ error: "Graph entity not found" })
+    expect(missingText).not.toContain("risk.internal")
+
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(`busy at ${UPSTREAM}`, { status: 503 })))
+    const busy = await getEntityHealth(new Request("http://localhost/api/graph/health?entity_id=a"))
+    expect(busy.status).toBe(503)
+    expect(await busy.text()).not.toContain("risk.internal")
+
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(`failure from ${UPSTREAM}`, { status: 500 })))
+    const failed = await getEntityHealth(new Request("http://localhost/api/graph/health?entity_id=a"))
+    expect(failed.status).toBe(502)
+    expect(await failed.text()).not.toContain("risk.internal")
+
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new TypeError("fetch failed") }))
+    const unreachable = await getEntityHealth(new Request("http://localhost/api/graph/health?entity_id=a"))
+    expect(unreachable.status).toBe(503)
+  })
+
+  it("reports a missing server configuration without calling upstream", async () => {
+    vi.stubEnv("RISK_API_URL", "")
+    const fetchMock = vi.fn()
+    vi.stubGlobal("fetch", fetchMock)
+
+    const response = await getEntityHealth(new Request("http://localhost/api/graph/health?entity_id=a"))
+
+    expect(response.status).toBe(503)
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 })
 

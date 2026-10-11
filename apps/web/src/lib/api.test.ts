@@ -5,6 +5,7 @@ import {
   ApiError,
   createExposure,
   getCatalog,
+  getEntityHealth,
   getExposureImpact,
   getIncidentGraph,
   getNotifications,
@@ -189,6 +190,21 @@ describe("browser API client", () => {
       "/api/graph?incident_graph_id=incident%3Aoracle%2F1",
       expect.objectContaining({ method: "GET" }),
     )
+  })
+
+  it("loads one entity's health computation through the same-origin graph proxy", async () => {
+    const body = { schema_version: "1.0.0", entity_id: "market:1:a/b", health: null, generated_at: "2026-10-10T10:00:00Z" }
+    const fetchMock = vi.fn(async () => Response.json(body))
+    vi.stubGlobal("fetch", fetchMock)
+
+    await expect(getEntityHealth("market:1:a/b")).resolves.toEqual(body)
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/graph/health?entity_id=market%3A1%3Aa%2Fb",
+      expect.objectContaining({ method: "GET" }),
+    )
+
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ error: "Graph entity not found" }, { status: 404 })))
+    await expect(getEntityHealth("market:1:gone")).rejects.toMatchObject({ status: 404, message: "Graph entity not found" })
   })
 
   it("marks every notification read through the same-origin proxy", async () => {

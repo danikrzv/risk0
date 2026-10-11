@@ -222,6 +222,35 @@ describe("RadarGraph", () => {
     expect(onSelectEntity).toHaveBeenCalledWith("vault:1:visible")
   })
 
+  it("loads the selected entity's health computation on demand", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => Response.json({
+      schema_version: "1.0.0",
+      entity_id: "vault:1:catalog",
+      health: {
+        entity_id: "vault:1:catalog",
+        status: "HEALTHY",
+        score: "1",
+        reasons: ["vault metrics normal"],
+        missing_fields: [],
+        evaluated_at: "2026-10-10T12:00:00Z",
+        rule_version: "fixture-health-v1",
+        derivation: null,
+      },
+      generated_at: "2026-10-10T12:01:00Z",
+    }))
+    try {
+      render(<RadarGraph graph={graph} healthStates={healthStates} selectedEntityId="vault:1:catalog" onSelectEntity={vi.fn()} />)
+
+      const detail = screen.getByRole("region", { name: "Selected radar entity" })
+      const section = within(detail).getByRole("region", { name: "Health computation" })
+      expect(await within(section).findByText("score 1 = HEALTHY")).toBeInTheDocument()
+      expect(within(section).getByText(/Health computation not recorded for this evaluation/)).toBeInTheDocument()
+      expect(fetchSpy).toHaveBeenCalledWith("/api/graph/health?entity_id=vault%3A1%3Acatalog", expect.objectContaining({ method: "GET" }))
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  })
+
   it("inspects the selected entity, navigates its connections, and offers analysis only for catalog matches", () => {
     const onSelectEntity = vi.fn()
     const onAnalyzeEntity = vi.fn()

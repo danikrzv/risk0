@@ -1,9 +1,10 @@
 "use client"
 
 import type { HealthStatus, RadarEntity, RadarGraphResponse } from "@risk0/contracts"
-import { useMemo } from "react"
+import { useCallback, useMemo } from "react"
 
 import { humanize } from "../lib/format"
+import { HealthComputation } from "./health-computation"
 import { ShowMore, useListLimit } from "./show-more"
 
 // A shared asset can have thousands of dependents; the list grows on request.
@@ -52,7 +53,10 @@ export function RadarEntityDetail({
     (similarity) => similarity.candidate_entity_id === entity.entity_id || similarity.catalog_entity_id === entity.entity_id,
   ), [entity.entity_id, graph.similarities])
   const [connectionLimit, showMoreConnections] = useListLimit(CONNECTION_PAGE_SIZE)
-  const label = (id: string) => entityById.get(id)?.label ?? id
+  const label = useCallback((id: string) => entityById.get(id)?.label ?? id, [entityById])
+  const evaluatedAt = typeof entity.metadata.health_evaluated_at === "string"
+    ? entity.metadata.health_evaluated_at
+    : null
   const metadata = Object.entries(entity.metadata).filter(([name]) => name !== "health_status")
 
   return (
@@ -97,6 +101,12 @@ export function RadarEntityDetail({
           ) : null}
         </div>
       ) : null}
+      <HealthComputation
+        entityId={entity.entity_id}
+        evaluatedAt={evaluatedAt}
+        displayedStatus={status}
+        labelFor={label}
+      />
       {metadata.length > 0 ? (
         <table className="metrics">
           <caption>Metrics</caption>

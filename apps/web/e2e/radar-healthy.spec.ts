@@ -31,5 +31,20 @@ test("healthy radar shows the catalog topology and accepts a manual exposure", a
   const markets = page.getByRole("list", { name: "Market health" })
   await markets.getByRole("button", { name: /WETH \/ USDC 86%/ }).click()
   await expect(page.getByRole("button", { name: "Graph", exact: true })).toHaveAttribute("aria-current", "page")
-  await expect(page.getByRole("region", { name: "Selected radar entity" }).getByRole("heading", { name: "WETH / USDC 86%" })).toBeVisible()
+  const detail = page.getByRole("region", { name: "Selected radar entity" })
+  await expect(detail.getByRole("heading", { name: "WETH / USDC 86%" })).toBeVisible()
+
+  // Clicking a node explains how its health was computed.
+  await page.locator(".react-flow__node", { hasText: "Belem Sentinel USDC" }).click()
+  await expect(detail.getByRole("heading", { name: "Belem Sentinel USDC" })).toBeVisible()
+  const computation = detail.getByRole("region", { name: "Health computation" })
+  await expect(computation.getByText("score 1 = HEALTHY")).toBeVisible()
+  await expect(
+    computation.getByText("HEALTHY because every check is within its threshold and dependencies are normal."),
+  ).toBeVisible()
+  await expect(computation.getByRole("table", { name: /Checks in evaluation order/ })).toContainText(
+    "Allocation concentration (HHI) at or above the warning threshold",
+  )
+  await expect(computation.getByRole("table", { name: "Dependency aggregation" })).toContainText("WETH / USDC 86%")
+  await expect(computation.getByText(/raw HEALTHY, no confirmation needed → HEALTHY/)).toBeVisible()
 })

@@ -4,6 +4,7 @@ import type {
   BookRequest,
   BookResponse,
   CatalogResponse,
+  EntityHealthResponse,
   ExposureCreateRequest,
   ExposureImpactResponse,
   HealthStatus,
@@ -100,6 +101,12 @@ export function getRadarGraph(filters: RadarGraphFilters = {}): Promise<RadarGra
 export function getIncidentGraph(incidentId: string): Promise<IncidentGraphResponse> {
   const query = new URLSearchParams({ incident_graph_id: incidentId })
   return request<IncidentGraphResponse>(`/api/graph?${query.toString()}`, { method: "GET" })
+}
+
+/** Latest health of one entity with how it was computed (`404` for unknown ids). */
+export function getEntityHealth(entityId: string): Promise<EntityHealthResponse> {
+  const query = new URLSearchParams({ entity_id: entityId })
+  return request<EntityHealthResponse>(`/api/graph/health?${query.toString()}`, { method: "GET" })
 }
 
 export function getNotifications(

@@ -186,6 +186,42 @@ def test_lender_stressed_liquidity_below_twenty_percent_exits():
     assert "exit is recommended, but a full exit is currently unavailable" in result.explanation.lower()
 
 
+def test_hard_trigger_confidence_comes_from_the_data_not_the_missing_probability():
+    stressed = scenario(
+        "0",
+        scenario_id="liquidity-collapse",
+        triggers=("withdrawal_shortfall",),
+        prob=probability(None),
+        shortfall="900",
+    )
+    stressed = stressed.model_copy(
+        update={"stressed_values": {**stressed.stressed_values, "data_confidence": "high"}}
+    )
+
+    result = make_recommendation((stressed,), exit_estimate("5"), quality())
+
+    assert result.decision is EXIT
+    # The trigger does not use the scenario's (unavailable) probability.
+    assert result.confidence is not ConfidenceLevel.UNAVAILABLE
+
+
+def test_dominant_dependency_is_the_nearest_shocked_node():
+    morpho, issuer = "protocol:1:morpho", "protocol:1:issuer-weth9"
+    protocol_event = scenario(
+        "30",
+        scenario_id="protocol-impairment",
+        prob=probability("0.5"),
+        path=("position:1:p", "market:1:m", "asset:1:weth", morpho, issuer),
+    )
+    protocol_event = protocol_event.model_copy(
+        update={"stressed_values": {**protocol_event.stressed_values, "primary_dependency": morpho}}
+    )
+
+    result = make_recommendation((protocol_event,), exit_estimate("5"), quality())
+
+    assert result.dominant_dependency == morpho
+
+
 def test_expected_loss_greater_than_exit_cost_exits():
     # 0.02 * 300 = 6 > 5
     result = make_recommendation((scenario("300"),), exit_estimate("5"), quality())

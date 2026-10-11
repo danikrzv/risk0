@@ -43,7 +43,11 @@ data or of a selected stress, so it does not need a probability. A live trigger
 `<kind>:<node_id>`, e.g. `live:oracle_failure:oracle:1:0x...`), which becomes the
 dominant dependency when no scenario trigger is dominant, and carries the
 confidence of the live data it rests on; the EXIT confidence is the lowest of
-the triggering scenarios, the live data, and the exit estimate.
+the triggering scenarios' data confidence (a trigger does not use the
+scenario's probability, so the probability's confidence does not lower it), the
+live data, and the exit estimate. The dominant dependency is the nearest
+shocked node of the dominant scenario (`primary_dependency`), so a protocol
+event names Morpho rather than an issuer reached through it.
 
 The expected loss is incomplete when a scenario with a non-zero impact has no
 central probability: an unknown probability is never treated as zero.
@@ -96,6 +100,8 @@ from app.infrastructure.freshness import DataQuality
 ZERO = Decimal(0)
 ONE = Decimal(1)
 IMPACT_COMPLETE_KEY = "impact_complete"
+DATA_CONFIDENCE_KEY = "data_confidence"
+PRIMARY_DEPENDENCY_KEY = "primary_dependency"
 CONFIDENCE_ORDER = (
     ConfidenceLevel.UNAVAILABLE,
     ConfidenceLevel.LOW,
@@ -282,7 +288,7 @@ def make_recommendation(
         decision = RecommendationDecision.EXIT
         confidence = _lowest(
             [
-                *(item.scenario.confidence for item in contributions if item.scenario.hard_triggers),
+                *(_trigger_confidence(item.scenario) for item in contributions if item.scenario.hard_triggers),
                 *(item.confidence for item in live),
                 _exit_confidence(exit_estimate),
             ]
@@ -454,7 +460,17 @@ def _dominant(contributions: list[_Contribution], *, triggered: bool = False) ->
     )
     if best.scenario.impact == ZERO and not best.scenario.hard_triggers:
         return None
-    return best.scenario.affected_path[-1]
+    primary = best.scenario.stressed_values.get(PRIMARY_DEPENDENCY_KEY)
+    return primary if isinstance(primary, str) else best.scenario.affected_path[-1]
+
+
+def _trigger_confidence(scenario: ScenarioResult) -> ConfidenceLevel:
+    """A hard trigger follows from the data, so its probability's confidence does not apply."""
+    value = scenario.stressed_values.get(DATA_CONFIDENCE_KEY)
+    try:
+        return ConfidenceLevel(value) if isinstance(value, str) else scenario.confidence
+    except ValueError:
+        return scenario.confidence
 
 
 def _exit_confidence(estimate: ExitEstimate) -> ConfidenceLevel:

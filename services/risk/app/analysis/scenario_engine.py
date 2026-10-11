@@ -97,6 +97,8 @@ ORACLE_AGE_SECONDS_KEY = "age_seconds"  # oracle nodes, seconds since last updat
 ORACLE_DEVIATION_KEY = "deviation"  # oracle nodes, fractional deviation vs comparison
 EXPOSURE_UNKNOWN_KEY = "exposure_unknown"  # unmodelled allocation nodes (True)
 IMPACT_COMPLETE_KEY = "impact_complete"
+DATA_CONFIDENCE_KEY = "data_confidence"
+PRIMARY_DEPENDENCY_KEY = "primary_dependency"
 UNMODELLED_EXPOSURE_KEY = "unmodelled_exposure_fraction"
 # Families whose shock cannot be priced through an unmodelled allocation.
 UNMODELLED_SENSITIVE_FAMILIES = frozenset(
@@ -357,6 +359,14 @@ class ScenarioEngine:
         outcome.stressed_values[IMPACT_COMPLETE_KEY] = (
             data_confidence != ConfidenceLevel.UNAVAILABLE
         )
+        # A hard trigger rests on the data, not on the probability.
+        outcome.stressed_values[DATA_CONFIDENCE_KEY] = data_confidence.value
+        # Paths end with the shocked nodes, nearest first; the nearest is the
+        # dependency the position meets first (e.g. Morpho before an issuer).
+        targets = self._targets(view, definition)
+        primary = next((node_id for node_id in outcome.path if node_id in targets), None)
+        if primary is not None:
+            outcome.stressed_values[PRIMARY_DEPENDENCY_KEY] = primary
         confidence = min(
             data_confidence,
             probability.confidence,

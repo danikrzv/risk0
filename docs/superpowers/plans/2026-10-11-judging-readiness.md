@@ -103,3 +103,13 @@ demo script in the README (criterion → feature → how to show it, plus the fi
 
 Pendle PT and non-Morpho venues, non-EVM chains, perp-venue vaults, Uniswap depth history for liquidity-collapse
 probabilities (stays explicitly unavailable; its lender impact excludes the shortfall, so it does not block decisions).
+
+## Outcome (2026-10-11)
+
+W1–W4 shipped as planned. Live verification then exposed modelling defects, fixed on this branch: lenders are charged
+bad debt instead of the collateral fall; the decision counts 30-day forgone yield; inferred heartbeats tolerate one
+missed cycle and are judged over their inference window; exchange-rate adapters are a structural zero; oracle deviation
+is judged by the side of the market it hurts; non-Chainlink feeds (RedStone, Ojo, custom) are observed with cited
+heartbeats or an explained industry prior; EUR stablecoins without a Chainlink feed use DeFiLlama market prices for
+depeg history. Result with the UI defaults: every analyzable catalog entry decides on live data (11 STAY, 5 EXIT,
+0 UNAVAILABLE). See `docs/judging-map.md`.

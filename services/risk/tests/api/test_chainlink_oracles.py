@@ -283,8 +283,11 @@ def test_heartbeat_of_an_unlisted_feed_is_inferred_from_round_history(morpho_cli
 
     assert envelope is not None
     eth = envelope.value.feeds[0]
-    assert eth.heartbeat_seconds == Decimal(3600)
+    # Inferred hourly cadence; one missed cycle is tolerated (an inferred
+    # cadence is not a contractual heartbeat), so the effective heartbeat is 2 h.
+    assert eth.heartbeat_seconds == Decimal(7200)
     assert eth.heartbeat_source.startswith("inferred (p99 of")
+    assert "is 3600 s; one missed cycle is tolerated" in eth.heartbeat_source
 
 
 def test_oracle_decoding_is_memoized_across_analyses(morpho_client, clock):
@@ -406,7 +409,7 @@ def test_oracle_failure_feeds_combine_conservatively_without_a_data_conflict(mor
     assert "conflict" not in response.recommendation.explanation.lower()
 
 
-def test_adapter_only_oracles_have_no_staleness_probability(morpho_client, clock):
+def test_adapter_only_oracles_have_a_structural_zero_staleness_probability(morpho_client, clock):
     wsteth = morpho_client.get_market(
         "0xb8fc70e82bc5bb53e773626fcc6a23f7eefa036918d7ef216ecfb1950a94a85e"
     ).value
@@ -432,7 +435,10 @@ def test_adapter_only_oracles_have_no_staleness_probability(morpho_client, clock
     )
 
     (result,) = response.scenario_results
-    assert result.probability.central is None
+    # Staleness cannot occur for an adapter computed when read: 0 by construction,
+    # labelled structural rather than empirical, so the decision is not blocked.
+    assert result.probability.method == "structural"
+    assert result.probability.central == 0
     assert "exchange-rate adapters" in result.probability.explanation
 
 

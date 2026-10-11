@@ -86,7 +86,7 @@
       "additionalProperties": false,
       "required": ["method", "low", "central", "high", "confidence", "horizon_days", "source", "retrieved_at", "freshness", "explanation"],
       "properties": {
-        "method": { "enum": ["empirical_rolling_window", "model_estimated_protocol", "unavailable"] },
+        "method": { "enum": ["empirical_rolling_window", "model_estimated_protocol", "structural", "unavailable"] },
         "low": { "$ref": "#/$defs/NullableDecimalString" },
         "central": { "$ref": "#/$defs/NullableDecimalString" },
         "high": { "$ref": "#/$defs/NullableDecimalString" },

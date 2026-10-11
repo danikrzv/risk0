@@ -197,6 +197,9 @@ HISTORY_HEARTBEATS: Mapping[str, int] = {
 # Round history used to infer the heartbeat of a feed missing from the table.
 HEARTBEAT_INFERENCE_LOOKBACK = timedelta(days=90)
 HEARTBEAT_MEMO_TTL = timedelta(days=1)
+# An inferred heartbeat (no documented value) tolerates one missed cycle.
+INFERRED_HEARTBEAT_TOLERANCE_CYCLES = 2
+INFERRED_HEARTBEAT_SOURCE_PREFIX = "inferred"
 # A Morpho oracle's feeds are immutable: a decoded configuration is kept for the
 # process lifetime; an oracle that could not be decoded is retried after this.
 ORACLE_DECODE_RETRY = timedelta(minutes=10)
@@ -994,7 +997,22 @@ class HybridProbabilityProvider:
                 evidence = estimate_staleness(
                     address, int(heartbeat), start, end, now=now, label=name
                 )
-                estimates.append(evidence.probability)
+                estimate = evidence.probability
+                source = feed.metrics.get("heartbeat_source")
+                if (
+                    isinstance(source, str)
+                    and source.startswith(INFERRED_HEARTBEAT_SOURCE_PREFIX)
+                    and estimate.central is not None
+                ):
+                    estimate = estimate.model_copy(
+                        update={
+                            "confidence": min(
+                                estimate.confidence, ConfidenceLevel.LOW, key=CONFIDENCE_ORDER.index
+                            ),
+                            "explanation": f"{estimate.explanation} Heartbeat {source}.",
+                        }
+                    )
+                estimates.append(estimate)
             missing = [item for item in estimates if item.central is None]
             if missing:
                 return ProbabilityAssessment(
@@ -1008,10 +1026,12 @@ class HybridProbabilityProvider:
             per_oracle.append((label, ProbabilityAssessment(combined.estimate)))
         if not per_oracle:
             return ProbabilityAssessment(
-                unavailable_estimate(
+                structural_zero_estimate(
                     now,
-                    "No oracle-failure probability: every oracle reads only on-chain "
-                    "exchange-rate adapters, which have no update history.",
+                    "Oracle failure is measured as Chainlink staleness, and every oracle "
+                    f"({', '.join(adapter_only)}) reads only on-chain exchange-rate adapters, "
+                    "which compute their answer when read and cannot be stale. A wrong but "
+                    "fresh answer is not part of this event.",
                 )
             )
         label, best = max(per_oracle, key=lambda item: item[1].estimate.central or ZERO)
@@ -1254,6 +1274,22 @@ class PriceShockEvent:
                 break
         self._starts[timestamp] = found
         return found
+
+
+def structural_zero_estimate(now: datetime, reason: str) -> ProbabilityEstimate:
+    """The event cannot occur by construction: probability 0, not an empirical rate."""
+    return ProbabilityEstimate(
+        method=ProbabilityMethod.STRUCTURAL,
+        low=ZERO,
+        central=ZERO,
+        high=ZERO,
+        confidence=ConfidenceLevel.MEDIUM,
+        horizon_days=30,
+        source="risk0:structural",
+        retrieved_at=now,
+        freshness=FreshnessStatus.FRESH,
+        explanation=reason,
+    )
 
 
 def unavailable_estimate(now: datetime, reason: str) -> ProbabilityEstimate:
@@ -1668,11 +1704,15 @@ class ChainlinkOracleHealth:
 
         updates = self._client.get_feed_updates(address, now - self._lookback, now)
         inferred = infer_heartbeat([item.timestamp for item in updates])
+        # An inferred cadence is not a contractual heartbeat: about 1% of gaps
+        # exceed the percentile by construction, so a feed counts as late only
+        # after one full missed cycle (live trigger and staleness history alike).
         result = (
             (
-                inferred,
-                f"inferred (p{HEARTBEAT_PERCENTILE} of {len(updates) - 1} update gaps over "
-                f"{self._lookback.days} days)",
+                inferred * INFERRED_HEARTBEAT_TOLERANCE_CYCLES,
+                f"{INFERRED_HEARTBEAT_SOURCE_PREFIX} (p{HEARTBEAT_PERCENTILE} of {len(updates) - 1} "
+                f"update gaps over {self._lookback.days} days is {inferred} s; one missed cycle "
+                "is tolerated)",
             )
             if inferred is not None
             else None

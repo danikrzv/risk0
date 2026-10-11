@@ -117,6 +117,9 @@ class ConfidenceLevel(StrEnum):
 class ProbabilityMethod(StrEnum):
     EMPIRICAL_ROLLING_WINDOW = "empirical_rolling_window"
     MODEL_ESTIMATED_PROTOCOL = "model_estimated_protocol"
+    # The event cannot occur by construction (e.g. staleness of an on-chain
+    # exchange-rate adapter, computed when read).
+    STRUCTURAL = "structural"
     UNAVAILABLE = "unavailable"
 
 

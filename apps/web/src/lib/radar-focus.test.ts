@@ -121,6 +121,38 @@ describe("relevantDependencyContext", () => {
     ]))
   })
 
+  it("leaves out incident paths that do not reach the selected entity, whatever their order", () => {
+    const impactOn = (target: string, path: IncidentImpact["path"]): IncidentImpact => ({
+      incident_id: "incident:oracle",
+      target_entity_id: target,
+      path,
+      distance: path.length - 1,
+      confidence: "0.9",
+      estimated_affected_amount: null,
+      reasons: [],
+      revealed: true,
+      alternate_path_count: 0,
+    })
+    // Both paths start at an oracle alpha depends on; only the first reaches alpha.
+    const reaching = impactOn("vault:1:alpha", ["oracle:1:0xfeed", "market:1:prime", "vault:1:alpha"])
+    const elsewhere = impactOn("vault:1:beta", ["oracle:1:0xfeed", "market:1:elsewhere", "vault:1:beta"])
+
+    const forward = relevantDependencyContext(graph, "vault:1:alpha", [reaching, elsewhere])
+    expect(forward).not.toContain("market:1:elsewhere")
+    expect(forward).not.toContain("vault:1:beta")
+    expect(relevantDependencyContext(graph, "vault:1:alpha", [elsewhere, reaching])).toEqual(forward)
+    // The incident source itself still shows its whole propagation, plus the
+    // similar vault sharing market:1:prime with a vault on that propagation.
+    expect(relevantDependencyContext(graph, "oracle:1:0xfeed", [reaching, elsewhere])).toEqual(new Set([
+      "oracle:1:0xfeed",
+      "market:1:prime",
+      "vault:1:alpha",
+      "market:1:elsewhere",
+      "vault:1:beta",
+      "vault:1:shared",
+    ]))
+  })
+
   it("includes similarity records only when the candidate shares an involved causal dependency", () => {
     const similarityGraph = {
       entities: [

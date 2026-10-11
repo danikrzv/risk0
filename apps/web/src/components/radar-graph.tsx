@@ -192,19 +192,28 @@ export const RadarGraph = memo(function RadarGraph({
     () => visibleRadarEntities(graph, impacts, incidentSourceId ? [...pinnedEntityIds, incidentSourceId] : pinnedEntityIds),
     [graph, impacts, incidentSourceId, pinnedEntityIds],
   )
+  const passesFilters = useCallback((entity: RadarEntity) => {
+    const status = health.get(entity.entity_id) ?? "UNKNOWN"
+    return (chainFilter === "all" || String(entity.chain_id) === chainFilter)
+      && (typeFilter === "all" || entity.entity_type === typeFilter)
+      && (healthFilter === "all" || status === healthFilter)
+  }, [chainFilter, health, healthFilter, typeFilter])
+  // An entity selected from a category list or an analysis must be drawn even
+  // when the graph's own filters would hide it. Null unless they do, so plain
+  // selection changes leave the drawn set (and the layout) untouched.
+  const filteredOutSelectionId = useMemo(() => {
+    const selected = selectedEntityId ? policyVisibleEntities.find((entity) => entity.entity_id === selectedEntityId) : undefined
+    return selected && !passesFilters(selected) ? selected.entity_id : null
+  }, [passesFilters, policyVisibleEntities, selectedEntityId])
   const visibleEntities = useMemo(() => policyVisibleEntities
-    .filter((entity) => {
-      if (incidentPath.has(entity.entity_id)) return true
-      const status = health.get(entity.entity_id) ?? "UNKNOWN"
-      return (chainFilter === "all" || String(entity.chain_id) === chainFilter)
-        && (typeFilter === "all" || entity.entity_type === typeFilter)
-        && (healthFilter === "all" || status === healthFilter)
-    })
+    .filter((entity) => (
+      incidentPath.has(entity.entity_id) || entity.entity_id === filteredOutSelectionId || passesFilters(entity)
+    ))
     .map((entity, index) => ({ entity, index }))
     .sort((left, right) => (
       priority(left.entity, incidentPath) - priority(right.entity, incidentPath) || left.index - right.index
     ))
-    .map(({ entity }) => entity), [chainFilter, health, healthFilter, incidentPath, policyVisibleEntities, typeFilter])
+    .map(({ entity }) => entity), [filteredOutSelectionId, incidentPath, passesFilters, policyVisibleEntities])
   const chainIds = useMemo(
     () => [...new Set(policyVisibleEntities.map((entity) => entity.chain_id))].sort((left, right) => left - right),
     [policyVisibleEntities],
@@ -225,9 +234,17 @@ export const RadarGraph = memo(function RadarGraph({
     [hasFocus, relevantIds, showOnlyRelevant, visibleEntities],
   )
   const visibleIds = useMemo(() => new Set(renderedEntities.map((entity) => entity.entity_id)), [renderedEntities])
+  // Search reaches every loaded entity except hidden vaults no incident has
+  // revealed; a selected result is pinned by the page, so it is then drawn.
+  const searchableEntities = useMemo(() => {
+    const policyVisibleIds = new Set(policyVisibleEntities.map((entity) => entity.entity_id))
+    return graph.entities.filter((entity) => (
+      entity.entity_type !== "vault" || entity.catalog || entity.visible || policyVisibleIds.has(entity.entity_id)
+    ))
+  }, [graph.entities, policyVisibleEntities])
   const searchResults = useMemo(
-    () => rankRadarEntities(policyVisibleEntities, searchQuery).slice(0, 8),
-    [policyVisibleEntities, searchQuery],
+    () => (searchQuery.trim() ? rankRadarEntities(searchableEntities, searchQuery).slice(0, 8) : []),
+    [searchQuery, searchableEntities],
   )
   const visibleSimilarities = useMemo(
     () => graph.similarities.filter((similarity) => visibleIds.has(similarity.candidate_entity_id)),
@@ -407,7 +424,7 @@ export const RadarGraph = memo(function RadarGraph({
           neighboursStatus={loadingNeighboursId === selectedEntity.entity_id
             ? "loading"
             : expandedEntityIds.has(selectedEntity.entity_id) ? "shown" : "idle"}
-          onClose={() => onSelectEntity(null)}
+          onClose={clearFocus}
         />
       ) : null}
       <details className="radar-graph__accessible">

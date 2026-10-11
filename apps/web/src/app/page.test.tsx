@@ -170,6 +170,16 @@ describe("Home", () => {
 
     expect(screen.getByRole("button", { name: "Graph" })).toHaveAttribute("aria-current", "page")
     expect(screen.getByRole("button", { name: /Healthy Market.*HEALTHY/ })).toHaveAttribute("aria-pressed", "true")
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Morpho radar graph" })).toHaveFocus())
+
+    // An incident row hands off the same way: the clicked row disappears with its view.
+    fireEvent.click(screen.getByRole("button", { name: "Incidents" }))
+    const incidentRow = within(screen.getByRole("list", { name: "Active incident categories" })).getByRole("button", { name: /Healthy Market/ })
+    incidentRow.focus()
+    expect(incidentRow).toHaveFocus()
+    fireEvent.click(incidentRow)
+    expect(screen.getByRole("button", { name: "Graph" })).toHaveAttribute("aria-current", "page")
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Morpho radar graph" })).toHaveFocus())
   })
 
   it("renders the healthy radar and records a manual exposure", async () => {
@@ -296,9 +306,13 @@ describe("Home", () => {
     expect(screen.getByRole("button", { name: "Graph" })).toHaveAttribute("aria-current", "page")
     const detail = await screen.findByRole("region", { name: "Selected radar entity" })
     expect(within(detail).getByRole("heading", { name: "wstETH / WETH radar market" })).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Morpho radar graph" })).toHaveFocus())
 
-    openPositionAnalysis()
+    // Back through the graph's Analyze action: the same entry keeps its completed result.
+    fireEvent.click(within(detail).getByRole("button", { name: "Analyze a position here" }))
+    expect(screen.getByRole("button", { name: "Position Analysis" })).toHaveAttribute("aria-current", "page")
     expect(screen.getByRole("region", { name: "Recommendation" })).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Position analysis" })).toHaveFocus())
   })
 
   it("keeps an analysis that completes while another category is open", async () => {

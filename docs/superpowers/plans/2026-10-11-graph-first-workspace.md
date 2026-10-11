@@ -213,7 +213,7 @@ Run: `UV_CACHE_DIR=/private/tmp/risk0-uv-cache pnpm --filter @risk0/web test:e2e
 
 Expected: all commands exit 0 and scale budgets remain enforced.
 
-- [ ] **Step 5: Commit and request whole-branch review**
+- [x] **Step 5: Commit and request whole-branch review**
 
 ```bash
 git add apps/web/e2e apps/web/e2e-scale

@@ -59,8 +59,10 @@ export function relevantDependencyContext(
     }
   }
 
+  // Only paths through the selection affect it; touching one of its
+  // dependencies is not enough (a hub incident would pull in every vault).
   for (const impact of impacts) {
-    if (impact.target_entity_id === selectedEntityId || impact.path.some((entityId) => relevant.has(entityId))) {
+    if (impact.target_entity_id === selectedEntityId || impact.path.includes(selectedEntityId)) {
       for (const entityId of impact.path) relevant.add(entityId)
     }
   }
@@ -71,13 +73,16 @@ export function relevantDependencyContext(
       .filter((relationship) => relationship.relationship_type === "similar_to")
       .map((relationship) => [relationship.source_entity_id, relationship.target_entity_id] as const),
   ]
+  // Judged against the causal context alone, so peers never qualify each other
+  // and the result does not depend on record order.
+  const causal = new Set(relevant)
   for (const [sourceId, targetId] of similarityPairs) {
-    const sourceRelevant = relevant.has(sourceId)
-    const targetRelevant = relevant.has(targetId)
+    const sourceRelevant = causal.has(sourceId)
+    const targetRelevant = causal.has(targetId)
     if (sourceRelevant === targetRelevant) continue
     const peerId = sourceRelevant ? targetId : sourceId
     if (entitiesById.get(peerId)?.entity_type !== "vault") continue
-    if ((dependencies.get(peerId) ?? []).some((dependencyId) => relevant.has(dependencyId))) relevant.add(peerId)
+    if ((dependencies.get(peerId) ?? []).some((dependencyId) => causal.has(dependencyId))) relevant.add(peerId)
   }
   return relevant
 }

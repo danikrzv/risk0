@@ -460,6 +460,16 @@ p {
   gap: 0.4rem;
 }
 
+/* The row spans the overlay; only its buttons may take clicks, so the graph
+   and its zoom controls stay usable beside them. */
+.floating-panels > .floating-panels__launchers {
+  pointer-events: none;
+}
+
+.floating-panels__launcher {
+  pointer-events: auto;
+}
+
 .floating-panels__launcher {
   padding: 0.5rem 0.75rem;
   border: 1px solid var(--color-border-strong);

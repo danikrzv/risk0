@@ -320,6 +320,44 @@ describe("RadarGraph", () => {
     expect(within(screen.getByRole("list", { name: "Radar nodes" })).getByRole("button", { name: /Catalog Vault/ })).toBeInTheDocument()
   })
 
+  it("draws an entity selected from outside the graph even when the graph's filters hide it", () => {
+    const onSelectEntity = vi.fn()
+    const { rerender } = render(<RadarGraph graph={graph} healthStates={healthStates} onSelectEntity={onSelectEntity} />)
+    fireEvent.change(screen.getByLabelText("Entity type filter"), { target: { value: "oracle" } })
+    const nodes = () => within(screen.getByRole("list", { name: "Radar nodes" }))
+    expect(nodes().queryByRole("button", { name: /Catalog Vault/ })).not.toBeInTheDocument()
+
+    // As when a Markets row or View dependencies selects it.
+    rerender(<RadarGraph graph={graph} healthStates={healthStates} selectedEntityId="vault:1:catalog" onSelectEntity={onSelectEntity} />)
+    expect(nodes().getByRole("button", { name: /Catalog Vault/ })).toHaveAttribute("aria-pressed", "true")
+    expect(screen.getByLabelText("Entity type filter")).toHaveValue("oracle")
+  })
+
+  it("searches loaded entities the policy does not show, but never unrevealed hidden vaults", () => {
+    const orphan = entity("market:1:orphan", "Orphan Market", { entity_type: "market" })
+    render(<RadarGraph graph={{ ...graph, entities: [...graph.entities, orphan] }} healthStates={healthStates} onSelectEntity={vi.fn()} />)
+    const search = screen.getByLabelText("Search graph")
+
+    fireEvent.change(search, { target: { value: "orphan" } })
+    expect(within(screen.getByRole("list", { name: "Graph search results" })).getByRole("button", { name: /Orphan Market/ })).toBeInTheDocument()
+
+    fireEvent.change(search, { target: { value: "Healthy Hidden Neighbor" } })
+    expect(screen.queryByRole("list", { name: "Graph search results" })).not.toBeInTheDocument()
+    expect(screen.getByText("No graph entities match.")).toBeInTheDocument()
+  })
+
+  it("closing the entity details also leaves relevant-only mode", () => {
+    const onSelectEntity = vi.fn()
+    render(<RadarGraph graph={graph} healthStates={healthStates} selectedEntityId="vault:1:catalog" onSelectEntity={onSelectEntity} />)
+    const relevantOnly = screen.getByRole("button", { name: "Show only relevant" })
+    fireEvent.click(relevantOnly)
+    expect(relevantOnly).toHaveAttribute("aria-pressed", "true")
+
+    fireEvent.click(screen.getByRole("button", { name: "Close entity details" }))
+    expect(onSelectEntity).toHaveBeenLastCalledWith(null)
+    expect(relevantOnly).toHaveAttribute("aria-pressed", "false")
+  })
+
   it("promotes a selected search result beyond the canvas cap", () => {
     const many = Array.from({ length: MAX_CANVAS_NODES + 1 }, (_, index) => (
       entity(`vault:1:many-${index}`, index === MAX_CANVAS_NODES ? "Needle Vault" : `Many Vault ${index}`, { visible: true })

@@ -79,6 +79,11 @@ function entityHealthStatus(entity: RadarEntity | undefined): HealthStatus {
   }
 }
 
+/** After a category handoff, move keyboard focus to the destination heading once it is shown. */
+function focusHeading(id: string) {
+  requestAnimationFrame(() => document.getElementById(id)?.focus())
+}
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Something went wrong"
 }
@@ -375,18 +380,19 @@ export default function Home() {
   const analyzeRadarEntity = useCallback((radarEntityId: string) => {
     const catalogId = catalogByRadarEntity.get(radarEntityId)
     if (!catalogId) return
-    selectEntry(catalogId)
+    // Returning to the entry already analysed keeps its completed result.
+    if (catalogId !== selectedId) selectEntry(catalogId)
     setActiveCategory("position-analysis")
     requestAnimationFrame(() => {
       document.getElementById("position-analysis")?.scrollIntoView({ behavior: "smooth", block: "start" })
     })
-  }, [catalogByRadarEntity, selectEntry])
+    focusHeading("position-analysis-heading")
+  }, [catalogByRadarEntity, selectEntry, selectedId])
 
   const focusRadarEntity = useCallback((entityId: string) => {
     setSelectedRadarEntityId(entityId)
     setActiveCategory("graph")
-    // Move keyboard focus to the destination once the Graph view is shown.
-    requestAnimationFrame(() => document.getElementById("radar-heading")?.focus())
+    focusHeading("radar-heading")
   }, [])
 
   // The analyzed entry's radar entity, when the radar has it.
@@ -593,8 +599,7 @@ export default function Home() {
                       type="button"
                       data-health-status={incident.severity}
                       onClick={() => {
-                        setSelectedRadarEntityId(incident.source_entity_id)
-                        setActiveCategory("graph")
+                        focusRadarEntity(incident.source_entity_id)
                         void focusIncident(incident.incident_id)
                       }}
                     >
@@ -614,7 +619,7 @@ export default function Home() {
       <section id="position-analysis" className="position-analysis-module" aria-labelledby="position-analysis-heading" hidden={activeCategory !== "position-analysis"}>
         <header className="module-heading">
           <span className="eyebrow">30-DAY DECISION SUPPORT</span>
-          <h2 id="position-analysis-heading">Position analysis</h2>
+          <h2 id="position-analysis-heading" tabIndex={-1}>Position analysis</h2>
         </header>
 
       {catalog.status === "error" && <LoadErrorMessage error={catalog} />}

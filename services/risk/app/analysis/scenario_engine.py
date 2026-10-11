@@ -14,6 +14,10 @@ Traversal rules:
   that share cannot be priced, so when it is reachable with non-zero weight and
   the known exposure is not already full, the scenario's confidence is
   UNAVAILABLE: the impact on the known exposure is reported but is incomplete.
+- A borrower's collateral or debt asset is shocked by a price event when the
+  event's asset is the asset itself or anything it is `backed_by` (registry
+  look-through: a wrapper such as wstETH moves with stETH). Lender exposure
+  already follows `backed_by` edges as loss edges.
 - Every result carries `stressed_values["impact_complete"]`: False when the
   impact rests on missing, expired, or unmodelled data and must not be used as
   a complete loss figure.
@@ -143,6 +147,17 @@ class _GraphView:
                     order[edge.target] = len(order)
                     queue.append(edge.target)
         return order
+
+    def backing_closure(self, assets: Iterable[str]) -> frozenset[str]:
+        """The given nodes plus every node reachable from them over `backed_by` edges."""
+        seen = set(assets)
+        queue = deque(seen)
+        while queue:
+            for edge in self.edges_from(queue.popleft(), {RiskEdgeType.BACKED_BY}):
+                if edge.target not in seen:
+                    seen.add(edge.target)
+                    queue.append(edge.target)
+        return frozenset(seen)
 
     def nodes_of_type(self, node_type: RiskNodeType, within: Iterable[str]) -> tuple[str, ...]:
         return tuple(
@@ -445,9 +460,9 @@ class ScenarioEngine:
         oracle_factor: Decimal | None = None
         component = ASSET_IMPAIRMENT
         if family in (EventFamily.PRICE_DEPEG, EventFamily.PRICE_SHOCK):
-            if collateral_assets & targets:
+            if view.backing_closure(collateral_assets) & targets:
                 collateral_factor = ONE - severity
-            if loan_assets & targets:
+            if view.backing_closure(loan_assets) & targets:
                 debt_factor = ONE - severity
         elif family == EventFamily.ORACLE_FAILURE:
             oracle_factor = ONE - severity

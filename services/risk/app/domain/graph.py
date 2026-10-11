@@ -8,6 +8,7 @@ of the hex casing a provider used.
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict
 
@@ -19,6 +20,10 @@ from app.domain.snapshots import (
     PoolSnapshot,
     VaultSnapshot,
 )
+
+
+if TYPE_CHECKING:
+    from app.catalog.assets import AssetRegistry
 
 
 CHAIN_ID = 1
@@ -55,6 +60,9 @@ class GraphContext:
     - `exit_pools`: candidate Uniswap exit pools.
     - `pool_depths`: executable depth per pool address, in the position numeraire,
       computed by the exit-cost layer; a pool without one reports an unknown depth.
+    - `asset_registry`: issuer and underlying registry used to look through each asset
+      to what backs it. `None` disables look-through (and its warnings) entirely; the
+      analysis service always supplies the version-controlled registry.
     """
 
     entry: CatalogEntry
@@ -65,6 +73,7 @@ class GraphContext:
     allocation_markets: Mapping[str, DataEnvelope[MarketSnapshot]] = field(default_factory=dict)
     oracles: Mapping[str, DataEnvelope[OracleObservation]] = field(default_factory=dict)
     pool_depths: Mapping[str, Decimal] = field(default_factory=dict)
+    asset_registry: "AssetRegistry | None" = None
 
 
 def node_id(node_type: RiskNodeType, key: str, chain_id: int = CHAIN_ID) -> str:

@@ -53,6 +53,7 @@ const probabilityMethods = values(responseSchema, "ProbabilityEstimate", "method
 const confidenceLevels = values(responseSchema, "ProbabilityEstimate", "confidence");
 const recommendationDecisions = values(responseSchema, "Recommendation", "decision");
 const carryStatuses = values(responseSchema, "Carry", "status");
+const metricProvenanceKinds = values(responseSchema, "MetricProvenance", "kind");
 const healthStatuses = definitionValues(radarSchema, "HealthStatus");
 const radarEntityTypes = definitionValues(radarSchema, "RadarEntityType");
 const incidentSeverities = definitionValues(radarSchema, "IncidentSeverity");
@@ -84,6 +85,7 @@ ${constArray("PROBABILITY_METHODS", probabilityMethods)}
 ${constArray("CONFIDENCE_LEVELS", confidenceLevels)}
 ${constArray("RECOMMENDATION_DECISIONS", recommendationDecisions)}
 ${constArray("CARRY_STATUSES", carryStatuses)}
+${constArray("METRIC_PROVENANCE_KINDS", metricProvenanceKinds)}
 ${constArray("HEALTH_STATUSES", healthStatuses)}
 ${constArray("RADAR_ENTITY_TYPES", radarEntityTypes)}
 ${constArray("INCIDENT_SEVERITIES", incidentSeverities)}
@@ -109,6 +111,7 @@ export type ProbabilityMethod = ${literalUnion(probabilityMethods)};
 export type ConfidenceLevel = ${literalUnion(confidenceLevels)};
 export type RecommendationDecision = ${literalUnion(recommendationDecisions)};
 export type CarryStatus = ${literalUnion(carryStatuses)};
+export type MetricProvenanceKind = ${literalUnion(metricProvenanceKinds)};
 export type HealthStatus = ${literalUnion(healthStatuses)};
 export type RadarEntityType = ${literalUnion(radarEntityTypes)};
 export type IncidentSeverity = ${literalUnion(incidentSeverities)};
@@ -192,6 +195,14 @@ export interface ScenarioSelection {
   severity: DecimalString;
 }
 
+export interface MetricProvenance {
+  kind: MetricProvenanceKind;
+  source: string;
+  fetched_at?: string | null;
+  freshness?: FreshnessStatus | null;
+  block_number?: number | null;
+}
+
 export interface RiskNode {
   node_id: string;
   node_type: RiskNodeType;
@@ -200,6 +211,8 @@ export interface RiskNode {
   provenance: string;
   freshness: FreshnessStatus;
   observed_at: string;
+  // Per-metric source when it differs from the node's; absent in older responses.
+  metric_provenance?: Record<string, MetricProvenance>;
 }
 
 export interface RiskEdge {
@@ -207,6 +220,8 @@ export interface RiskEdge {
   target: string;
   relationship: RiskEdgeType;
   exposure_weight: DecimalString | null;
+  // Share of the solvency model's loss that propagates along the edge.
+  loss_share?: DecimalString | null;
 }
 
 export interface RiskGraph {

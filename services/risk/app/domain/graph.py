@@ -75,6 +75,8 @@ class OracleObservation(BaseModel):
 
     `oracle_type` and `feeds` describe the decoded oracle when it was decomposed
     into its feeds; both stay empty for an observation without decomposition.
+    `price` is the oracle's `price()` as loan-token units per collateral token
+    (the solvency model's P_contract), None when it was not read.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -84,6 +86,7 @@ class OracleObservation(BaseModel):
     deviation: DecimalValue | None = None
     oracle_type: str | None = None
     feeds: tuple[OracleFeedObservation, ...] = ()
+    price: DecimalValue | None = None
 
     @property
     def unjudged_feeds(self) -> tuple[OracleFeedObservation, ...]:

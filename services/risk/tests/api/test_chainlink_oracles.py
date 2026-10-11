@@ -126,6 +126,21 @@ def test_decoded_oracle_with_healthy_feeds_does_not_trigger(morpho_client, clock
     assert oracle.metrics["deviation"] < Decimal("1e-18")
 
 
+def test_observation_carries_the_oracle_price_in_loan_per_collateral(morpho_client, clock):
+    market = weth_usdc_market(morpho_client)
+    client = client_for(healthy_chain(market, clock), clock)
+
+    observation = ChainlinkOracleHealth(ChainlinkLatest(client, clock=clock)).observe(
+        market, now=clock()
+    )
+
+    assert observation is not None
+    exponent = 36 + market.loan_asset.decimals - market.collateral_asset.decimals
+    assert observation.value.price == Decimal(oracle_price(market)).scaleb(-exponent)
+    reference = market.collateral_asset.price_usd / market.loan_asset.price_usd
+    assert abs(observation.value.price - reference) / reference < Decimal("1e-12")
+
+
 def test_feeds_appear_under_the_oracle_node_with_heartbeat_and_age(morpho_client, clock):
     market = weth_usdc_market(morpho_client)
     client = client_for(healthy_chain(market, clock, eth_age=900), clock)

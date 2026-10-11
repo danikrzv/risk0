@@ -13,6 +13,7 @@ export const PROBABILITY_METHODS = ["empirical_rolling_window","model_estimated_
 export const CONFIDENCE_LEVELS = ["high","medium","low","unavailable"] as const;
 export const RECOMMENDATION_DECISIONS = ["STAY","EXIT","UNAVAILABLE"] as const;
 export const CARRY_STATUSES = ["known","unknown","not_applicable"] as const;
+export const METRIC_PROVENANCE_KINDS = ["data","derived","assumption"] as const;
 export const HEALTH_STATUSES = ["HEALTHY","WARNING","CRITICAL","UNKNOWN"] as const;
 export const RADAR_ENTITY_TYPES = ["chain","protocol","vault","market","asset","oracle","irm","position"] as const;
 export const INCIDENT_SEVERITIES = ["WARNING","CRITICAL"] as const;
@@ -38,6 +39,7 @@ export type ProbabilityMethod = "empirical_rolling_window" | "model_estimated_pr
 export type ConfidenceLevel = "high" | "medium" | "low" | "unavailable";
 export type RecommendationDecision = "STAY" | "EXIT" | "UNAVAILABLE";
 export type CarryStatus = "known" | "unknown" | "not_applicable";
+export type MetricProvenanceKind = "data" | "derived" | "assumption";
 export type HealthStatus = "HEALTHY" | "WARNING" | "CRITICAL" | "UNKNOWN";
 export type RadarEntityType = "chain" | "protocol" | "vault" | "market" | "asset" | "oracle" | "irm" | "position";
 export type IncidentSeverity = "WARNING" | "CRITICAL";
@@ -121,6 +123,14 @@ export interface ScenarioSelection {
   severity: DecimalString;
 }
 
+export interface MetricProvenance {
+  kind: MetricProvenanceKind;
+  source: string;
+  fetched_at?: string | null;
+  freshness?: FreshnessStatus | null;
+  block_number?: number | null;
+}
+
 export interface RiskNode {
   node_id: string;
   node_type: RiskNodeType;
@@ -129,6 +139,8 @@ export interface RiskNode {
   provenance: string;
   freshness: FreshnessStatus;
   observed_at: string;
+  // Per-metric source when it differs from the node's; absent in older responses.
+  metric_provenance?: Record<string, MetricProvenance>;
 }
 
 export interface RiskEdge {
@@ -136,6 +148,8 @@ export interface RiskEdge {
   target: string;
   relationship: RiskEdgeType;
   exposure_weight: DecimalString | null;
+  // Share of the solvency model's loss that propagates along the edge.
+  loss_share?: DecimalString | null;
 }
 
 export interface RiskGraph {

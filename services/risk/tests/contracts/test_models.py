@@ -9,6 +9,7 @@ from app.contracts.models import (
     CatalogEntry,
     ExitEstimate,
     ProbabilityEstimate,
+    RiskEdge,
     RiskNode,
 )
 
@@ -134,6 +135,59 @@ def test_risk_node_rejects_binary_float_metrics():
     payload["metrics"]["total_supply"] = 0.1
     with pytest.raises(ValidationError):
         RiskNode.model_validate(payload)
+
+
+def test_risk_node_carries_per_metric_provenance():
+    payload = {
+        "node_id": "market:1:weth-usdc-860",
+        "node_type": "market",
+        "label": "WETH / USDC",
+        "metrics": {"solvency_q": Decimal("12.5"), "solvency_r_panic": Decimal("0.30")},
+        "provenance": "morpho_api",
+        "freshness": "fresh",
+        "observed_at": NOW,
+        "metric_provenance": {
+            "solvency_q": {
+                "kind": "data",
+                "source": "https://api.morpho.org/graphql",
+                "fetched_at": NOW,
+                "freshness": "fresh",
+                "block_number": 21000000,
+            },
+            "solvency_r_panic": {"kind": "assumption", "source": "risk0 solvency model"},
+        },
+    }
+    node = RiskNode.model_validate(payload)
+    assert node.metric_provenance["solvency_q"].block_number == 21000000
+    assert node.metric_provenance["solvency_r_panic"].fetched_at is None
+
+    payload["metric_provenance"]["solvency_q"]["kind"] = "guess"
+    with pytest.raises(ValidationError):
+        RiskNode.model_validate(payload)
+
+
+def test_risk_node_metric_provenance_defaults_to_empty():
+    node = RiskNode.model_validate(
+        {
+            "node_id": "chain:1:ethereum",
+            "node_type": "chain",
+            "label": "Ethereum",
+            "metrics": {},
+            "provenance": "catalog",
+            "freshness": "fresh",
+            "observed_at": NOW,
+        }
+    )
+    assert node.metric_provenance == {}
+
+
+@pytest.mark.parametrize("share", [Decimal("-0.1"), Decimal("1.01"), 0.5])
+def test_risk_edge_loss_share_is_a_decimal_fraction(share):
+    edge = {"source": "a", "target": "b", "relationship": "lends"}
+    assert RiskEdge.model_validate(edge).loss_share is None
+    assert RiskEdge.model_validate({**edge, "loss_share": Decimal("0.25")}).loss_share == Decimal("0.25")
+    with pytest.raises(ValidationError):
+        RiskEdge.model_validate({**edge, "loss_share": share})
 
 
 def valid_catalog_entry() -> dict:

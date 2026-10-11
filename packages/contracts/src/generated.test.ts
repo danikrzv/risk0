@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   CARRY_STATUSES,
+  METRIC_PROVENANCE_KINDS,
   CATALOG_AVAILABILITIES,
   CATALOG_CHAIN_IDS,
   CATALOG_ENTITY_TYPES,
@@ -219,6 +220,7 @@ describe("generated contract parity", () => {
     ["ProbabilityMethod", PROBABILITY_METHODS],
     ["RecommendationDecision", RECOMMENDATION_DECISIONS],
     ["CarryStatus", CARRY_STATUSES],
+    ["MetricProvenanceKind", METRIC_PROVENANCE_KINDS],
     ["HealthStatus", HEALTH_STATUSES],
     ["RadarEntityType", RADAR_ENTITY_TYPES],
     ["IncidentSeverity", INCIDENT_SEVERITIES],

@@ -273,6 +273,51 @@ def test_contract_decimals_serialize_in_fixed_point_and_satisfy_response_schema(
     )
 
 
+def test_analysis_response_schema_accepts_solvency_provenance_and_loss_share():
+    from app.contracts.models import AnalysisResponse
+
+    response = valid_response()
+    node = response["graph"]["nodes"][0]
+    node["metrics"]["solvency_scenario"] = "B_degraded"
+    node["metric_provenance"] = {
+        "solvency_q": {
+            "kind": "data",
+            "source": "https://api.morpho.org/graphql",
+            "fetched_at": "2026-10-07T12:00:00Z",
+            "freshness": "fresh",
+            "block_number": 21000000,
+        },
+        "solvency_r_panic": {"kind": "assumption", "source": "risk0 solvency model"},
+    }
+    node["metrics"]["solvency_q"] = "12.5"
+    response["graph"]["nodes"].append(
+        {**copy.deepcopy(node), "node_id": "position:1:lender", "node_type": "position"}
+    )
+    response["graph"]["edges"] = [
+        {
+            "source": "position:1:lender",
+            "target": "market:1:weth-usdc-860",
+            "relationship": "lends",
+            "exposure_weight": None,
+            "loss_share": "0.01",
+        }
+    ]
+    model = AnalysisResponse.model_validate(response)
+    validator = Draft202012Validator(load_schema("analysis-response.schema.json"))
+    validator.validate(json.loads(model.model_dump_json()))
+    # Older responses without the new fields stay valid.
+    validator.validate(valid_response())
+
+    broken = copy.deepcopy(response)
+    broken["graph"]["edges"][0]["loss_share"] = 0.01
+    with pytest.raises(ValidationError):
+        validator.validate(broken)
+    broken = copy.deepcopy(response)
+    broken["graph"]["nodes"][0]["metric_provenance"]["solvency_q"]["kind"] = "guess"
+    with pytest.raises(ValidationError):
+        validator.validate(broken)
+
+
 def catalog_entry_validator() -> Draft202012Validator:
     schema = load_schema("catalog.schema.json")
     return Draft202012Validator(

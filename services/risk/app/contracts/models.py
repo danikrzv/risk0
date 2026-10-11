@@ -226,6 +226,28 @@ class ScenarioSelection(ContractModel):
 
 
 MetricValue: TypeAlias = DecimalValue | str | bool | None
+ShareValue = Annotated[DecimalValue, Field(ge=0, le=1)]
+
+
+class MetricProvenanceKind(StrEnum):
+    DATA = "data"
+    DERIVED = "derived"
+    ASSUMPTION = "assumption"
+
+
+class MetricProvenance(ContractModel):
+    """Where one metric comes from, when it differs from its node's provenance.
+
+    `data`: read from `source` at `fetched_at` (block `block_number` when known);
+    `derived`: computed from other metrics, `source` names the inputs or model;
+    `assumption`: a configured constant, not data.
+    """
+
+    kind: MetricProvenanceKind
+    source: NonEmptyString
+    fetched_at: datetime | None = None
+    freshness: FreshnessStatus | None = None
+    block_number: int | None = Field(default=None, ge=0)
 
 
 class RiskNode(ContractModel):
@@ -236,13 +258,18 @@ class RiskNode(ContractModel):
     provenance: str
     freshness: FreshnessStatus
     observed_at: datetime
+    metric_provenance: dict[str, MetricProvenance] = Field(default_factory=dict)
 
 
 class RiskEdge(ContractModel):
+    """`exposure_weight` drives scenario propagation; `loss_share` is the share of the
+    solvency model's loss that propagates along the edge (null when not modelled)."""
+
     source: str
     target: str
     relationship: RiskEdgeType
     exposure_weight: DecimalValue | None = None
+    loss_share: ShareValue | None = None
 
 
 class RiskGraph(ContractModel):

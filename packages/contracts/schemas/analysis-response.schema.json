@@ -45,7 +45,23 @@
         },
         "provenance": { "type": "string", "minLength": 1 },
         "freshness": { "enum": ["fresh", "stale_usable", "expired"] },
-        "observed_at": { "type": "string", "format": "date-time" }
+        "observed_at": { "type": "string", "format": "date-time" },
+        "metric_provenance": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/MetricProvenance" }
+        }
+      }
+    },
+    "MetricProvenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "source"],
+      "properties": {
+        "kind": { "enum": ["data", "derived", "assumption"] },
+        "source": { "type": "string", "minLength": 1 },
+        "fetched_at": { "type": ["string", "null"], "format": "date-time" },
+        "freshness": { "enum": ["fresh", "stale_usable", "expired", null] },
+        "block_number": { "type": ["integer", "null"], "minimum": 0 }
       }
     },
     "RiskEdge": {
@@ -67,7 +83,8 @@
             "deployed_on"
           ]
         },
-        "exposure_weight": { "$ref": "#/$defs/NullableDecimalString" }
+        "exposure_weight": { "$ref": "#/$defs/NullableDecimalString" },
+        "loss_share": { "$ref": "#/$defs/NullableDecimalString" }
       }
     },
     "RiskGraph": {

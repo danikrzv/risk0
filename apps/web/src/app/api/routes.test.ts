@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { analysisResponse, catalogResponse } from "../../test-fixtures"
 import { POST } from "./analysis/route"
+import { POST as postBook } from "./book/route"
 import { GET } from "./catalog/route"
 import { GET as getEvents } from "./events/route"
 import { GET as getExposureImpact, POST as createExposure } from "./exposures/route"
@@ -268,6 +269,81 @@ describe("POST /api/analysis", () => {
 
     expect(response.status).toBe(502)
     expect(text).not.toContain("fake-provider-key")
+  })
+})
+
+describe("POST /api/book", () => {
+  const validBook = {
+    pockets: [{ position: validRequest.position, weight: "0.1" }],
+    scenarios: validRequest.scenarios,
+  }
+  const bookResponse = {
+    schema_version: "1.0.0",
+    pockets: [{ pocket_id: "pocket-1", decision: "UNAVAILABLE" }],
+    totals: {},
+    generated_at: "2026-10-11T09:00:00Z",
+  }
+  const bookCall = (body: string) =>
+    new Request("http://localhost/api/book", { method: "POST", headers: { "content-type": "application/json" }, body })
+
+  it("forwards the book with a bounded timeout and returns the response", async () => {
+    const fetchMock = vi.fn(async () => Response.json(bookResponse))
+    vi.stubGlobal("fetch", fetchMock)
+
+    const response = await postBook(bookCall(JSON.stringify(validBook)))
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual(bookResponse)
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toBe(`${UPSTREAM}/v1/book`)
+    expect(init.method).toBe("POST")
+    expect(init.cache).toBe("no-store")
+    expect(init.signal).toBeInstanceOf(AbortSignal)
+    expect(JSON.parse(String(init.body))).toEqual(validBook)
+  })
+
+  it("rejects malformed and oversized bodies before calling upstream", async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal("fetch", fetchMock)
+
+    expect((await postBook(bookCall("{not json"))).status).toBe(400)
+    expect((await postBook(bookCall(JSON.stringify({ padding: "x".repeat(70_000) })))).status).toBe(413)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it("maps upstream validation errors to a sanitized 422", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ detail: [{ msg: `weights at ${UPSTREAM}` }] }, { status: 422 })))
+
+    const response = await postBook(bookCall(JSON.stringify(validBook)))
+    const text = await response.text()
+
+    expect(response.status).toBe(422)
+    expect(JSON.parse(text)).toEqual({ error: "The risk service rejected this book: check the pockets, weights, and scenarios" })
+    expect(text).not.toContain("risk.internal")
+  })
+
+  it("rejects responses that are not a book and never forwards upstream failures", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ pockets: "nope" })))
+    expect((await postBook(bookCall(JSON.stringify(validBook)))).status).toBe(502)
+
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("RPC https://rpc.example.invalid/v2/fake-provider-key", { status: 500 })))
+    const failed = await postBook(bookCall(JSON.stringify(validBook)))
+    expect(failed.status).toBe(502)
+    expect(await failed.text()).not.toContain("fake-provider-key")
+
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ detail: "busy" }, { status: 503 })))
+    expect((await postBook(bookCall(JSON.stringify(validBook)))).status).toBe(503)
+  })
+
+  it("reports a missing server configuration without calling upstream", async () => {
+    vi.stubEnv("RISK_API_URL", "")
+    const fetchMock = vi.fn()
+    vi.stubGlobal("fetch", fetchMock)
+
+    const response = await postBook(bookCall(JSON.stringify(validBook)))
+
+    expect(response.status).toBe(503)
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 })
 

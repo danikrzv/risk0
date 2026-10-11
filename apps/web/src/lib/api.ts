@@ -1,6 +1,8 @@
 import type {
   AnalysisRequest,
   AnalysisResponse,
+  BookRequest,
+  BookResponse,
   CatalogResponse,
   ExposureCreateRequest,
   ExposureImpactResponse,
@@ -62,6 +64,14 @@ export function runAnalysis(analysis: AnalysisRequest): Promise<AnalysisResponse
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(analysis),
+  })
+}
+
+export function runBook(book: BookRequest): Promise<BookResponse> {
+  return request<BookResponse>("/api/book", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(book),
   })
 }
 

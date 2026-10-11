@@ -1402,6 +1402,102 @@ fieldset.panel legend,
   font-size: 0.875rem;
 }
 
+/* Break-even and book view */
+.break-even {
+  padding-left: 0.75rem;
+  border-left: 3px solid var(--color-accent);
+}
+
+.book__add {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0 1rem;
+}
+
+.book__add .actions {
+  margin-top: 0.75rem;
+}
+
+.field select {
+  padding: 0.5rem;
+  border: 1px solid var(--color-border);
+  border-radius: 0;
+  background: #070c13;
+  color: var(--color-text);
+  font: inherit;
+}
+
+.book__table-wrap {
+  overflow-x: auto;
+}
+
+.book__table,
+.book__totals,
+.book__pockets {
+  width: 100%;
+}
+
+.book__table caption,
+.book__totals caption,
+.book__pockets caption {
+  padding-bottom: 0.35rem;
+}
+
+.book__table th,
+.book__table td {
+  vertical-align: top;
+}
+
+.book__table small,
+.book__table td small {
+  display: block;
+  color: var(--color-muted);
+  font-size: 0.8rem;
+}
+
+.book__table .book__reason {
+  color: var(--color-unavailable);
+  max-width: 28rem;
+}
+
+.book__unknown {
+  color: var(--color-unavailable);
+}
+
+.book-decision {
+  display: inline-block;
+  padding: 0.1rem 0.5rem;
+  border: 1px solid currentColor;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.book-decision--safe {
+  color: var(--color-safe);
+  background: var(--color-safe-surface);
+}
+
+.book-decision--danger {
+  color: var(--color-danger);
+  background: var(--color-danger-surface);
+}
+
+.book-decision--unavailable {
+  color: var(--color-unavailable);
+  background: var(--color-unavailable-surface);
+  border-style: dashed;
+}
+
+.book__summary {
+  font-weight: 700;
+}
+
+.book__incomplete {
+  color: var(--color-stale);
+  font-weight: 700;
+}
+
 @media (max-width: 48rem) {
   .terminal-header {
     grid-template-columns: 1fr auto;

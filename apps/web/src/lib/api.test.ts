@@ -15,6 +15,7 @@ import {
   markNotificationRead,
   retryDelayMs,
   runAnalysis,
+  runBook,
 } from "./api"
 
 afterEach(() => {
@@ -43,6 +44,29 @@ describe("browser API client", () => {
     await expect(runAnalysis(request)).resolves.toEqual(analysisResponse)
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
     expect(url).toBe("/api/analysis")
+    expect(init.method).toBe("POST")
+    expect(JSON.parse(String(init.body))).toEqual(request)
+  })
+
+  it("posts book requests to the same-origin proxy route", async () => {
+    const book = { schema_version: "1.0.0", pockets: [], totals: {}, generated_at: "2026-10-11T09:00:00Z" }
+    const fetchMock = vi.fn(async () => Response.json(book))
+    vi.stubGlobal("fetch", fetchMock)
+    const request = {
+      pockets: [
+        {
+          position: { mode: "lender" as const, entity_id: "belem-rwa-eurcv", amount: "100000", numeraire: "EURCV" },
+          weight: "0.1",
+        },
+      ] as [{ position: { mode: "lender"; entity_id: string; amount: string; numeraire: string }; weight: string }],
+      scenarios: [{ scenario_id: "stablecoin-depeg" as const, severity: "0.10" }] as [
+        { scenario_id: "stablecoin-depeg"; severity: string },
+      ],
+    }
+
+    await expect(runBook(request)).resolves.toEqual(book)
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toBe("/api/book")
     expect(init.method).toBe("POST")
     expect(JSON.parse(String(init.body))).toEqual(request)
   })

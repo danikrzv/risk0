@@ -14,6 +14,8 @@ beforeAll(() => {
   }
   vi.stubGlobal("ResizeObserver", ResizeObserverStub)
   vi.stubGlobal("EventSource", class { addEventListener() {} close() {} })
+  // jsdom has no layout, so no scrollIntoView; the graph handoff scrolls after a frame.
+  Element.prototype.scrollIntoView ??= () => {}
 })
 
 afterEach(() => {
@@ -738,5 +740,15 @@ describe("Home", () => {
     expect(within(nodes).getByRole("button", { name: /Shared Market/ })).toBeInTheDocument()
     expect(within(screen.getByRole("region", { name: "Selected radar entity" })).getByRole("button", { name: "Neighbours shown" })).toBeDisabled()
     expect(fetchMock.mock.calls.filter(([url]) => url.includes("focus="))).toHaveLength(1)
+  })
+
+  it("offers the Book panel inside Position Analysis once the catalog loads", async () => {
+    stubApi()
+    render(<Home />)
+    openPositionAnalysis()
+
+    const book = await screen.findByRole("region", { name: "Book" })
+    expect(within(book).getByRole("button", { name: "Load brief example" })).toBeEnabled()
+    expect(within(book).getByRole("button", { name: "Run book analysis" })).toBeDisabled()
   })
 })

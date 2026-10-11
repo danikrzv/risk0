@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 
 from app.adapters.morpho import DEFAULT_BASE_URL, MorphoClient
 from app.analysis.service import (
+    HISTORY_HEARTBEATS,
     AnalysisError,
     AnalysisService,
     ChainlinkLatest,
@@ -67,13 +68,20 @@ def build_default_analysis_service() -> AnalysisService:
         from app.history.estimator import HistoricalProbabilityService
         from app.history.normalization import NormalizedHistoryCache
 
-        ethereum = EthereumClient(settings)
+        # Chainlink rounds are cached per feed in the shared SQLite cache, so a
+        # restart extends the stored history instead of reading a year again.
+        ethereum = EthereumClient(settings, cache=cache)
         quotes = UniswapQuotes(UniswapClient(settings, cache=cache), UniswapClient(settings))
         gas = EthereumGas(ethereum)
         chainlink = ChainlinkLatest(ethereum)
         prices = ChainlinkPrices(chainlink)
         oracles = ChainlinkOracleHealth(chainlink)
-        history = HistoricalProbabilityService(ethereum, NormalizedHistoryCache(cache))
+        history = HistoricalProbabilityService(
+            ethereum,
+            NormalizedHistoryCache(cache),
+            heartbeats=HISTORY_HEARTBEATS,
+            feed_notes=ethereum.feed_notes(),
+        )
 
     return AnalysisService(
         CatalogRepository(catalog_path),

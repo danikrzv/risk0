@@ -7,6 +7,8 @@ Graph shape, matching the scenario engine's traversal rules:
                   --uses_collateral--> collateral asset
 - market:         --lends--> loan asset, --uses_collateral--> collateral asset,
                   --uses_oracle--> oracle, --deployed_on--> Morpho
+- oracle:         --uses_oracle--> each feed it reads, when the live observation
+                  decoded the oracle (feeds are oracle nodes keyed by feed address)
 - vault:          --lends--> vault asset, --deployed_on--> Morpho
 - Morpho --deployed_on--> Ethereum
 - position --exits_through--> pool --exits_through--> pool tokens already in the graph
@@ -63,6 +65,8 @@ from app.domain.graph import (
     POSITION_PROVENANCE,
     GraphConstructionError,
     GraphContext,
+    OracleFeedObservation,
+    OracleObservation,
     node_id,
 )
 from app.domain.position import (
@@ -540,14 +544,21 @@ class _Builder:
                     f"oracle observation for {observation.value.oracle_address.lower()} was "
                     f"supplied under oracle key {key}"
                 )
+            value = observation.value
             metrics: dict[str, MetricValue] = {
                 "address": key,
-                "age_seconds": observation.value.age_seconds,
-                "deviation": observation.value.deviation,
+                "age_seconds": value.age_seconds,
+                "deviation": value.deviation,
+                "oracle_type": value.oracle_type,
+                "decomposed": value.oracle_type is not None,
+                "feed_count": Decimal(len(value.feeds)) if value.oracle_type is not None else None,
             }
-            return self._add_envelope_node(
-                RiskNodeType.ORACLE, address, f"Oracle {key}", metrics, observation
-            )
+            label = f"{value.oracle_type} {key}" if value.oracle_type else f"Oracle {key}"
+            oracle_id = self._add_envelope_node(RiskNodeType.ORACLE, address, label, metrics, observation)
+            for feed in value.feeds:
+                feed_id = self._add_oracle_feed(feed, value.deviation, observation)
+                self._add_edge(oracle_id, feed_id, RiskEdgeType.USES_ORACLE)
+            return oracle_id
         self._warn(
             f"Oracle {key} has no live age or deviation observation; "
             "oracle-failure checks rely on the scenario severity alone."
@@ -559,6 +570,46 @@ class _Builder:
             {"address": key, "age_seconds": None, "deviation": None},
             market_envelope,
         )
+
+    def _add_oracle_feed(
+        self,
+        feed: OracleFeedObservation,
+        deviation: Decimal | None,
+        observation: DataEnvelope[OracleObservation],
+    ) -> str:
+        """A feed read by a decoded oracle, as an oracle node under it.
+
+        `age_seconds` is the feed's own staleness beyond its heartbeat (the same
+        meaning as on the market oracle node, which carries the largest over its
+        feeds). A feed has no Morpho reference of its own, so `deviation` is that
+        of the oracle price it feeds (`deviation_scope`), the largest when several
+        oracles share the feed; neither can exceed the market oracle's values, so
+        the live checks are unchanged by the feed nodes.
+        """
+        identifier = node_id(RiskNodeType.ORACLE, feed.address)
+        existing = self.nodes.get(identifier)
+        if existing is not None:
+            current = existing.metrics.get("deviation")
+            if deviation is not None and (not isinstance(current, Decimal) or deviation > current):
+                self.nodes[identifier] = existing.model_copy(
+                    update={"metrics": {**existing.metrics, "deviation": deviation}}
+                )
+            return identifier
+        metrics: dict[str, MetricValue] = {
+            "address": feed.address.lower(),
+            "feed_role": feed.role,
+            "feed_kind": feed.kind,
+            "description": feed.description,
+            "answer": feed.answer,
+            "heartbeat_seconds": feed.heartbeat_seconds,
+            "heartbeat_source": feed.heartbeat_source,
+            "last_update_age_seconds": feed.last_update_age_seconds,
+            "age_seconds": feed.staleness_seconds,
+            "deviation": deviation,
+            "deviation_scope": "oracle price this feed composes",
+        }
+        label = f"{feed.description or feed.address.lower()} ({feed.kind.replace('_', ' ')})"
+        return self._add_envelope_node(RiskNodeType.ORACLE, feed.address, label, metrics, observation)
 
     # Helpers
 

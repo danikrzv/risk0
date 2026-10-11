@@ -33,14 +33,41 @@ class GraphConstructionError(ValueError):
     """The graph context is inconsistent with the validated position."""
 
 
+class OracleFeedObservation(BaseModel):
+    """One price source read by a decoded oracle (a Chainlink feed or an on-chain rate adapter).
+
+    `staleness_seconds` is the age beyond the heartbeat (zero for a rate adapter,
+    which computes its answer when read); `heartbeat_source` says whether the
+    heartbeat came from the documented table or was inferred from round history.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    role: str
+    address: HexIdentifier
+    kind: str
+    description: str | None = None
+    answer: DecimalValue | None = None
+    last_update_age_seconds: DecimalValue | None = None
+    heartbeat_seconds: DecimalValue | None = None
+    heartbeat_source: str | None = None
+    staleness_seconds: DecimalValue | None = None
+
+
 class OracleObservation(BaseModel):
-    """Live oracle health read by the scenario engine (`age_seconds`, `deviation`)."""
+    """Live oracle health read by the scenario engine (`age_seconds`, `deviation`).
+
+    `oracle_type` and `feeds` describe the decoded oracle when it was decomposed
+    into its feeds; both stay empty for an observation without decomposition.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     oracle_address: HexIdentifier
     age_seconds: DecimalValue | None = None
     deviation: DecimalValue | None = None
+    oracle_type: str | None = None
+    feeds: tuple[OracleFeedObservation, ...] = ()
 
 
 @dataclass(frozen=True)

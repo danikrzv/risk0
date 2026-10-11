@@ -47,7 +47,12 @@ hypothetical exposures locally, and compare 30-day expected loss with exit cost.
    48%-similar neighbor is intentionally hidden while still processed in the
    backend. The four-state legend keeps `UNKNOWN` distinct from `HEALTHY`.
 2. **Exposure.** In the left rail, keep the lender preset at **100000 USDC** and
-   click **Add exposure**. Explain that it is a local hypothetical record used
+   click **Evaluate exposure**. It records a local hypothetical exposure and
+   runs the position's 30-day stay/exit analysis: the panel shows the expected
+   loss if staying, the cost of exiting now (exit cost plus forgone yield), and
+   the STAY / EXIT / UNAVAILABLE answer with its reason (a target outside the
+   curated catalog says so, and is still tracked against incidents). The
+   exposure is a local hypothetical record used
    to translate propagation into an affected amount.
 3. **Notification.** The top-right critical toast disappears after a few
    seconds, while the notification remains in the notification box. Open it and

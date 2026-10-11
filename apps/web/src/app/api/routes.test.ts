@@ -237,11 +237,14 @@ describe("POST /api/analysis", () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
-  it("maps upstream validation errors to a sanitized 422", async () => {
+  it("forwards the risk service's validation reason on a 422 with URLs and its host redacted", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async () =>
-        Response.json({ detail: [{ msg: `bad input at ${UPSTREAM}` }] }, { status: 422 }),
+        Response.json(
+          { detail: [{ loc: ["body", "position", "ltv"], msg: `declared LTV 0.8 is inconsistent with snapshot prices (0.642); see ${UPSTREAM} or risk.internal` }] },
+          { status: 422 },
+        ),
       ),
     )
 
@@ -249,8 +252,29 @@ describe("POST /api/analysis", () => {
     const text = await response.text()
 
     expect(response.status).toBe(422)
-    expect(JSON.parse(text)).toEqual({ error: "The risk service rejected this position or scenario selection" })
+    expect(JSON.parse(text)).toEqual({
+      error: "The risk service rejected this position or scenario selection: position.ltv: declared LTV 0.8 is inconsistent with snapshot prices (0.642); see [redacted] or [redacted]",
+    })
     expect(text).not.toContain("risk.internal")
+  })
+
+  it("keeps the fixed 422 message when the risk service gives no usable detail", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("not json", { status: 422 })))
+
+    const response = await POST(analysisCall(JSON.stringify(validRequest)))
+
+    expect(response.status).toBe(422)
+    expect(await response.json()).toEqual({ error: "The risk service rejected this position or scenario selection" })
+  })
+
+  it("caps a long 422 detail", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ detail: "x".repeat(1000) }, { status: 422 })))
+
+    const response = await POST(analysisCall(JSON.stringify(validRequest)))
+    const { error } = (await response.json()) as { error: string }
+
+    expect(error.length).toBeLessThan(520)
+    expect(error.endsWith("…")).toBe(true)
   })
 
   it("rejects a 200 response that is not an analysis", async () => {

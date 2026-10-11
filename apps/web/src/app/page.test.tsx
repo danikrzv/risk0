@@ -201,10 +201,10 @@ describe("Home", () => {
     expect(await screen.findByRole("heading", { name: "Morpho radar graph" })).toBeInTheDocument()
     expect(screen.getByRole("button", { name: /Belem Sentinel USDC HEALTHY/ })).toBeInTheDocument()
     expect(screen.getByText("No active incidents.")).toBeInTheDocument()
-    fireEvent.click(screen.getByRole("button", { name: "Add exposure" }))
+    fireEvent.click(screen.getByRole("button", { name: "Evaluate exposure" }))
 
     await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => url === "/api/exposures")).toBe(true))
-    expect(screen.getByRole("status")).toHaveTextContent("Exposure recorded")
+    expect(await screen.findByText(/Exposure recorded/)).toBeInTheDocument()
   })
 
   it("opens a selected node's details in the side drawer and closes them with the selection", async () => {
@@ -273,7 +273,7 @@ describe("Home", () => {
     stubApi()
     render(<Home />)
 
-    fireEvent.click(await screen.findByRole("button", { name: "Add exposure" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Evaluate exposure" }))
 
     const impact = await screen.findByRole("region", { name: "Exposure impact" })
     expect(impact).toHaveTextContent("100,000 USDC lender exposure in Belem Sentinel USDC")
@@ -309,7 +309,7 @@ describe("Home", () => {
     vi.stubGlobal("fetch", fetchMock)
     render(<Home />)
 
-    fireEvent.click(await screen.findByRole("button", { name: "Add exposure" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Evaluate exposure" }))
 
     const panel = await screen.findByRole("region", { name: "Exposure impact" })
     expect(panel).toHaveTextContent("Estimated affected: 60,000 USDC across 1 incident")
@@ -337,7 +337,7 @@ describe("Home", () => {
     )))
     render(<Home />)
 
-    fireEvent.click(await screen.findByRole("button", { name: "Add exposure" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Evaluate exposure" }))
 
     const panel = await screen.findByRole("region", { name: "Exposure impact" })
     expect(panel).toHaveTextContent("Estimated affected: 25,000 USDC across 2 incidents (1 with an unknown amount, not counted as zero)")
@@ -392,14 +392,14 @@ describe("Home", () => {
 
     const exposure = await screen.findByRole("region", { name: "Exposure" })
     fireEvent.change(within(exposure).getByLabelText("Exposure amount"), { target: { value: "4200" } })
-    fireEvent.click(within(exposure).getByRole("button", { name: "Add exposure" }))
-    expect(await screen.findByRole("status")).toHaveTextContent("Exposure recorded")
+    fireEvent.click(within(exposure).getByRole("button", { name: "Evaluate exposure" }))
+    expect(await screen.findByText(/Exposure recorded/)).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole("button", { name: "Markets" }))
     fireEvent.click(screen.getByRole("button", { name: "Graph" }))
 
     expect(within(screen.getByRole("region", { name: "Exposure" })).getByLabelText("Exposure amount")).toHaveValue("4200")
-    expect(screen.getByRole("status")).toHaveTextContent("Exposure recorded")
+    expect(screen.getByText(/Exposure recorded/)).toBeInTheDocument()
   })
 
   it("starts graph-first with both panels closed on narrow screens", async () => {
@@ -458,11 +458,84 @@ describe("Home", () => {
     expect(within(detail).getByRole("heading", { name: "wstETH / WETH radar market" })).toBeInTheDocument()
     await waitFor(() => expect(screen.getByRole("heading", { name: "Morpho radar graph" })).toHaveFocus())
 
-    // Back through the graph's Analyze action: the same entry keeps its completed result.
-    fireEvent.click(within(detail).getByRole("button", { name: "Analyze a position here" }))
+    // Evaluate exposure opens the exposure form on that market; the completed analysis is kept.
+    fireEvent.click(within(detail).getByRole("button", { name: "Evaluate exposure" }))
+    const exposure = screen.getByRole("region", { name: "Exposure" })
+    expect(within(exposure).getByLabelText("Exposure target")).toHaveValue("market:1:wsteth-weth")
+    expect(within(exposure).getByLabelText("Exposure numeraire")).toHaveValue("WETH")
+    openPositionAnalysis()
+    expect(screen.getByRole("region", { name: "Recommendation" })).toBeInTheDocument()
+  })
+
+  it("evaluates an exposure: records it, runs the stay/exit analysis, and hands off to the full result", async () => {
+    const analyzedMarket = {
+      entity_id: "market:1:wsteth-weth", entity_type: "market", chain_id: 1,
+      address_or_key: "0xb8fc70e82bc5bb53e773626fcc6a23f7eefa036918d7ef216ecfb1950a94a85e",
+      label: "wstETH / WETH radar market", source: "fixture:radar", catalog: true, visible: true,
+      metadata: { health_status: "WARNING" },
+    }
+    const base = stubApi()
+    const fetchMock = vi.fn(async (url: string) => (
+      url === "/api/graph"
+        ? Response.json({ ...radarGraph, entities: [...radarGraph.entities, analyzedMarket] })
+        : base(url)
+    ))
+    vi.stubGlobal("fetch", fetchMock)
+    render(<Home />)
+    await screen.findByRole("heading", { name: "Morpho radar graph" })
+
+    fireEvent.click(within(screen.getByRole("list", { name: "Radar nodes" })).getByRole("button", { name: /wstETH \/ WETH radar market/ }))
+    fireEvent.click(within(screen.getByRole("complementary", { name: "Node details" })).getByRole("button", { name: "Evaluate exposure" }))
+    const exposure = screen.getByRole("region", { name: "Exposure" })
+    expect(within(exposure).getByLabelText("Exposure target")).toHaveValue("market:1:wsteth-weth")
+    fireEvent.click(within(exposure).getByRole("button", { name: "Evaluate exposure" }))
+
+    const evaluation = await screen.findByRole("region", { name: "Stay or exit · wstETH / WETH radar market" })
+    const [, init] = fetchMock.mock.calls.find(([url]) => url === "/api/analysis") as unknown as [string, RequestInit]
+    const body = JSON.parse(String(init.body))
+    expect(body.position).toMatchObject({ mode: "lender", entity_id: "wsteth-weth-965", amount: "100000", numeraire: "WETH" })
+    expect(body.scenarios).toHaveLength(5)
+    expect(evaluation).toHaveTextContent("EXIT")
+    expect(evaluation).toHaveTextContent("Expected 30-day loss if staying")
+    expect(evaluation).toHaveTextContent("Cost of exiting now")
+    expect(evaluation).toHaveTextContent(analysisResponse.recommendation.explanation.slice(0, 40))
+    expect(await screen.findByText(/Exposure recorded/)).toBeInTheDocument()
+
+    fireEvent.click(within(evaluation).getByRole("button", { name: "View full analysis" }))
     expect(screen.getByRole("button", { name: "Position Analysis" })).toHaveAttribute("aria-current", "page")
     expect(screen.getByRole("region", { name: "Recommendation" })).toBeInTheDocument()
-    await waitFor(() => expect(screen.getByRole("heading", { name: "Position analysis" })).toHaveFocus())
+    expect(screen.getByRole("list", { name: "Position analysis health" })).toHaveTextContent("wstETH collateral / WETH debt")
+  })
+
+  it("says why the stay/exit evaluation cannot run for a target outside the catalog", async () => {
+    stubApi()
+    render(<Home />)
+    const exposure = await screen.findByRole("region", { name: "Exposure" })
+
+    fireEvent.click(within(exposure).getByRole("button", { name: "Evaluate exposure" }))
+
+    expect(await screen.findByText(/Stay\/exit evaluation unavailable: Belem Sentinel USDC is not in the curated catalog/)).toBeInTheDocument()
+    expect(await screen.findByText(/Exposure recorded/)).toBeInTheDocument()
+  })
+
+  it("shows the risk service's reason when it rejects the evaluated exposure", async () => {
+    const analyzedMarket = {
+      entity_id: "market:1:wsteth-weth", entity_type: "market", chain_id: 1,
+      address_or_key: "0xb8fc70e82bc5bb53e773626fcc6a23f7eefa036918d7ef216ecfb1950a94a85e",
+      label: "wstETH / WETH radar market", source: "fixture:radar", catalog: true, visible: true, metadata: {},
+    }
+    const base = stubApi(Response.json({ error: "The risk service rejected this position or scenario selection: position.ltv: declared LTV 0.8 is inconsistent with the LTV derived from snapshot prices (0.642)" }, { status: 422 }))
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => (
+      url === "/api/graph" ? Response.json({ ...radarGraph, entities: [...radarGraph.entities, analyzedMarket] }) : base(url)
+    )))
+    render(<Home />)
+    await screen.findByRole("heading", { name: "Morpho radar graph" })
+    fireEvent.click(within(screen.getByRole("list", { name: "Radar nodes" })).getByRole("button", { name: /wstETH \/ WETH radar market/ }))
+    fireEvent.click(within(screen.getByRole("complementary", { name: "Node details" })).getByRole("button", { name: "Evaluate exposure" }))
+
+    fireEvent.click(within(screen.getByRole("region", { name: "Exposure" })).getByRole("button", { name: "Evaluate exposure" }))
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("declared LTV 0.8 is inconsistent with the LTV derived from snapshot prices")
   })
 
   it("keeps an analysis that completes while another category is open", async () => {
@@ -624,7 +697,7 @@ describe("Home", () => {
     )))
     render(<Home />)
 
-    fireEvent.click(await screen.findByRole("button", { name: "Add exposure" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Evaluate exposure" }))
     expect(await screen.findByRole("alert")).toHaveTextContent("The risk service rejected this exposure")
     expect(screen.queryByText("Exposure recorded", { exact: false })).not.toBeInTheDocument()
   })
@@ -677,7 +750,7 @@ describe("Home", () => {
       }] : []))
     }))
     render(<Home />)
-    fireEvent.click(await screen.findByRole("button", { name: "Add exposure" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Evaluate exposure" }))
     const panel = await screen.findByRole("region", { name: "Exposure impact" })
     await waitFor(() => expect(panel).toHaveTextContent("No active incident reaches this exposure."))
 
@@ -800,7 +873,7 @@ describe("Home", () => {
 
     expect(await screen.findByText("Radar has no data yet — discovery runs hourly")).toBeInTheDocument()
     expect(screen.getByRole("region", { name: "Exposure" })).toBeInTheDocument()
-    expect(screen.getByRole("button", { name: "Add exposure" })).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Evaluate exposure" })).toBeDisabled()
   })
 
   it("retries the catalog and radar with backoff while the risk service is busy", async () => {

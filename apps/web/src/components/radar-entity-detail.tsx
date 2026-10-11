@@ -22,7 +22,7 @@ export function RadarEntityDetail({
   graph,
   entityById,
   onSelectEntity,
-  onAnalyze,
+  onEvaluateExposure,
   onShowNeighbours,
   neighboursStatus = "idle",
   onClose,
@@ -33,8 +33,8 @@ export function RadarEntityDetail({
   /** Lookup over `graph.entities`, shared with the graph so it is not rebuilt per selection. */
   entityById: ReadonlyMap<string, RadarEntity>
   onSelectEntity: (entityId: string) => void
-  /** Present only when the entity matches an analyzable catalog entry. */
-  onAnalyze?: () => void
+  /** Opens the exposure form on this entity; present for exposure targets (markets and vaults). */
+  onEvaluateExposure?: () => void
   /** Fetch this entity's neighbors from the risk service and add them to the radar. */
   onShowNeighbours?: () => void
   neighboursStatus?: "idle" | "loading" | "shown"
@@ -80,11 +80,11 @@ export function RadarEntityDetail({
         <dt>Catalog</dt>
         <dd>{entity.catalog ? "Curated catalog entry" : "Discovered by radar"}</dd>
       </dl>
-      {onAnalyze || onShowNeighbours ? (
+      {onEvaluateExposure || onShowNeighbours ? (
         <div className="radar-detail__actions">
-          {onAnalyze ? (
-            <button type="button" className="button radar-detail__analyze" onClick={onAnalyze}>
-              Analyze a position here
+          {onEvaluateExposure ? (
+            <button type="button" className="button radar-detail__evaluate" onClick={onEvaluateExposure}>
+              Evaluate exposure
             </button>
           ) : null}
           {onShowNeighbours ? (

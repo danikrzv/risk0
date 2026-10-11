@@ -688,6 +688,59 @@ p {
 .loss-models__sources { margin-top: 0.6rem; font-size: 0.75rem; color: var(--color-muted); }
 .loss-models__sources ul { margin: 0.4rem 0 0; padding-left: 1rem; }
 
+.exposure-evaluation {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0.85rem;
+  border-top: 1px solid var(--color-border);
+  border-left: 3px solid var(--color-unavailable);
+}
+
+.exposure-evaluation[data-tone="safe"] { border-left-color: var(--color-safe); }
+.exposure-evaluation[data-tone="danger"] { border-left-color: var(--color-danger); }
+
+.exposure-evaluation h3 {
+  margin: 0;
+  font-size: 0.85rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-accent);
+}
+
+.exposure-evaluation p { margin: 0; }
+
+.exposure-evaluation__decision {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--color-unavailable);
+}
+
+.exposure-evaluation[data-tone="safe"] .exposure-evaluation__decision { color: var(--color-safe); }
+.exposure-evaluation[data-tone="danger"] .exposure-evaluation__decision { color: var(--color-danger); }
+.exposure-evaluation__decision small { font-size: 0.72rem; font-weight: 400; color: var(--color-muted); }
+.exposure-evaluation__notice { color: var(--color-stale); }
+
+/* Label above value: the drawer is too narrow for two columns of amounts. */
+.exposure-evaluation dl {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.15rem 0;
+  margin: 0;
+  color: var(--color-text);
+}
+
+.exposure-evaluation dt { color: var(--color-muted); font-size: 0.8rem; }
+.exposure-evaluation dd { margin: 0 0 0.45rem; overflow-wrap: anywhere; }
+.exposure-evaluation__why { color: var(--color-muted); font-size: 0.8rem; line-height: 1.5; }
+.exposure-evaluation .button { justify-self: start; }
+
+.exposure-evaluation__pending {
+  margin: 0;
+  padding: 0.6rem 0.85rem;
+  color: var(--color-muted);
+}
+
 .exposure-impact {
   display: grid;
   gap: 0.5rem;
@@ -1003,7 +1056,7 @@ p {
 .radar-detail dt { color: var(--color-muted); }
 .radar-detail dd { margin: 0; overflow-wrap: anywhere; }
 .radar-detail .metrics { margin-top: 0; color: var(--color-text); }
-.radar-detail__analyze { justify-self: start; }
+.radar-detail__evaluate { justify-self: start; }
 .radar-detail__actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
 
 .radar-detail__section ul {

@@ -271,17 +271,16 @@ describe("RadarGraph", () => {
     }
   })
 
-  it("inspects the selected entity, navigates its connections, and offers analysis only for catalog matches", () => {
+  it("inspects the selected entity, navigates its connections, and offers exposure evaluation on exposure targets", () => {
     const onSelectEntity = vi.fn()
-    const onAnalyzeEntity = vi.fn()
+    const onEvaluateExposure = vi.fn()
     const { rerender } = render(
       <RadarGraph
         graph={graph}
         healthStates={healthStates}
         selectedEntityId="vault:1:catalog"
         onSelectEntity={onSelectEntity}
-        analyzableEntityIds={new Set(["vault:1:catalog"])}
-        onAnalyzeEntity={onAnalyzeEntity}
+        onEvaluateExposure={onEvaluateExposure}
       />,
     )
 
@@ -289,22 +288,21 @@ describe("RadarGraph", () => {
     expect(within(detail).getByRole("heading", { name: "Catalog Vault" })).toBeInTheDocument()
     fireEvent.click(within(detail).getByRole("button", { name: "USDC Market" }))
     expect(onSelectEntity).toHaveBeenCalledWith("market:1:market")
-    fireEvent.click(within(detail).getByRole("button", { name: "Analyze a position here" }))
-    expect(onAnalyzeEntity).toHaveBeenCalledWith("vault:1:catalog")
+    fireEvent.click(within(detail).getByRole("button", { name: "Evaluate exposure" }))
+    expect(onEvaluateExposure).toHaveBeenCalledWith("vault:1:catalog")
     fireEvent.click(within(detail).getByRole("button", { name: "Close entity details" }))
     expect(onSelectEntity).toHaveBeenLastCalledWith(null)
 
+    // A market is an exposure target too; an oracle is not.
     rerender(
-      <RadarGraph
-        graph={graph}
-        healthStates={healthStates}
-        selectedEntityId="market:1:market"
-        onSelectEntity={onSelectEntity}
-        analyzableEntityIds={new Set(["vault:1:catalog"])}
-        onAnalyzeEntity={onAnalyzeEntity}
-      />,
+      <RadarGraph graph={graph} healthStates={healthStates} selectedEntityId="market:1:market" onSelectEntity={onSelectEntity} onEvaluateExposure={onEvaluateExposure} />,
     )
-    expect(screen.queryByRole("button", { name: "Analyze a position here" })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Evaluate exposure" }))
+    expect(onEvaluateExposure).toHaveBeenLastCalledWith("market:1:market")
+    rerender(
+      <RadarGraph graph={graph} healthStates={healthStates} selectedEntityId="oracle:1:oracle" onSelectEntity={onSelectEntity} onEvaluateExposure={onEvaluateExposure} />,
+    )
+    expect(screen.queryByRole("button", { name: "Evaluate exposure" })).not.toBeInTheDocument()
   })
 
   it("lays the graph out once and keeps it across selection changes", () => {

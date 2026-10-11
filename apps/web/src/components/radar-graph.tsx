@@ -146,8 +146,7 @@ export const RadarGraph = memo(function RadarGraph({
   impacts = NO_IMPACTS,
   onSelectEntity,
   selectedEntityId = null,
-  analyzableEntityIds,
-  onAnalyzeEntity,
+  onEvaluateExposure,
   pinnedEntityIds = NO_IDS,
   expandedEntityIds = NO_IDS,
   loadingNeighboursId = null,
@@ -161,9 +160,8 @@ export const RadarGraph = memo(function RadarGraph({
   impacts?: IncidentImpact[]
   onSelectEntity?: (entityId: string | null) => void
   selectedEntityId?: string | null
-  /** Radar entities that match an analyzable catalog entry. */
-  analyzableEntityIds?: ReadonlySet<string>
-  onAnalyzeEntity?: (entityId: string) => void
+  /** Opens the exposure form on the selected market or vault. */
+  onEvaluateExposure?: (entityId: string) => void
   /** Entities always shown, e.g. neighborhoods fetched with `focus`. */
   pinnedEntityIds?: ReadonlySet<string>
   /** Entities whose neighbors were already fetched. */
@@ -430,8 +428,8 @@ export const RadarGraph = memo(function RadarGraph({
           graph={graph}
           entityById={entityById}
           onSelectEntity={onSelectEntity}
-          onAnalyze={onAnalyzeEntity && analyzableEntityIds?.has(selectedEntity.entity_id)
-            ? () => onAnalyzeEntity(selectedEntity.entity_id)
+          onEvaluateExposure={onEvaluateExposure && (selectedEntity.entity_type === "market" || selectedEntity.entity_type === "vault")
+            ? () => onEvaluateExposure(selectedEntity.entity_id)
             : undefined}
           onShowNeighbours={onShowNeighbours ? () => onShowNeighbours(selectedEntity.entity_id) : undefined}
           neighboursStatus={loadingNeighboursId === selectedEntity.entity_id

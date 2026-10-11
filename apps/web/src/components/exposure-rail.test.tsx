@@ -47,7 +47,7 @@ describe("ExposureRail", () => {
     const options = Array.from(screen.getByLabelText("Exposure target").querySelectorAll("option"))
     expect(options.map((option) => option.getAttribute("value"))).toEqual(["market:1:weth-usdc"])
     expect(screen.getByLabelText("Exposure target")).toHaveValue("market:1:weth-usdc")
-    fireEvent.click(screen.getByRole("button", { name: "Add exposure" }))
+    fireEvent.click(screen.getByRole("button", { name: "Evaluate exposure" }))
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ entity_id: "market:1:weth-usdc", mode: "borrower" }))
   })
 
@@ -60,7 +60,7 @@ describe("ExposureRail", () => {
     expect(screen.getByLabelText("Exposure amount")).toHaveValue("100000")
     expect(screen.getByLabelText("Exposure numeraire")).toHaveValue("USDC")
 
-    fireEvent.click(screen.getByRole("button", { name: "Add exposure" }))
+    fireEvent.click(screen.getByRole("button", { name: "Evaluate exposure" }))
 
     expect(onSubmit).toHaveBeenCalledWith({
       entity_id: "vault:1:catalog",
@@ -83,7 +83,7 @@ describe("ExposureRail", () => {
     expect(screen.getByLabelText("Debt amount")).toHaveValue("75000")
     expect(screen.getByLabelText("Borrower LTV (%)")).toHaveValue("75")
 
-    fireEvent.click(screen.getByRole("button", { name: "Add exposure" }))
+    fireEvent.click(screen.getByRole("button", { name: "Evaluate exposure" }))
 
     expect(onSubmit).toHaveBeenCalledWith({
       entity_id: "market:1:weth-usdc",
@@ -104,7 +104,7 @@ describe("ExposureRail", () => {
     change("Collateral amount", "0")
     change("Debt amount", "-1")
     change("Borrower LTV (%)", "100")
-    fireEvent.click(screen.getByRole("button", { name: "Add exposure" }))
+    fireEvent.click(screen.getByRole("button", { name: "Evaluate exposure" }))
 
     expect(onSubmit).not.toHaveBeenCalled()
     expect(screen.getByLabelText("Collateral amount")).toHaveAccessibleDescription("Enter a positive number")
@@ -132,7 +132,7 @@ describe("ExposureRail", () => {
     rerender(<ExposureRail entities={entities} onSubmit={onSubmit} />)
 
     expect(screen.getByLabelText("Exposure target")).toHaveValue("vault:1:catalog")
-    fireEvent.click(screen.getByRole("button", { name: "Add exposure" }))
+    fireEvent.click(screen.getByRole("button", { name: "Evaluate exposure" }))
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ entity_id: "vault:1:catalog" }))
   })
 
@@ -150,7 +150,7 @@ describe("ExposureRail", () => {
     change("Collateral amount", " 1e5 ")
     change("Debt amount", "0.1")
     change("Borrower LTV (%)", "33.3")
-    fireEvent.click(screen.getByRole("button", { name: "Add exposure" }))
+    fireEvent.click(screen.getByRole("button", { name: "Evaluate exposure" }))
 
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
       amount: "0.1",
@@ -166,7 +166,7 @@ describe("ExposureRail", () => {
 
     change("Exposure amount", "0x10")
     change("Exposure numeraire", "  ")
-    fireEvent.click(screen.getByRole("button", { name: "Add exposure" }))
+    fireEvent.click(screen.getByRole("button", { name: "Evaluate exposure" }))
 
     expect(onSubmit).not.toHaveBeenCalled()
     expect(screen.getByLabelText("Exposure amount")).toHaveAccessibleDescription("Enter a positive number")
@@ -175,3 +175,45 @@ describe("ExposureRail", () => {
   })
 })
 
+
+describe("ExposureRail target selection", () => {
+  const numeraires = new Map([["market:1:weth-usdc", "USDC"], ["vault:1:catalog", "WETH"]])
+
+  it("adopts a target chosen on the graph, with that entry's numeraire, and forces lender mode on a vault", () => {
+    const { rerender } = render(<ExposureRail entities={entities} onSubmit={() => {}} numeraires={numeraires} />)
+    fireEvent.click(screen.getByRole("radio", { name: "Borrower exposure" }))
+    expect(screen.getByLabelText("Exposure target")).toHaveValue("market:1:weth-usdc")
+
+    rerender(
+      <ExposureRail entities={entities} onSubmit={() => {}} numeraires={numeraires} selection={{ entityId: "vault:1:catalog", key: 1 }} />,
+    )
+
+    expect(screen.getByLabelText("Exposure target")).toHaveValue("vault:1:catalog")
+    expect(screen.getByRole("radio", { name: "Lender exposure" })).toBeChecked()
+    expect(screen.getByLabelText("Exposure numeraire")).toHaveValue("WETH")
+  })
+
+  it("re-applies the same target when it is chosen again after the user moved away", () => {
+    const { rerender } = render(
+      <ExposureRail entities={entities} onSubmit={() => {}} selection={{ entityId: "market:1:weth-usdc", key: 1 }} />,
+    )
+    fireEvent.change(screen.getByLabelText("Exposure target"), { target: { value: "vault:1:catalog" } })
+    expect(screen.getByLabelText("Exposure target")).toHaveValue("vault:1:catalog")
+
+    rerender(<ExposureRail entities={entities} onSubmit={() => {}} selection={{ entityId: "market:1:weth-usdc", key: 2 }} />)
+    expect(screen.getByLabelText("Exposure target")).toHaveValue("market:1:weth-usdc")
+  })
+
+  it("prices the amount in the chosen target's asset and keeps it through a preset reset", () => {
+    render(<ExposureRail entities={entities} onSubmit={() => {}} numeraires={numeraires} />)
+    fireEvent.change(screen.getByLabelText("Exposure target"), { target: { value: "market:1:weth-usdc" } })
+    expect(screen.getByLabelText("Exposure numeraire")).toHaveValue("USDC")
+
+    fireEvent.change(screen.getByLabelText("Exposure target"), { target: { value: "vault:1:catalog" } })
+    expect(screen.getByLabelText("Exposure numeraire")).toHaveValue("WETH")
+    fireEvent.change(screen.getByLabelText("Exposure amount"), { target: { value: "7" } })
+    fireEvent.click(screen.getByRole("button", { name: "Reset preset" }))
+    expect(screen.getByLabelText("Exposure amount")).toHaveValue("100000")
+    expect(screen.getByLabelText("Exposure numeraire")).toHaveValue("WETH")
+  })
+})

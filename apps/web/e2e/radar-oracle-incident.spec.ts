@@ -5,10 +5,10 @@ const riskUrl = `http://127.0.0.1:${process.env.RISK0_E2E_RISK_PORT ?? 8710}`
 test("oracle incident opens, propagates to exposure, and resolves", async ({ page, request }) => {
   await page.goto("/")
 
-  const exposure = page.getByRole("region", { name: "Exposure" })
+  const exposure = page.getByRole("region", { name: "Exposure", exact: true })
   await exposure.getByLabel("Exposure target").selectOption({ label: "Belem Sentinel USDC" })
-  await exposure.getByRole("button", { name: "Add exposure" }).click()
-  await expect(page.getByRole("status")).toContainText("Exposure recorded: 100000 USDC")
+  await exposure.getByRole("button", { name: "Evaluate exposure" }).click()
+  await expect(page.getByRole("status").filter({ hasText: "Exposure recorded" })).toContainText("Exposure recorded: 100000 USDC")
   const impact = page.getByRole("region", { name: "Exposure impact" })
   await expect(impact).toContainText("No active incident reaches this exposure.")
 

@@ -8,7 +8,8 @@ import { BookPanel } from "../components/book-panel"
 import { CatalogSelector, canAnalyze } from "../components/catalog-selector"
 import { DataQualityPanel } from "../components/data-quality"
 import { ExposureImpactPanel } from "../components/exposure-impact"
-import { ExposureRail } from "../components/exposure-rail"
+import { ExposureEvaluation, type ExposureEvaluationState } from "../components/exposure-evaluation"
+import { ExposureRail, type ExposureTargetSelection } from "../components/exposure-rail"
 import { HealthJustification } from "../components/health-justification"
 import { LossModelComparison } from "../components/loss-model-comparison"
 import { PanelResizer } from "../components/panel-resizer"
@@ -166,6 +167,11 @@ export default function Home() {
   const [exposureReport, setExposureReport] = useState<ExposureImpactResponse | null>(null)
   const [exposureReportError, setExposureReportError] = useState<string | null>(null)
   const exposureReportToken = useRef(0)
+  // The target chosen on the graph ("Evaluate exposure"), re-applied by its key.
+  const [exposureSelection, setExposureSelection] = useState<ExposureTargetSelection | null>(null)
+  // The 30-day stay/exit analysis of the exposure just submitted.
+  const [exposureEvaluation, setExposureEvaluation] = useState<ExposureEvaluationState>({ status: "idle" })
+  const exposureEvaluationToken = useRef(0)
   const [exposureBusy, setExposureBusy] = useState(false)
   // Identifies the latest analysis request; a response for an older one is dropped.
   const requestToken = useRef(0)
@@ -341,7 +347,9 @@ export default function Home() {
     onReconnect: () => scheduleRadarRefresh(requestedIncidentId.current),
   })
 
-  async function addExposure(request: ExposureCreateRequest) {
+  /** Records the exposure for incident propagation and, in parallel, runs its stay/exit analysis. */
+  async function evaluateExposure(request: ExposureCreateRequest) {
+    void analyzeExposure(request)
     setExposureBusy(true)
     setExposureStatus(null)
     try {
@@ -358,6 +366,74 @@ export default function Home() {
     } finally {
       setExposureBusy(false)
     }
+  }
+
+  /** The 30-day analysis of an exposure, with the default scenarios, when its target is a catalog entry. */
+  async function analyzeExposure(request: ExposureCreateRequest) {
+    const token = ++exposureEvaluationToken.current
+    const label = radarLabels.get(request.entity_id) ?? request.entity_id
+    const catalogId = catalogByRadarEntity.get(request.entity_id)
+    const entry = catalogId && catalog.status === "ready"
+      ? catalog.entries.find((item) => item.entity_id === catalogId)
+      : undefined
+    if (!entry) {
+      setExposureEvaluation({
+        status: "unavailable",
+        label,
+        reason: `${label} is not in the curated catalog, so the 30-day stay/exit analysis cannot run; the exposure is still tracked against active incidents.`,
+      })
+      return
+    }
+    if (!entry.supported_modes.includes(request.mode)) {
+      setExposureEvaluation({
+        status: "unavailable",
+        label,
+        reason: `${entry.name} supports ${entry.supported_modes.join(" and ")} positions only, not a ${request.mode} exposure.`,
+      })
+      return
+    }
+    const position: PositionInput = request.mode === "borrower"
+      ? {
+          mode: "borrower",
+          entity_id: entry.entity_id,
+          amount: request.amount,
+          numeraire: request.numeraire,
+          collateral_amount: request.collateral_amount ?? "0",
+          debt_amount: request.debt_amount ?? request.amount,
+          ltv: request.ltv ?? "0",
+        }
+      : { mode: "lender", entity_id: entry.entity_id, amount: request.amount, numeraire: request.numeraire }
+    const { selections } = toScenarioSelections(defaultScenarioDrafts())
+    setExposureEvaluation({ status: "running", label })
+    try {
+      const result = await runAnalysis({
+        position,
+        scenarios: selections as [(typeof selections)[number], ...typeof selections],
+      })
+      if (token !== exposureEvaluationToken.current) return
+      setExposureEvaluation({
+        status: "done",
+        label,
+        mode: request.mode,
+        catalogId: entry.entity_id,
+        result,
+        numeraire: request.numeraire,
+        receivedAt: Date.now(),
+      })
+    } catch (error) {
+      if (token !== exposureEvaluationToken.current) return
+      setExposureEvaluation({ status: "error", label, message: errorMessage(error) })
+    }
+  }
+
+  /** Hands the exposure's analysis to Position Analysis, where the full result is shown. */
+  function viewExposureAnalysis() {
+    if (exposureEvaluation.status !== "done") return
+    const { catalogId, result, numeraire, receivedAt } = exposureEvaluation
+    if (catalogId !== selectedId) selectEntry(catalogId)
+    setAnalysis({ status: "done", result, numeraire, receivedAt })
+    setActiveCategory("position-analysis")
+    focusHeading("position-analysis-heading")
   }
 
   const entry = catalog.status === "ready" ? catalog.entries.find((item) => item.entity_id === selectedId) : undefined
@@ -450,19 +526,24 @@ export default function Home() {
     }
     return matches
   }, [catalog, displayedGraph])
-  const analyzableEntityIds = useMemo(() => new Set(catalogByRadarEntity.keys()), [catalogByRadarEntity])
+  /** Asset symbol per radar target the analysis can price, so an exposure's amount is in the right unit. */
+  const exposureNumeraires = useMemo(() => {
+    const symbols = new Map<string, string>()
+    if (catalog.status !== "ready") return symbols
+    const byId = new Map(catalog.entries.map((item) => [item.entity_id, item]))
+    for (const [radarId, catalogId] of catalogByRadarEntity) {
+      const symbol = byId.get(catalogId)?.metrics?.asset_symbol
+      if (symbol) symbols.set(radarId, symbol)
+    }
+    return symbols
+  }, [catalog, catalogByRadarEntity])
 
-  const analyzeRadarEntity = useCallback((radarEntityId: string) => {
-    const catalogId = catalogByRadarEntity.get(radarEntityId)
-    if (!catalogId) return
-    // Returning to the entry already analysed keeps its completed result.
-    if (catalogId !== selectedId) selectEntry(catalogId)
-    setActiveCategory("position-analysis")
-    requestAnimationFrame(() => {
-      document.getElementById("position-analysis")?.scrollIntoView?.({ behavior: "smooth", block: "start" })
-    })
-    focusHeading("position-analysis-heading")
-  }, [catalogByRadarEntity, selectEntry, selectedId])
+  // Setters only, so the memoized radar graph keeps a stable callback.
+  const evaluateExposureFor = useCallback((entityId: string) => {
+    setExposureSelection((current) => ({ entityId, key: (current?.key ?? 0) + 1 }))
+    setOpenPanel("exposure")
+    requestAnimationFrame(() => document.getElementById("exposure-target")?.focus())
+  }, [])
 
   const focusRadarEntity = useCallback((entityId: string) => {
     selectRadarEntity(entityId)
@@ -540,8 +621,7 @@ export default function Home() {
                 impacts={displayedImpacts}
                 selectedEntityId={selectedRadarEntityId}
                 onSelectEntity={selectRadarEntity}
-                analyzableEntityIds={analyzableEntityIds}
-                onAnalyzeEntity={analyzeRadarEntity}
+                onEvaluateExposure={evaluateExposureFor}
                 pinnedEntityIds={displayedPinnedEntityIds}
                 expandedEntityIds={expandedEntityIds}
                 loadingNeighboursId={loadingNeighboursId}
@@ -594,7 +674,14 @@ export default function Home() {
                   </button>
                 </div>
                 <div id="exposure-panel" className="floating-panel" hidden={!exposureOpen}>
-                  <ExposureRail entities={radarGraph.entities} onSubmit={addExposure} busy={exposureBusy} />
+                  <ExposureRail
+                    entities={radarGraph.entities}
+                    onSubmit={evaluateExposure}
+                    busy={exposureBusy}
+                    selection={exposureSelection}
+                    numeraires={exposureNumeraires}
+                  />
+                  <ExposureEvaluation state={exposureEvaluation} onViewFullAnalysis={viewExposureAnalysis} />
                   {exposureStatus?.kind === "ok" ? <p role="status" className="exposure-status">{exposureStatus.message}</p> : null}
                   {exposureStatus?.kind === "error" ? <p role="alert" className="alert">{exposureStatus.message}</p> : null}
                   {exposureReportError ? <p role="alert" className="alert">{exposureReportError}</p> : null}

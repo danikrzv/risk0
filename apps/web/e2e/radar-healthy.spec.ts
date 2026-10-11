@@ -11,15 +11,18 @@ test("healthy radar shows the catalog topology and accepts a manual exposure", a
   await expect(graph.getByRole("button", { name: /Hidden 48% Neighbor/ })).toHaveCount(0)
 
   // The exposure panel floats open by default and keeps its values while hidden.
-  const exposure = page.getByRole("region", { name: "Exposure" })
+  const exposure = page.getByRole("region", { name: "Exposure", exact: true })
   await expect(exposure.getByLabel("Exposure amount")).toHaveValue("100000")
   await exposure.getByLabel("Exposure amount").fill("120000")
   await page.getByRole("button", { name: "Hide exposure" }).click()
   await expect(exposure).toBeHidden()
   await page.getByRole("button", { name: "Exposure", exact: true }).click()
   await expect(exposure.getByLabel("Exposure amount")).toHaveValue("120000")
-  await exposure.getByRole("button", { name: "Add exposure" }).click()
-  await expect(page.getByRole("status")).toContainText("Exposure recorded: 120000 USDC")
+  await exposure.getByRole("button", { name: "Evaluate exposure" }).click()
+  await expect(page.getByRole("status").filter({ hasText: "Exposure recorded" })).toContainText("Exposure recorded: 120000 USDC")
+  // The fixture radar's addresses are synthetic, so no catalog entry prices the default target.
+  await expect(page.getByRole("status").filter({ hasText: "Stay/exit evaluation unavailable" }))
+    .toContainText("is not in the curated catalog, so the 30-day stay/exit analysis cannot run")
 
   // Opening the incident drawer closes the exposure panel: they share the canvas edge.
   await page.getByRole("button", { name: "Incidents (0)" }).click()
@@ -47,4 +50,9 @@ test("healthy radar shows the catalog topology and accepts a manual exposure", a
   )
   await expect(computation.getByRole("table", { name: "Dependency aggregation" })).toContainText("WETH / USDC 86%")
   await expect(computation.getByText(/raw HEALTHY, no confirmation needed → HEALTHY/)).toBeVisible()
+
+  // A node's details offer Evaluate exposure, which opens the exposure form on that node.
+  await page.getByRole("region", { name: "Selected radar entity" }).getByRole("button", { name: "Evaluate exposure" }).click()
+  await expect(exposure).toBeVisible()
+  await expect(exposure.getByLabel("Exposure target")).toHaveValue("vault:1:0x1111111111111111111111111111111111111111")
 })

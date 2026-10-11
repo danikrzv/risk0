@@ -3,6 +3,12 @@
 import type { ExposureCreateRequest, PositionMode, RadarEntity } from "@risk0/contracts"
 import { FormEvent, useEffect, useMemo, useState } from "react"
 
+/** A target chosen outside the form (e.g. "Evaluate exposure" on a graph node); a new `key` re-applies it. */
+export interface ExposureTargetSelection {
+  entityId: string
+  key: number
+}
+
 import { compareDecimal, isPositiveDecimal, normalizeDecimal, percentToRatio } from "../lib/format"
 
 type FieldErrors = Partial<Record<"amount" | "collateral" | "debt" | "ltv" | "numeraire", string>>
@@ -19,10 +25,15 @@ export function ExposureRail({
   entities,
   onSubmit,
   busy = false,
+  selection = null,
+  numeraires,
 }: {
   entities: RadarEntity[]
   onSubmit: (request: ExposureCreateRequest) => void | Promise<void>
   busy?: boolean
+  selection?: ExposureTargetSelection | null
+  /** Asset symbol per target whose amounts the analysis prices (catalog entries). */
+  numeraires?: ReadonlyMap<string, string>
 }) {
   const [mode, setMode] = useState<PositionMode>("lender")
   // The risk service accepts lenders on vaults or markets, but borrowers only on markets.
@@ -47,8 +58,27 @@ export function ExposureRail({
     }
   }, [entityId, targets])
 
+  // Adopt a target chosen on the graph. A vault takes lenders only.
+  useEffect(() => {
+    if (!selection) return
+    const target = entities.find((entity) => entity.entity_id === selection.entityId)
+    if (!target || (target.entity_type !== "market" && target.entity_type !== "vault")) return
+    if (target.entity_type === "vault") setMode("lender")
+    setEntityId(target.entity_id)
+    const symbol = numeraires?.get(target.entity_id)
+    if (symbol) setNumeraire(symbol)
+    // Only a new selection re-applies; entity refreshes must not reset the form.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selection])
+
+  function chooseTarget(nextId: string) {
+    setEntityId(nextId)
+    const symbol = numeraires?.get(nextId)
+    if (symbol) setNumeraire(symbol)
+  }
+
   function reset(nextMode = mode) {
-    setNumeraire(nextMode === "lender" ? lenderPreset.numeraire : borrowerPreset.numeraire)
+    setNumeraire(numeraires?.get(entityId) ?? (nextMode === "lender" ? lenderPreset.numeraire : borrowerPreset.numeraire))
     setAmount(nextMode === "lender" ? lenderPreset.amount : borrowerPreset.debt)
     setCollateral(borrowerPreset.collateral)
     setDebt(borrowerPreset.debt)
@@ -97,7 +127,7 @@ export function ExposureRail({
       <h2 id="exposure-heading">Exposure</h2>
       <form onSubmit={submit} noValidate>
         <label>Exposure target
-          <select value={entityId} onChange={(event) => setEntityId(event.target.value)}>
+          <select id="exposure-target" value={entityId} onChange={(event) => chooseTarget(event.target.value)}>
             {targets.map((entity) => <option key={entity.entity_id} value={entity.entity_id}>{entity.label}</option>)}
           </select>
         </label>
@@ -133,7 +163,7 @@ export function ExposureRail({
         </div>
         {errorCount ? <p role="alert">Fix the {errorCount} highlighted fields</p> : null}
         <div className="exposure-rail__actions">
-          <button type="submit" disabled={busy || targets.length === 0}>{busy ? "Adding…" : "Add exposure"}</button>
+          <button type="submit" disabled={busy || targets.length === 0}>{busy ? "Evaluating…" : "Evaluate exposure"}</button>
           <button type="button" onClick={() => reset()}>Reset preset</button>
         </div>
       </form>

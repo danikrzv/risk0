@@ -274,6 +274,18 @@ def lender_vault_request(numeraire="WETH", amount="10", scenarios=None):
     }
 
 
+def lender_market_request(scenarios):
+    return {
+        "position": {
+            "mode": "lender",
+            "entity_id": "weth-usdc-860",
+            "amount": "100000",
+            "numeraire": "USDC",
+        },
+        "scenarios": scenarios,
+    }
+
+
 def borrower_request(severity="0.15", scenarios=None):
     return {
         "position": {
@@ -322,12 +334,17 @@ def test_lender_vault_analysis_stays_and_matches_the_contract(api, morpho_client
     assert_contract(body)
     recommendation = body["recommendation"]
     assert recommendation["decision"] == STAY
-    # 10 WETH * 0.998207... allocation * 0.15 shock * 0.001 + 10 * 0.10 * 0.0004
+    # 10 WETH * 0.10 * 0.0004 protocol impairment; the collateral shock costs nothing.
     assert Decimal(recommendation["expected_loss"]) < Decimal(recommendation["exit_cost"])
     assert Decimal(recommendation["exit_cost"]) == Decimal("0.003")  # 150k gas at 20 gwei, in WETH
     assert body["exit_estimate"]["withdrawable"] is True
     assert recommendation["triggers"] == []
-    assert recommendation["dominant_dependency"].startswith("asset:1:")
+    # Was an asset (the shocked wstETH charged 1:1): a WETH lender against wstETH
+    # collateral loses only bad debt, and an ETH-wide fall moves its WETH debt too.
+    shock = next(r for r in body["scenario_results"] if r["scenario_id"] == "collateral-shock")
+    assert Decimal(shock["impact"]) == 0
+    assert "no relative fall" in shock["explanation"]
+    assert recommendation["dominant_dependency"].startswith("protocol:1:")
     assert {result["scenario_id"] for result in body["scenario_results"]} == {
         "collateral-shock",
         "protocol-impairment",
@@ -687,8 +704,10 @@ TWO_SEVERITIES = [
 @pytest.mark.parametrize("mode", ["lender", "borrower"])
 def test_each_severity_is_paired_with_its_own_probability(morpho_client, clock, mode):
     if mode == "lender":
-        morpho = RecordedAllocationsOnly(morpho_client)
-        payload = lender_vault_request(scenarios=TWO_SEVERITIES)
+        # A USDC lender against WETH collateral: the wstETH/WETH vault (used before) now
+        # has no collateral-shock impact, since its WETH debt moves with the ETH collateral.
+        morpho = morpho_client
+        payload = lender_market_request(TWO_SEVERITIES)
     else:
         morpho = morpho_client
         payload = borrower_request(scenarios=TWO_SEVERITIES)
@@ -703,6 +722,104 @@ def test_each_severity_is_paired_with_its_own_probability(morpho_client, clock, 
     assert response.recommendation.expected_loss == expected.quantize(Decimal("1E-18"))
     # The mild probability is never applied to the severe impact.
     assert response.recommendation.expected_loss < severe.impact * Decimal("0.10")
+
+
+# Lender bad debt: borrower positions
+
+
+WETH_USDC = "0x94b823e6bd8ea533b4e33fbc307faea0b307301bc48763acc4d4aa4def7636cd"
+
+
+class WithBorrowerPositions:
+    """Recorded Morpho client plus a stubbed `get_market_positions`."""
+
+    def __init__(self, client, clock, rows=None, error=None) -> None:
+        self.client = client
+        self.clock = clock
+        self.rows = rows or ()
+        self.error = error
+        self.requested: list[str] = []
+
+    def get_market(self, market_id):
+        return self.client.get_market(market_id)
+
+    def get_vault(self, address, version):
+        return self.client.get_vault(address, version)
+
+    def get_allocations(self, address, version):
+        return self.client.get_allocations(address, version)
+
+    def get_market_positions(self, market_id, *, chain_id=1):
+        from app.adapters.morpho import MarketPosition, MarketPositions
+
+        self.requested.append(market_id)
+        if self.error is not None:
+            raise self.error
+        positions = tuple(
+            MarketPosition(
+                user=f"0x{index:040x}",
+                supply_assets=Decimal(0),
+                borrow_assets=Decimal(debt),
+                collateral_assets=Decimal(1),
+                health_factor=None if hf is None else Decimal(hf),
+            )
+            for index, (debt, hf) in enumerate(self.rows, start=1)
+        )
+        return DataEnvelope(
+            value=MarketPositions(
+                chain_id=chain_id, market_id=market_id, positions=positions, complete=True
+            ),
+            source="https://morpho.test/graphql",
+            fetched_at=self.clock(),
+            freshness=FreshnessStatus.FRESH,
+        )
+
+
+def test_lender_collateral_shock_uses_fetched_borrower_positions(morpho_client, clock):
+    market = morpho_client.get_market(WETH_USDC).value
+    # All the market's debt in one healthy borrower: no bad debt at a 15% fall.
+    morpho = WithBorrowerPositions(morpho_client, clock, rows=[(market.total_borrow_assets, "1.5")])
+    service = build_service(morpho, clock)
+
+    response = analyze(
+        service, lender_market_request([{"scenario_id": "collateral-shock", "severity": "0.15"}])
+    )
+
+    (result,) = response.scenario_results
+    assert morpho.requested == [WETH_USDC]
+    assert result.impact == 0
+    assert result.stressed_values[f"bad_debt.{WETH_USDC[:10]}.method"] == "borrower_positions"
+    assert "0 of 1 borrowers below 1.0 collateral/debt" in result.explanation
+    # Raw positions never reach the response.
+    assert "0x0000000000000000000000000000000000000001" not in response.model_dump_json()
+
+
+def test_lender_positions_failure_falls_back_to_the_worst_case_bound(morpho_client, clock):
+    from app.adapters.morpho import MorphoUnavailableError
+
+    morpho = WithBorrowerPositions(morpho_client, clock, error=MorphoUnavailableError("down"))
+    service = build_service(morpho, clock)
+
+    response = analyze(
+        service, lender_market_request([{"scenario_id": "collateral-shock", "severity": "0.40"}])
+    )
+
+    (result,) = response.scenario_results
+    market = morpho_client.get_market(WETH_USDC).value
+    bound = (1 - Decimal("0.60") / market.lltv) * market.total_borrow_assets / market.total_supply_assets
+    assert result.impact == Decimal("100000") * bound
+    assert result.stressed_values["bad_debt_bounded_markets"] == 1
+    assert "Worst-case bound: borrower positions unavailable" in result.explanation
+    assert "down" not in result.explanation
+
+
+def test_borrower_analysis_does_not_fetch_positions(morpho_client, clock):
+    morpho = WithBorrowerPositions(morpho_client, clock)
+    service = build_service(morpho, clock)
+
+    analyze(service, borrower_request("0.15"))
+
+    assert morpho.requested == []
 
 
 # Conflicting probability sources

@@ -112,6 +112,7 @@ from app.contracts.models import (
     ScenarioId,
     ScenarioSelection,
 )
+from app.domain.bad_debt import BorrowerDistribution, build_distribution
 from app.domain.exit import NUMERAIRE_PLACES, ExitQuote, GasAssumptions, QuoteRequest
 from app.domain.graph import (
     GraphConstructionError,
@@ -213,6 +214,10 @@ SNAPSHOT_SOURCE = "Morpho entity snapshot"
 ORACLE_SOURCE = "live oracle"
 ALLOCATIONS_SOURCE = "Morpho vault allocations"
 EXIT_SOURCE = "exit estimate"
+BORROWER_POSITIONS_SOURCE = "Morpho borrower positions"
+# Lender bad-debt estimate: borrower positions are fetched for at most this many
+# collateral-shocked markets (most exposed first); the rest use the worst-case bound.
+MAX_BAD_DEBT_MARKETS = 12
 
 
 # Errors
@@ -401,6 +406,9 @@ class AnalysisService:
                 sources.append((label, Freshness(observation.freshness.value)))
 
         graph = self._graph(position, entry, snapshots, oracles, now)
+        borrowers: dict[str, BorrowerDistribution] = {}
+        if position.mode is PositionMode.LENDER:
+            borrowers = self._borrower_distributions(graph, request.scenarios, sources)
         conflicts: list[DataConflict] = []
         scenarios_out = []
         try:
@@ -417,7 +425,13 @@ class AnalysisService:
                     )
                 )
                 scenarios_out.extend(
-                    self._engine.run(position, graph, (selection,), {key: assessment.estimate})
+                    self._engine.run(
+                        position,
+                        graph,
+                        (selection,),
+                        {key: assessment.estimate},
+                        borrowers=borrowers,
+                    )
                 )
             scenarios = tuple(scenarios_out)
         except (ValueError, ScenarioSeverityError) as error:
@@ -590,6 +604,61 @@ class AnalysisService:
         if self._protocol_tvl is not None and context.protocol_tvl is None:
             graph = _with_warning(graph, PROTOCOL_TVL_UNAVAILABLE)
         return _mark_unresolved_markets(graph, snapshots.unresolved_markets)
+
+    def _borrower_distributions(
+        self,
+        graph: RiskGraph,
+        selections: Sequence[ScenarioSelection],
+        sources: list[tuple[str, Freshness]],
+    ) -> dict[str, BorrowerDistribution]:
+        """Borrower debt distributions of the markets a lender's collateral shock reaches.
+
+        Positions come from Morpho (`get_market_positions`, cached with the other
+        Morpho snapshots). A market that cannot be read, or beyond
+        `MAX_BAD_DEBT_MARKETS`, is left out and the engine prices it at the
+        worst-case bound. Raw positions never reach the response.
+        """
+        fetch = getattr(self._morpho, "get_market_positions", None)
+        if not callable(fetch):
+            return {}
+        try:
+            wanted = self._engine.collateral_markets(graph, selections)
+        except ValueError as error:
+            logger.warning("bad-debt market selection failed: %s", type(error).__name__)
+            return {}
+        lltvs: dict[str, Decimal] = {}
+        for node in graph.nodes:
+            market_id = node.metrics.get("market_id")
+            lltv = node.metrics.get("lltv")
+            if node.node_type is RiskNodeType.MARKET and isinstance(market_id, str):
+                if isinstance(lltv, Decimal) and lltv > ZERO:
+                    lltvs[market_id.lower()] = lltv
+        distributions: dict[str, BorrowerDistribution] = {}
+        for market_id in wanted[:MAX_BAD_DEBT_MARKETS]:
+            lltv = lltvs.get(market_id)
+            if lltv is None:
+                continue
+            try:
+                envelope = fetch(market_id)
+                positions = envelope.value
+                if positions.market_id.lower() != market_id:
+                    logger.warning("borrower positions do not match the requested market")
+                    continue
+            except Exception as error:  # provider boundary: never leak provider text
+                logger.info("borrower positions unavailable: %s", type(error).__name__)
+                continue
+            if envelope.freshness is FreshnessStatus.EXPIRED:
+                continue
+            sources.append(
+                (f"{BORROWER_POSITIONS_SOURCE} {market_id[:10]}", Freshness(envelope.freshness.value))
+            )
+            distributions[market_id] = build_distribution(
+                market_id,
+                ((item.borrow_assets, item.health_factor) for item in positions.positions),
+                lltv,
+                complete=positions.complete,
+            )
+        return distributions
 
     def _protocol_tvl_envelope(self, now: datetime) -> DataEnvelope[ProtocolTvlSnapshot] | None:
         """Morpho TVL for the protocol node; a provider gap is a completeness warning, never fatal."""

@@ -67,7 +67,9 @@ test("Belem RWA EURCV lender with default scenarios is a fixture-defined STAY", 
   const ranked = book.getByRole("table", { name: /Pockets ranked by expected loss minus exit cost/ })
   await expect(ranked.locator("tbody tr")).toHaveCount(10)
   await expect(ranked.getByRole("columnheader", { name: "Forgone 30-day yield" })).toBeVisible()
-  await expect(ranked.locator('tbody tr[data-decision="STAY"]').first()).toContainText("Belem RWA EURCV")
+  // Belem stays; it is no longer the first STAY since lenders are charged bad debt, not the
+  // collateral fall, which lowers the other lender pockets' expected loss too.
+  await expect(ranked.locator('tbody tr[data-decision="STAY"]', { hasText: "Belem RWA EURCV" })).toHaveCount(1)
   // UNAVAILABLE pockets are never styled as safe.
   for (const marker of await ranked.locator('tr[data-decision="UNAVAILABLE"] [data-tone]').all()) {
     await expect(marker).toHaveAttribute("data-tone", "unavailable")

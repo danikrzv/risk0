@@ -11,6 +11,9 @@ wiring uses (`get_catalog_service`, `get_default_service`):
   data the API tests use). No socket is opened.
   `belem-allocated-markets.json` holds the public responses for the markets
   the Belem RWA EURCV vault allocates to, so its graph has no unknown exposure.
+  Borrower positions (`marketPositions`) are not recorded, so a lender's
+  collateral-shock bad debt uses the worst-case bound (all debt at LLTV) with
+  confidence lowered one level.
 - Uniswap quotes, gas, ETH/USD and USDC/USD prices, live oracle health, and
   30-day probabilities: small deterministic providers below, implementing the
   `AnalysisService` provider protocols. Their sources are labelled `fixture:*`,
@@ -159,6 +162,10 @@ class RecordedMorphoApi:
         return httpx.Response(200, json=body)
 
     def _key(self, query: str, variables: dict[str, object]) -> str:
+        if "marketPositions" in query:
+            # Borrower positions are not recorded: lender bad debt falls back to the
+            # worst-case bound (all debt at LLTV) with lowered confidence.
+            return "unrecorded:marketPositions"
         chain_id = variables["chainId"]
         if "marketById" in query:
             return self._graphql_key("market", variables["marketId"], chain_id)

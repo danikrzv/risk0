@@ -52,6 +52,8 @@ export function probabilityMethodLabel(estimate: ProbabilityEstimate): string {
       return "Empirical"
     case "model_estimated_protocol":
       return `Model-estimated · ${modelVersion(estimate) ?? "model version not reported"}`
+    case "structural":
+      return "Structural · cannot occur by construction"
     case "unavailable":
       return "Probability unavailable"
   }

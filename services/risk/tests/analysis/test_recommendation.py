@@ -3,11 +3,13 @@ from decimal import Decimal
 
 import pytest
 
-from app.analysis.recommendation import make_recommendation
+from app.analysis.recommendation import HORIZON_DAYS, estimate_carry, make_recommendation
 from app.contracts.models import (
+    CarryStatus,
     ConfidenceLevel,
     ExitEstimate,
     FreshnessStatus,
+    PositionMode,
     ProbabilityEstimate,
     ProbabilityMethod,
     RecommendationDecision,
@@ -182,6 +184,42 @@ def test_lender_stressed_liquidity_below_twenty_percent_exits():
     assert result.decision is EXIT
     assert result.triggers == ("liquidity-collapse:withdrawal_shortfall",)
     assert "exit is recommended, but a full exit is currently unavailable" in result.explanation.lower()
+
+
+def test_hard_trigger_confidence_comes_from_the_data_not_the_missing_probability():
+    stressed = scenario(
+        "0",
+        scenario_id="liquidity-collapse",
+        triggers=("withdrawal_shortfall",),
+        prob=probability(None),
+        shortfall="900",
+    )
+    stressed = stressed.model_copy(
+        update={"stressed_values": {**stressed.stressed_values, "data_confidence": "high"}}
+    )
+
+    result = make_recommendation((stressed,), exit_estimate("5"), quality())
+
+    assert result.decision is EXIT
+    # The trigger does not use the scenario's (unavailable) probability.
+    assert result.confidence is not ConfidenceLevel.UNAVAILABLE
+
+
+def test_dominant_dependency_is_the_nearest_shocked_node():
+    morpho, issuer = "protocol:1:morpho", "protocol:1:issuer-weth9"
+    protocol_event = scenario(
+        "30",
+        scenario_id="protocol-impairment",
+        prob=probability("0.5"),
+        path=("position:1:p", "market:1:m", "asset:1:weth", morpho, issuer),
+    )
+    protocol_event = protocol_event.model_copy(
+        update={"stressed_values": {**protocol_event.stressed_values, "primary_dependency": morpho}}
+    )
+
+    result = make_recommendation((protocol_event,), exit_estimate("5"), quality())
+
+    assert result.dominant_dependency == morpho
 
 
 def test_expected_loss_greater_than_exit_cost_exits():
@@ -390,3 +428,363 @@ def test_scenario_trigger_stays_dominant_over_a_live_trigger():
 
     assert result.triggers == ("collateral-shock:liquidation", f"live:oracle_failure:{ORACLE}")
     assert result.dominant_dependency == ASSET
+
+
+# Break-even probability
+
+
+def only_point(result):
+    assert result.break_even is not None
+    assert len(result.break_even.points) == 1
+    return result.break_even.points[0]
+
+
+def test_break_even_is_exit_cost_over_impact_with_the_current_estimate():
+    result = make_recommendation((scenario("100"),), exit_estimate("5"), quality())
+
+    point = only_point(result)
+    assert result.decision is STAY
+    assert result.break_even.probability_dependent is True
+    assert result.break_even.dominant_scenario_id == "collateral-shock"
+    assert result.break_even.exit_cost == Decimal("5")
+    assert point.break_even_probability == Decimal("0.05")
+    assert point.decision_flip_probability == Decimal("0.05")
+    assert point.other_expected_loss == Decimal(0)
+    assert point.current_probability == Decimal("0.02")
+    assert (point.current_probability_low, point.current_probability_high) == (
+        Decimal("0.01"),
+        Decimal("0.03"),
+    )
+    assert point.dependency == ASSET
+    assert point.reasons == ()
+    assert "exceeds 5% (current estimate 2%)" in result.break_even.explanation
+
+
+def test_estimate_above_break_even_exits_and_the_flip_accounts_for_other_scenarios():
+    result = make_recommendation(
+        (
+            scenario("100", prob=probability("0.08", "0.04", "0.1")),
+            scenario("50", scenario_id="protocol-impairment", path=("p", "protocol:morpho")),
+        ),
+        exit_estimate("6"),
+        quality(),
+    )
+
+    assert result.decision is EXIT  # 8 + 1 > 6
+    shock, protocol = result.break_even.points
+    assert result.break_even.dominant_scenario_id == "collateral-shock"
+    assert shock.break_even_probability == Decimal("0.06")
+    # (6 - 50 * 0.02) / 100
+    assert shock.other_expected_loss == Decimal(1)
+    assert shock.decision_flip_probability == Decimal("0.05")
+    assert protocol.break_even_probability == Decimal("0.12")
+    # (6 - 8) / 50 is negative: capped at 0, EXIT already from the other scenario.
+    assert protocol.decision_flip_probability == Decimal(0)
+    assert any("already exceeds" in reason for reason in protocol.reasons)
+
+
+def test_exit_cost_above_the_impact_caps_break_even_at_one():
+    result = make_recommendation((scenario("4"),), exit_estimate("5"), quality())
+
+    point = only_point(result)
+    assert point.break_even_probability == Decimal(1)
+    assert point.decision_flip_probability == Decimal(1)
+    assert any("no probability" in reason for reason in point.reasons)
+    assert "No 30-day probability of collateral-shock makes EXIT cheaper" in result.break_even.explanation
+
+
+def test_zero_impact_scenarios_have_no_break_even_point():
+    result = make_recommendation((scenario("0"),), exit_estimate("5"), quality())
+
+    assert result.break_even.points == ()
+    assert result.break_even.dominant_scenario_id is None
+    assert "no break-even" in result.break_even.explanation
+
+
+def test_incomplete_impact_gives_a_null_break_even_with_a_reason():
+    result = make_recommendation((scenario("100", complete=False),), exit_estimate("5"), quality())
+
+    point = only_point(result)
+    assert result.decision is UNAVAILABLE
+    assert point.break_even_probability is None
+    assert point.decision_flip_probability is None
+    assert "incomplete" in point.reasons[0]
+
+
+def test_unknown_exit_cost_gives_a_null_break_even_never_zero():
+    result = make_recommendation(
+        (scenario("100"),), exit_estimate("0", freshness=FreshnessStatus.EXPIRED), quality()
+    )
+
+    point = only_point(result)
+    assert result.break_even.exit_cost is None
+    assert point.break_even_probability is None
+    assert "exit cost is unknown" in point.reasons[0]
+
+
+def test_unknown_probability_keeps_the_break_even_but_not_the_flip_of_others():
+    result = make_recommendation(
+        (
+            scenario("100", prob=probability(None)),
+            scenario("50", scenario_id="protocol-impairment", path=("p", "protocol:morpho")),
+        ),
+        exit_estimate("5"),
+        quality(),
+    )
+
+    assert result.decision is UNAVAILABLE
+    unknown, protocol = result.break_even.points
+    assert unknown.break_even_probability == Decimal("0.05")
+    assert unknown.decision_flip_probability == Decimal("0.04")  # (5 - 1) / 100
+    assert unknown.current_probability is None
+    assert any("no current 30-day probability" in reason for reason in unknown.reasons)
+    assert protocol.break_even_probability == Decimal("0.1")
+    assert protocol.decision_flip_probability is None
+    assert any("collateral-shock is unknown" in reason for reason in protocol.reasons)
+
+
+def test_hard_trigger_decision_does_not_depend_on_probability():
+    result = make_recommendation(
+        (scenario("100", triggers=("liquidation",)),), exit_estimate("5"), quality()
+    )
+
+    assert result.decision is EXIT
+    assert result.break_even.probability_dependent is False
+    assert "does not depend on any probability" in result.break_even.explanation
+    # The threshold is still reported for context.
+    assert only_point(result).break_even_probability == Decimal("0.05")
+
+
+def test_break_even_serializes_to_the_response_schema():
+    import json
+    from pathlib import Path
+
+    from jsonschema import Draft202012Validator
+
+    schema = json.loads(
+        (
+            Path(__file__).resolve().parents[4]
+            / "packages/contracts/schemas/analysis-response.schema.json"
+        ).read_text()
+    )
+    validator = Draft202012Validator({"$ref": "#/$defs/Recommendation", "$defs": schema["$defs"]})
+    for exit_cost in ("5", "500"):
+        result = make_recommendation((scenario("100"),), exit_estimate(exit_cost), quality())
+        validator.validate(json.loads(result.model_dump_json()))
+
+
+# Carry: exiting gives up the position yield over the horizon
+
+
+def lender_carry(amount: str = "100000", apy: str | None = "0.045"):
+    return estimate_carry(
+        PositionMode.LENDER,
+        Decimal(amount),
+        None if apy is None else Decimal(apy),
+        apy_source="Morpho market supply APY",
+    )
+
+
+def test_lender_forgone_yield_is_amount_times_apy_over_the_horizon():
+    carry = lender_carry("100000", "0.0365")
+
+    # 100000 * 0.0365 * 30 / 365 = 300
+    assert carry.forgone_yield == Decimal("300")
+    assert carry.carry.status is CarryStatus.KNOWN
+    assert carry.carry.apy == Decimal("0.0365")
+    assert carry.carry.horizon_days == HORIZON_DAYS == 30
+    assert any("held idle" in note for note in carry.carry.notes)
+
+
+def test_without_yield_a_gas_only_exit_cost_exits_on_any_expected_loss():
+    # The original gap: 0.0022 * 30000 = 66 > 0.02 gas, so EXIT.
+    shock = scenario(
+        "30000", scenario_id="protocol-impairment", prob=probability("0.0022", "0.001", "0.004")
+    )
+
+    result = make_recommendation((shock,), exit_estimate("0.02"), quality())
+
+    assert result.decision is EXIT
+    assert result.forgone_yield is None and result.carry is None
+
+
+def test_forgone_yield_raises_the_cost_of_exiting_and_turns_exit_into_stay():
+    shock = scenario(
+        "30000", scenario_id="protocol-impairment", prob=probability("0.0022", "0.001", "0.004")
+    )
+
+    # 100000 * 0.0365 * 30 / 365 = 300 forgone; 66 < 0.02 + 300.
+    result = make_recommendation(
+        (shock,),
+        exit_estimate("0.02"),
+        quality(),
+        numeraire="USDC",
+        carry=lender_carry(apy="0.0365"),
+    )
+
+    assert result.decision is STAY
+    assert result.expected_loss == Decimal("66")
+    assert result.exit_cost == Decimal("0.02")
+    assert result.forgone_yield == Decimal("300")
+    assert result.cost_of_exiting == Decimal("300.02")
+    assert result.confidence is ConfidenceLevel.HIGH
+    assert "versus exit cost now 0.02 USDC plus forgone 30-day yield 300" in result.explanation
+    assert "APY 3.65%" in result.explanation
+    assert "cost of exiting of 300.02" in result.explanation
+    assert "held idle" in result.explanation
+
+
+def test_expected_loss_above_exit_cost_plus_forgone_yield_still_exits():
+    # 0.02 * 20000 = 400 > 0.02 + 300
+    result = make_recommendation(
+        (scenario("20000"),), exit_estimate("0.02"), quality(), carry=lender_carry(apy="0.0365")
+    )
+
+    assert result.decision is EXIT
+    assert result.cost_of_exiting == Decimal("300.02")
+
+
+def test_expected_loss_equal_to_exit_cost_plus_forgone_yield_stays():
+    # 0.02 * 15001 = 300.02 == 0.02 + 300
+    result = make_recommendation(
+        (scenario("15001"),), exit_estimate("0.02"), quality(), carry=lender_carry(apy="0.0365")
+    )
+
+    assert result.expected_loss == result.cost_of_exiting == Decimal("300.02")
+    assert result.decision is STAY
+
+
+def test_unknown_apy_counts_zero_yield_warns_and_lowers_confidence():
+    carry = lender_carry(apy=None)
+    result = make_recommendation((scenario("300"),), exit_estimate("5"), quality(), carry=carry)
+
+    assert carry.carry.status is CarryStatus.UNKNOWN
+    assert result.decision is EXIT  # 6 > 5 + 0: biased toward EXIT
+    assert result.forgone_yield == Decimal(0)
+    assert result.cost_of_exiting == Decimal(5)
+    assert result.carry.apy is None
+    assert result.confidence is ConfidenceLevel.MEDIUM
+    assert "APY unknown, counted as zero" in result.explanation
+    assert "The position APY is unknown" in result.explanation
+    assert result.carry.notes[0].startswith("The position APY is unknown")
+
+
+def test_unknown_apy_does_not_change_a_hard_trigger_exit():
+    result = make_recommendation(
+        (scenario("100", triggers=("liquidation",)),),
+        exit_estimate("5"),
+        quality(),
+        carry=lender_carry(apy=None),
+    )
+
+    assert result.decision is EXIT
+    assert result.confidence is ConfidenceLevel.HIGH
+
+
+def test_hard_trigger_exits_even_when_the_forgone_yield_is_large():
+    result = make_recommendation(
+        (scenario("100", triggers=("liquidation",)),),
+        exit_estimate("5"),
+        quality(),
+        carry=lender_carry(apy="0.5"),
+    )
+
+    assert result.decision is EXIT
+    assert result.forgone_yield > result.expected_loss
+
+
+def test_borrower_carry_is_zero_with_an_explicit_note():
+    carry = estimate_carry(PositionMode.BORROWER, Decimal("3000"), Decimal("0.05"))
+    result = make_recommendation((scenario("300"),), exit_estimate("5"), quality(), carry=carry)
+
+    assert carry.carry.status is CarryStatus.NOT_APPLICABLE
+    assert carry.carry.apy is None
+    assert result.forgone_yield == Decimal(0)
+    assert result.decision is EXIT
+    assert result.confidence is ConfidenceLevel.HIGH
+    assert "borrower carry not modelled" in result.explanation
+    assert (
+        "Borrower carry (borrow cost versus collateral yield) is not modelled"
+        in result.explanation
+    )
+
+
+def test_unavailable_recommendation_reports_the_carry_without_deciding():
+    result = make_recommendation(
+        (scenario("100", prob=probability(None)),),
+        exit_estimate("5"),
+        quality(),
+        carry=lender_carry(apy="0.0365"),
+    )
+
+    assert result.decision is UNAVAILABLE
+    assert result.forgone_yield == Decimal("300")
+    assert result.carry.status is CarryStatus.KNOWN
+
+
+def test_break_even_uses_exit_cost_plus_forgone_yield():
+    # Cost of exiting 5 + 300 = 305; impact 10000: break-even 3.05%.
+    result = make_recommendation(
+        (
+            scenario("10000"),
+            scenario("1000", scenario_id="protocol-impairment", path=("p", "protocol:morpho")),
+        ),
+        exit_estimate("5"),
+        quality(),
+        carry=lender_carry(apy="0.0365"),
+    )
+
+    shock, protocol = result.break_even.points
+    assert result.break_even.exit_cost == Decimal("5")
+    assert result.break_even.forgone_yield == Decimal("300")
+    assert result.break_even.cost_of_exiting == Decimal("305")
+    assert shock.break_even_probability == Decimal("0.0305")
+    # (305 - 1000 * 0.02) / 10000
+    assert shock.decision_flip_probability == Decimal("0.0285")
+    assert protocol.break_even_probability == Decimal("0.305")
+    assert "exceeds 2.85%" in result.break_even.explanation
+    # The decision agrees with the flip point: 0.02 < 0.0285, so STAY.
+    assert result.decision is STAY
+
+
+def test_break_even_cost_of_exiting_is_null_when_the_exit_cost_is_unknown():
+    result = make_recommendation(
+        (scenario("100"),),
+        exit_estimate("0", freshness=FreshnessStatus.EXPIRED),
+        quality(),
+        carry=lender_carry(apy="0.0365"),
+    )
+
+    assert result.break_even.cost_of_exiting is None
+    assert only_point(result).break_even_probability is None
+
+
+def test_carry_fields_serialize_to_the_response_schema():
+    import json
+    from pathlib import Path
+
+    from jsonschema import Draft202012Validator
+    from jsonschema.exceptions import ValidationError
+
+    schema = json.loads(
+        (
+            Path(__file__).resolve().parents[4]
+            / "packages/contracts/schemas/analysis-response.schema.json"
+        ).read_text()
+    )
+    validator = Draft202012Validator({"$ref": "#/$defs/Recommendation", "$defs": schema["$defs"]})
+    carries = (
+        lender_carry(apy="0.0365"),
+        lender_carry(apy=None),
+        estimate_carry(PositionMode.BORROWER, Decimal("3000"), None),
+    )
+    payloads = []
+    for carry in carries:
+        result = make_recommendation((scenario("100"),), exit_estimate("5"), quality(), carry=carry)
+        payload = json.loads(result.model_dump_json())
+        validator.validate(payload)
+        assert set(payload["carry"]) == {"status", "apy", "apy_source", "horizon_days", "notes"}
+        payloads.append(payload)
+    payloads[0]["carry"]["status"] = "guessed"
+    with pytest.raises(ValidationError):
+        validator.validate(payloads[0])

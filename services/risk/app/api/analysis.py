@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 
 from app.adapters.morpho import DEFAULT_BASE_URL, MorphoClient
 from app.analysis.service import (
+    HISTORY_HEARTBEATS,
     AnalysisError,
     AnalysisService,
     ChainlinkLatest,
@@ -38,8 +39,13 @@ def build_default_analysis_service() -> AnalysisService:
     quotes, gas, and history become UNAVAILABLE, and with no live oracle provider
     every graph oracle is missing critical data, so the recommendation is
     UNAVAILABLE (never STAY) instead of failing the request."""
+    from app.adapters.defillama import DefiLlamaClient
+    from app.adapters.defillama_coins import DefiLlamaCoinsClient
     from app.adapters.defiscan import DefiScanClient
+    from app.analysis.service import DefiLlamaProtocolTvl
+    from app.catalog.assets import default_asset_registry
     from app.config import Settings
+    from app.history.market_price import MarketPriceDepegHistory
 
     catalog_path = Path(
         os.environ.get(
@@ -52,7 +58,8 @@ def build_default_analysis_service() -> AnalysisService:
     evidence_path = REPOSITORY_ROOT / "data" / "evidence" / "defisafety.ethereum.json"
     cache = SQLiteCache(cache_path)
     morpho = MorphoClient(os.environ.get("MORPHO_API_URL", DEFAULT_BASE_URL), cache=cache)
-    evidence = FileAndDefiScanEvidence(evidence_path, DefiScanClient())
+    defillama = DefiLlamaClient(cache=cache)
+    evidence = FileAndDefiScanEvidence(evidence_path, DefiScanClient(), defillama=defillama)
 
     try:
         settings = Settings.from_environment()
@@ -60,29 +67,43 @@ def build_default_analysis_service() -> AnalysisService:
         logger.warning("ETHEREUM_RPC_URL is not configured; Ethereum-backed data is unavailable")
         settings = None
 
-    quotes = gas = prices = history = oracles = None
+    quotes = gas = prices = history = oracles = ethereum = None
     if settings is not None:
         from app.adapters.ethereum import EthereumClient
         from app.adapters.uniswap import UniswapClient
         from app.history.estimator import HistoricalProbabilityService
         from app.history.normalization import NormalizedHistoryCache
 
-        ethereum = EthereumClient(settings)
+        # Chainlink rounds are cached per feed in the shared SQLite cache, so a
+        # restart extends the stored history instead of reading a year again.
+        ethereum = EthereumClient(settings, cache=cache)
         quotes = UniswapQuotes(UniswapClient(settings, cache=cache), UniswapClient(settings))
         gas = EthereumGas(ethereum)
         chainlink = ChainlinkLatest(ethereum)
         prices = ChainlinkPrices(chainlink)
         oracles = ChainlinkOracleHealth(chainlink)
-        history = HistoricalProbabilityService(ethereum, NormalizedHistoryCache(cache))
+        history = HistoricalProbabilityService(
+            ethereum,
+            NormalizedHistoryCache(cache),
+            heartbeats=HISTORY_HEARTBEATS,
+            feed_notes=ethereum.feed_notes(),
+        )
+
+    # Stablecoin depeg for an asset without a Chainlink feed (EURCV): DeFiLlama
+    # market prices against the registry peg (EUR via Chainlink EUR/USD).
+    market_prices = MarketPriceDepegHistory(
+        DefiLlamaCoinsClient(cache=cache), ethereum, default_asset_registry()
+    )
 
     return AnalysisService(
         CatalogRepository(catalog_path),
         morpho,
-        probabilities=HybridProbabilityProvider(history, evidence),
+        probabilities=HybridProbabilityProvider(history, evidence, market_prices=market_prices),
         quotes=quotes,
         gas=gas,
         prices=prices,
         oracles=oracles,
+        protocol_tvl=DefiLlamaProtocolTvl(defillama),
     )
 
 

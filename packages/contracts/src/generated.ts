@@ -9,9 +9,10 @@ export const SCENARIO_IDS = ["stablecoin-depeg","collateral-shock","oracle-failu
 export const RISK_NODE_TYPES = ["position","vault","market","protocol","asset","oracle","pool","chain"] as const;
 export const FRESHNESS_STATUSES = ["fresh","stale_usable","expired"] as const;
 export const RISK_EDGE_TYPES = ["allocated_to","lends","borrows","uses_collateral","uses_oracle","backed_by","exits_through","deployed_on"] as const;
-export const PROBABILITY_METHODS = ["empirical_rolling_window","model_estimated_protocol","unavailable"] as const;
+export const PROBABILITY_METHODS = ["empirical_rolling_window","model_estimated_protocol","structural","unavailable"] as const;
 export const CONFIDENCE_LEVELS = ["high","medium","low","unavailable"] as const;
 export const RECOMMENDATION_DECISIONS = ["STAY","EXIT","UNAVAILABLE"] as const;
+export const CARRY_STATUSES = ["known","unknown","not_applicable"] as const;
 export const HEALTH_STATUSES = ["HEALTHY","WARNING","CRITICAL","UNKNOWN"] as const;
 export const RADAR_ENTITY_TYPES = ["chain","protocol","vault","market","asset","oracle","irm","position"] as const;
 export const INCIDENT_SEVERITIES = ["WARNING","CRITICAL"] as const;
@@ -20,6 +21,7 @@ export const RADAR_RELATIONSHIP_TYPES = ["allocated_to","lends","borrows","uses_
 export const SIMILARITY_STORAGE_THRESHOLD = "0.33" as const;
 export const SIMILARITY_VISIBILITY_THRESHOLD = "0.60" as const;
 export const SIMILARITY_VISIBLE_LIMIT = 10 as const;
+export const MAX_BOOK_POCKETS = 20 as const;
 
 export type CatalogChainId = 1 | 8453;
 export type CatalogEntityType = "morpho_vault_v2" | "morpho_vault_v1" | "morpho_market";
@@ -30,9 +32,10 @@ export type ScenarioId = "stablecoin-depeg" | "collateral-shock" | "oracle-failu
 export type RiskNodeType = "position" | "vault" | "market" | "protocol" | "asset" | "oracle" | "pool" | "chain";
 export type FreshnessStatus = "fresh" | "stale_usable" | "expired";
 export type RiskEdgeType = "allocated_to" | "lends" | "borrows" | "uses_collateral" | "uses_oracle" | "backed_by" | "exits_through" | "deployed_on";
-export type ProbabilityMethod = "empirical_rolling_window" | "model_estimated_protocol" | "unavailable";
+export type ProbabilityMethod = "empirical_rolling_window" | "model_estimated_protocol" | "structural" | "unavailable";
 export type ConfidenceLevel = "high" | "medium" | "low" | "unavailable";
 export type RecommendationDecision = "STAY" | "EXIT" | "UNAVAILABLE";
+export type CarryStatus = "known" | "unknown" | "not_applicable";
 export type HealthStatus = "HEALTHY" | "WARNING" | "CRITICAL" | "UNKNOWN";
 export type RadarEntityType = "chain" | "protocol" | "vault" | "market" | "asset" | "oracle" | "irm" | "position";
 export type IncidentSeverity = "WARNING" | "CRITICAL";
@@ -180,6 +183,52 @@ export interface ExitEstimate {
   warnings: string[];
 }
 
+/**
+ * With cost_of_exiting = exit_cost + forgone_yield:
+ * break_even_probability = cost_of_exiting / impact (this scenario alone);
+ * decision_flip_probability = (cost_of_exiting - other_expected_loss) / impact
+ * (other scenarios held at their central estimates). Both are capped to
+ * [0, 1] and null, with reasons, when an input is unknown.
+ */
+export interface BreakEvenPoint {
+  scenario_id: string;
+  dependency: string | null;
+  impact: DecimalString;
+  other_expected_loss: DecimalString | null;
+  break_even_probability: DecimalString | null;
+  decision_flip_probability: DecimalString | null;
+  current_probability: DecimalString | null;
+  current_probability_low: DecimalString | null;
+  current_probability_high: DecimalString | null;
+  reasons: string[];
+}
+
+export interface BreakEven {
+  probability_dependent: boolean;
+  dominant_scenario_id: string | null;
+  exit_cost: DecimalString | null;
+  points: BreakEvenPoint[];
+  explanation: string;
+  forgone_yield?: DecimalString | null;
+  /** exit_cost + forgone_yield, the cost the thresholds use. */
+  cost_of_exiting?: DecimalString | null;
+}
+
+/**
+ * The position yield over the decision horizon. Lenders: forgone_yield =
+ * amount * apy * horizon_days / 365, assuming exited capital is held idle.
+ * "unknown": APY unavailable, zero is used and confidence is lowered.
+ * "not_applicable": borrower carry is not modelled.
+ */
+export interface Carry {
+  status: CarryStatus;
+  /** Annual APY as a fraction (0.045 = 4.5%), net of fees when available. */
+  apy: DecimalString | null;
+  apy_source: string | null;
+  horizon_days: number;
+  notes: string[];
+}
+
 export interface Recommendation {
   decision: RecommendationDecision;
   expected_loss: DecimalString;
@@ -190,6 +239,12 @@ export interface Recommendation {
   dominant_dependency: string | null;
   confidence: ConfidenceLevel;
   explanation: string;
+  break_even?: BreakEven | null;
+  /** Yield given up over the horizon by exiting (EXIT iff expected_loss > exit_cost + forgone_yield). */
+  forgone_yield?: DecimalString | null;
+  /** exit_cost + forgone_yield. */
+  cost_of_exiting?: DecimalString | null;
+  carry?: Carry | null;
 }
 
 export interface AnalysisRequest {
@@ -203,6 +258,88 @@ export interface AnalysisResponse {
   exit_estimate: ExitEstimate;
   recommendation: Recommendation;
   analyzed_at: string;
+}
+
+export interface BookPocketInput {
+  pocket_id?: string;
+  position: PositionInput;
+  scenarios?: [ScenarioSelection, ...ScenarioSelection[]];
+  /** Fraction of the book in (0, 1]; a book's weights sum to at most 1. */
+  weight: DecimalString;
+}
+
+interface BookRequestBase {
+  pockets: [BookPocketInput, ...BookPocketInput[]];
+  /** Shared scenarios for every pocket without its own. */
+  scenarios?: [ScenarioSelection, ...ScenarioSelection[]];
+}
+
+export type BookRequest = BookRequestBase &
+  (
+    | { book_value: DecimalString; numeraire: string }
+    | { book_value?: never; numeraire?: never }
+  );
+
+export interface BookAmount {
+  amount: DecimalString;
+  fraction_of_pocket: DecimalString | null;
+  fraction_of_book: DecimalString | null;
+}
+
+export interface BookPocketResult {
+  pocket_id: string;
+  rank: number;
+  entity_id: string;
+  mode: PositionMode;
+  numeraire: string;
+  weight: DecimalString;
+  decision: RecommendationDecision;
+  confidence: ConfidenceLevel;
+  dominant_dependency: string | null;
+  triggers: string[];
+  pocket_value: DecimalString | null;
+  expected_loss: BookAmount | null;
+  exit_cost: BookAmount | null;
+  /** expected_loss - (exit_cost + forgone_yield). */
+  exit_advantage: BookAmount | null;
+  break_even: BreakEven | null;
+  unavailable_reasons: string[];
+  explanation: string;
+  analyzed_at: string | null;
+  /** Yield given up over the 30-day horizon by exiting this pocket. */
+  forgone_yield?: BookAmount | null;
+}
+
+export interface BookTotal {
+  amount: DecimalString | null;
+  fraction_of_book: DecimalString | null;
+}
+
+export interface BookTotals {
+  numeraire: string | null;
+  expected_loss_staying: BookTotal;
+  exit_cost_exit_pockets: BookTotal;
+  expected_loss_stay_pockets: BookTotal;
+  recommended_cost: BookTotal;
+  net_benefit: BookTotal;
+  allocated_weight: DecimalString;
+  stay_weight: DecimalString;
+  exit_weight: DecimalString;
+  unavailable_weight: DecimalString;
+  stay_count: number;
+  exit_count: number;
+  unavailable_count: number;
+  complete: boolean;
+  warnings: string[];
+  /** Yield given up by exiting the EXIT pockets; part of recommended_cost. */
+  forgone_yield_exit_pockets?: BookTotal | null;
+}
+
+export interface BookResponse {
+  schema_version: "1.0.0";
+  pockets: BookPocketResult[];
+  totals: BookTotals;
+  generated_at: string;
 }
 
 export interface RadarEntity {

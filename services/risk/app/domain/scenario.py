@@ -98,6 +98,20 @@ class ScenarioDefinition:
 # Oracle-failure event thresholds (spec § "Default Scenario Set", § 13).
 ORACLE_STALE_THRESHOLD_SECONDS = Decimal("1800")
 ORACLE_DEVIATION_THRESHOLD = Decimal("0.05")
+
+
+def oracle_deviation_breaches(deviation: Decimal, mode: PositionMode) -> bool:
+    """Whether a signed oracle deviation is a failure for this side of the market.
+
+    `deviation` is (oracle price - market reference) / reference: positive when
+    the oracle values the collateral above the market. Overvaluation is the
+    lender's risk (bad debt goes unliquidated); undervaluation only liquidates
+    borrowers early, which protects lenders (e.g. a deliberately "lowered"
+    price feed). Borrowers are exposed in both directions.
+    """
+    if mode is PositionMode.LENDER:
+        return deviation >= ORACLE_DEVIATION_THRESHOLD
+    return abs(deviation) >= ORACLE_DEVIATION_THRESHOLD
 # § 13: lender hard trigger when stressed available liquidity < 20% of the position.
 WITHDRAWAL_TRIGGER_RATIO = Decimal("0.20")
 # Morpho Blue liquidation incentive: min(M, 1 / (cursor * lltv + (1 - cursor))).

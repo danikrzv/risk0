@@ -4,6 +4,7 @@ import type { AnalysisResponse, ExposureCreateRequest, HealthStatus, HydratedCat
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 
+import { BookPanel } from "../components/book-panel"
 import { CatalogSelector, canAnalyze } from "../components/catalog-selector"
 import { DataQualityPanel } from "../components/data-quality"
 import { ExposureRail } from "../components/exposure-rail"
@@ -384,7 +385,7 @@ export default function Home() {
     if (catalogId !== selectedId) selectEntry(catalogId)
     setActiveCategory("position-analysis")
     requestAnimationFrame(() => {
-      document.getElementById("position-analysis")?.scrollIntoView({ behavior: "smooth", block: "start" })
+      document.getElementById("position-analysis")?.scrollIntoView?.({ behavior: "smooth", block: "start" })
     })
     focusHeading("position-analysis-heading")
   }, [catalogByRadarEntity, selectEntry, selectedId])
@@ -696,6 +697,8 @@ export default function Home() {
           <DataQualityPanel analysis={analysis.result} receivedAt={analysis.receivedAt} />
         </div>
       )}
+
+      {catalog.status === "ready" && <BookPanel entries={catalog.entries} />}
       </section>
     </TerminalShell>
   )

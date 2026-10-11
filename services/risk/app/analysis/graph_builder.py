@@ -7,9 +7,22 @@ Graph shape, matching the scenario engine's traversal rules:
                   --uses_collateral--> collateral asset
 - market:         --lends--> loan asset, --uses_collateral--> collateral asset,
                   --uses_oracle--> oracle, --deployed_on--> Morpho
+- oracle:         --uses_oracle--> each feed it reads, when the live observation
+                  decoded the oracle (feeds are oracle nodes keyed by feed address,
+                  with `feed_kind`, `provider`, `last_update_age_seconds`,
+                  `heartbeat_seconds` and `heartbeat_source`; a third-party feed
+                  whose staleness is not judged adds a completeness warning)
 - vault:          --lends--> vault asset, --deployed_on--> Morpho
 - Morpho --deployed_on--> Ethereum
 - position --exits_through--> pool --exits_through--> pool tokens already in the graph
+- issuer and underlying look-through (when the context carries an asset registry):
+  asset --backed_by--> underlying asset (recursive, cycle-safe, at most
+  `MAX_UNDERLYING_DEPTH` token hops), asset --backed_by--> issuer protocol node
+  `protocol:1:issuer-<id>` (metrics `issuer_type`, `redemption`, `source_url`,
+  `defiscan_slug`), on-chain issuers (protocol, wrapper) --deployed_on--> Ethereum,
+  and non-token underlyings as asset nodes `asset:1:underlying-<id>` (native ETH
+  --deployed_on--> Ethereum). An asset without a registry entry gets no new nodes
+  and a completeness warning that its issuer is unmodelled.
 - vault --allocated_to(weight)--> protocol "Unmodelled allocation" for every
   allocation row that is not a Morpho market (for example a V2 adapter), so an
   unknown share of the vault is visible with `exposure_unknown=True` instead of
@@ -32,6 +45,11 @@ allocated-market details, oracle health, pool depth, a liquidity figure that
 cannot be expressed in the numeraire) is reported in `completeness_warnings`
 and never substituted.
 
+Protocol TVL (optional, DeFiLlama): the Morpho node carries `tvl_usd`,
+`chain_tvl_usd`, `chain_borrowed_usd`, `chain_defi_tvl_usd`, `chain_tvl_share`,
+`entity_tvl_usd` and `entity_share_of_protocol_tvl` (see `app.domain.protocol`),
+plus a concentration warning when a share reaches its named threshold.
+
 Metric keys read by `app.analysis.scenario_engine`: `symbol` on asset nodes,
 `lltv` on market nodes, `available_liquidity` (position-numeraire units) on
 vault and market nodes, `liquidity_depth` on pool nodes, and `age_seconds` and
@@ -44,6 +62,13 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from urllib.parse import urlsplit, urlunsplit
 
+from app.catalog.assets import (
+    MAX_UNDERLYING_DEPTH,
+    AssetRegistry,
+    Issuer,
+    IssuerType,
+    RegisteredAsset,
+)
 from app.contracts.models import (
     CatalogEntityType,
     FreshnessStatus,
@@ -63,7 +88,15 @@ from app.domain.graph import (
     POSITION_PROVENANCE,
     GraphConstructionError,
     GraphContext,
+    OracleFeedObservation,
+    OracleObservation,
     node_id,
+)
+from app.domain.protocol import (
+    ENTITY_PROTOCOL_TVL_SHARE_WARNING,
+    PROTOCOL_CHAIN_TVL_SHARE_WARNING,
+    SHARE_QUANTUM,
+    ProtocolTvlSnapshot,
 )
 from app.domain.position import (
     USD,
@@ -88,6 +121,10 @@ HUNDRED = Decimal(100)
 PERCENT_QUANTUM = Decimal("0.01")
 UNMODELLED_ALLOCATION_LABEL = "Unmodelled allocation"
 UNMODELLED_ALLOCATION_PREFIX = "unmodelled-allocation-"
+REGISTRY_PROVENANCE = "risk0 asset registry"
+ISSUER_KEY_PREFIX = "issuer-"
+UNDERLYING_KEY_PREFIX = "underlying-"
+ONCHAIN_ISSUER_TYPES = frozenset({IssuerType.PROTOCOL, IssuerType.WRAPPER})
 
 
 @dataclass
@@ -215,6 +252,7 @@ class _Builder:
             self._add_edge(position_id, vault_id, RiskEdgeType.LENDS)
             self._add_allocations(vault_id)
         self._add_pools(position_id)
+        self._add_look_through()
         warnings = tuple(dict.fromkeys([*self.position.warnings, *self.warnings]))
         return RiskGraph(
             nodes=tuple(self.nodes.values()),
@@ -250,14 +288,25 @@ class _Builder:
         )
 
     def _add_protocol_and_chain(self) -> str:
+        metrics: dict[str, MetricValue] = {"name": "Morpho Blue", "protocol": MORPHO_KEY}
+        provenance, freshness, observed_at = (
+            CATALOG_PROVENANCE,
+            FreshnessStatus.FRESH,
+            self.generated_at,
+        )
+        tvl = self.context.protocol_tvl
+        if tvl is not None:
+            metrics.update(self._protocol_tvl_metrics(tvl.value))
+            provenance = f"{CATALOG_PROVENANCE}; TVL: {public_source(tvl.source)}"
+            freshness, observed_at = tvl.freshness, tvl.fetched_at
         morpho_id = self._add_node(
             RiskNodeType.PROTOCOL,
             MORPHO_KEY,
             "Morpho",
-            {"name": "Morpho Blue", "protocol": MORPHO_KEY},
-            provenance=CATALOG_PROVENANCE,
-            freshness=FreshnessStatus.FRESH,
-            observed_at=self.generated_at,
+            metrics,
+            provenance=provenance,
+            freshness=freshness,
+            observed_at=observed_at,
         )
         ethereum_id = self._add_node(
             RiskNodeType.CHAIN,
@@ -270,6 +319,43 @@ class _Builder:
         )
         self._add_edge(morpho_id, ethereum_id, RiskEdgeType.DEPLOYED_ON)
         return morpho_id
+
+    def _protocol_tvl_metrics(self, tvl: ProtocolTvlSnapshot) -> dict[str, MetricValue]:
+        """TVL concentration of the protocol on its chain and of the analysed entity in it."""
+        if self.context.market is not None:
+            entity_usd = self.context.market.value.total_supply_usd
+        elif self.context.vault is not None:
+            entity_usd = self.context.vault.value.total_assets_usd
+        else:
+            entity_usd = None
+        gross = tvl.chain_gross_deposits_usd
+        entity_share = None
+        if entity_usd is not None and gross is not None and gross > ZERO:
+            entity_share = (entity_usd / gross).quantize(SHARE_QUANTUM)
+        share = tvl.chain_tvl_share
+        if share is not None and share >= PROTOCOL_CHAIN_TVL_SHARE_WARNING:
+            self._warn(
+                f"TVL concentration: {tvl.label} holds {_percent(share)} of {tvl.chain} DeFi TVL "
+                f"(DeFiLlama; threshold {_percent(PROTOCOL_CHAIN_TVL_SHARE_WARNING)}), so a "
+                "protocol-wide impairment would also reach the collateral and exit markets "
+                "this position depends on."
+            )
+        if entity_share is not None and entity_share >= ENTITY_PROTOCOL_TVL_SHARE_WARNING:
+            self._warn(
+                f"TVL concentration: {self.context.entry.name} is {_percent(entity_share)} of "
+                f"{tvl.label}'s gross {tvl.chain} deposits (threshold "
+                f"{_percent(ENTITY_PROTOCOL_TVL_SHARE_WARNING)})."
+            )
+        return {
+            "tvl_usd": tvl.tvl_usd,
+            "tvl_chain": tvl.chain,
+            "chain_tvl_usd": tvl.chain_tvl_usd,
+            "chain_borrowed_usd": tvl.chain_borrowed_usd,
+            "chain_defi_tvl_usd": tvl.chain_defi_tvl_usd,
+            "chain_tvl_share": share,
+            "entity_tvl_usd": entity_usd,
+            "entity_share_of_protocol_tvl": entity_share,
+        }
 
     def _add_market(
         self,
@@ -540,14 +626,21 @@ class _Builder:
                     f"oracle observation for {observation.value.oracle_address.lower()} was "
                     f"supplied under oracle key {key}"
                 )
+            value = observation.value
             metrics: dict[str, MetricValue] = {
                 "address": key,
-                "age_seconds": observation.value.age_seconds,
-                "deviation": observation.value.deviation,
+                "age_seconds": value.age_seconds,
+                "deviation": value.deviation,
+                "oracle_type": value.oracle_type,
+                "decomposed": value.oracle_type is not None,
+                "feed_count": Decimal(len(value.feeds)) if value.oracle_type is not None else None,
             }
-            return self._add_envelope_node(
-                RiskNodeType.ORACLE, address, f"Oracle {key}", metrics, observation
-            )
+            label = f"{value.oracle_type} {key}" if value.oracle_type else f"Oracle {key}"
+            oracle_id = self._add_envelope_node(RiskNodeType.ORACLE, address, label, metrics, observation)
+            for feed in value.feeds:
+                feed_id = self._add_oracle_feed(feed, value.deviation, observation)
+                self._add_edge(oracle_id, feed_id, RiskEdgeType.USES_ORACLE)
+            return oracle_id
         self._warn(
             f"Oracle {key} has no live age or deviation observation; "
             "oracle-failure checks rely on the scenario severity alone."
@@ -559,6 +652,214 @@ class _Builder:
             {"address": key, "age_seconds": None, "deviation": None},
             market_envelope,
         )
+
+    # Issuer and underlying look-through
+
+    def _add_look_through(self) -> None:
+        registry = self.context.asset_registry
+        if registry is None:
+            return
+        assets = sorted(
+            identifier
+            for identifier, node in self.nodes.items()
+            if node.node_type is RiskNodeType.ASSET
+        )
+        expanded: set[str] = set()
+        for asset_id in assets:
+            self._look_through(registry, asset_id, (asset_id,), expanded)
+
+    def _look_through(
+        self,
+        registry: AssetRegistry,
+        asset_id: str,
+        chain: tuple[str, ...],
+        expanded: set[str],
+    ) -> None:
+        if asset_id in expanded:
+            return
+        expanded.add(asset_id)
+        node = self.nodes[asset_id]
+        address = node.metrics.get("address")
+        entry = registry.asset(address) if isinstance(address, str) else None
+        if entry is None:
+            self._warn(
+                f"{node.label} ({address}) is not in the asset registry; its issuer and "
+                "underlying are unmodelled, not assumed safe."
+            )
+            return
+        issuer = registry.issuer(entry.issuer_id)
+        if issuer is None:
+            self._warn(f"Issuer {entry.issuer_id!r} of {entry.symbol} is not in the asset registry.")
+        else:
+            issuer_id = self._add_node(
+                RiskNodeType.PROTOCOL,
+                f"{ISSUER_KEY_PREFIX}{issuer.issuer_id}",
+                issuer.name,
+                {
+                    "name": issuer.name,
+                    "issuer_type": issuer.issuer_type.value,
+                    "redemption": issuer.redemption,
+                    "source_url": issuer.source_urls[0],
+                    "defiscan_slug": issuer.defiscan_slug,
+                },
+                provenance=REGISTRY_PROVENANCE,
+                freshness=FreshnessStatus.FRESH,
+                observed_at=self.generated_at,
+            )
+            self._add_edge(asset_id, issuer_id, RiskEdgeType.BACKED_BY)
+            if issuer.issuer_type in ONCHAIN_ISSUER_TYPES:
+                self._add_edge(
+                    issuer_id, node_id(RiskNodeType.CHAIN, ETHEREUM_KEY), RiskEdgeType.DEPLOYED_ON
+                )
+        self._annotate_asset(asset_id, entry, issuer)
+        underlying = entry.underlying
+        if underlying.reference is not None:
+            self._add_reference_underlying(registry, asset_id, entry, underlying.reference)
+            return
+        assert underlying.asset is not None
+        target = node_id(RiskNodeType.ASSET, underlying.asset)
+        if target in chain or self._reaches(target, asset_id):
+            self._warn(
+                f"Underlying of {entry.symbol} would form a cycle through {target}; "
+                "that backed_by edge was not added."
+            )
+            return
+        if len(chain) > MAX_UNDERLYING_DEPTH:
+            self._warn(
+                f"Underlying chain of {entry.symbol} exceeds {MAX_UNDERLYING_DEPTH} levels; "
+                "deeper layers are unmodelled."
+            )
+            return
+        if target not in self.nodes:
+            registered = registry.asset(underlying.asset)
+            self._add_node(
+                RiskNodeType.ASSET,
+                underlying.asset,
+                registered.symbol if registered else underlying.asset.lower(),
+                {
+                    "symbol": registered.symbol if registered else None,
+                    "address": underlying.asset.lower(),
+                    "decimals": None,
+                    "price_usd": None,
+                },
+                provenance=REGISTRY_PROVENANCE,
+                freshness=FreshnessStatus.FRESH,
+                observed_at=self.generated_at,
+            )
+        self._add_edge(asset_id, target, RiskEdgeType.BACKED_BY)
+        self._look_through(registry, target, (*chain, target), expanded)
+
+    def _add_reference_underlying(
+        self, registry: AssetRegistry, asset_id: str, entry: RegisteredAsset, reference_id: str
+    ) -> None:
+        reference = registry.reference(reference_id)
+        if reference is None:
+            self._warn(f"Underlying {reference_id!r} of {entry.symbol} is not in the asset registry.")
+            return
+        target = self._add_node(
+            RiskNodeType.ASSET,
+            f"{UNDERLYING_KEY_PREFIX}{reference.reference_id}",
+            f"{reference.symbol} ({'native' if reference.kind == 'native' else 'off-chain'})",
+            {
+                "symbol": reference.symbol,
+                "description": reference.description,
+                "underlying_kind": reference.kind,
+                "onchain": reference.kind == "native",
+                "source_url": reference.source_urls[0],
+            },
+            provenance=REGISTRY_PROVENANCE,
+            freshness=FreshnessStatus.FRESH,
+            observed_at=self.generated_at,
+        )
+        self._add_edge(asset_id, target, RiskEdgeType.BACKED_BY)
+        if reference.kind == "native":
+            self._add_edge(target, node_id(RiskNodeType.CHAIN, ETHEREUM_KEY), RiskEdgeType.DEPLOYED_ON)
+
+    def _annotate_asset(
+        self, asset_id: str, entry: RegisteredAsset, issuer: Issuer | None
+    ) -> None:
+        node = self.nodes[asset_id]
+        metrics: dict[str, MetricValue] = {
+            **node.metrics,
+            "issuer": issuer.name if issuer else None,
+            "issuer_type": issuer.issuer_type.value if issuer else None,
+            "redemption": entry.redemption,
+            "redemption_source_url": entry.sources.redemption[0],
+            "underlying_source_url": entry.sources.underlying[0],
+        }
+        self.nodes[asset_id] = node.model_copy(update={"metrics": metrics})
+
+    def _reaches(self, source: str, target: str) -> bool:
+        """True when `target` is reachable from `source` over the edges built so far."""
+        outgoing: dict[str, list[str]] = {}
+        for edge in self.edges.values():
+            outgoing.setdefault(edge.source, []).append(edge.target)
+        seen = {source}
+        stack = [source]
+        while stack:
+            current = stack.pop()
+            if current == target:
+                return True
+            for child in outgoing.get(current, ()):
+                if child not in seen:
+                    seen.add(child)
+                    stack.append(child)
+        return False
+
+    def _add_oracle_feed(
+        self,
+        feed: OracleFeedObservation,
+        deviation: Decimal | None,
+        observation: DataEnvelope[OracleObservation],
+    ) -> str:
+        """A feed read by a decoded oracle, as an oracle node under it.
+
+        `age_seconds` is the feed's own staleness beyond its heartbeat (the same
+        meaning as on the market oracle node, which carries the largest over its
+        feeds). A feed has no Morpho reference of its own, so `deviation` is that
+        of the oracle price it feeds (`deviation_scope`), the largest when several
+        oracles share the feed; neither can exceed the market oracle's values, so
+        the live checks are unchanged by the feed nodes.
+        """
+        identifier = node_id(RiskNodeType.ORACLE, feed.address)
+        existing = self.nodes.get(identifier)
+        if existing is not None:
+            current = existing.metrics.get("deviation")
+            if deviation is not None and (not isinstance(current, Decimal) or abs(deviation) > abs(current)):
+                self.nodes[identifier] = existing.model_copy(
+                    update={"metrics": {**existing.metrics, "deviation": deviation}}
+                )
+            return identifier
+        metrics: dict[str, MetricValue] = {
+            "address": feed.address.lower(),
+            "feed_role": feed.role,
+            "feed_kind": feed.kind,
+            "description": feed.description,
+            "answer": feed.answer,
+            "heartbeat_seconds": feed.heartbeat_seconds,
+            "heartbeat_source": feed.heartbeat_source,
+            "last_update_age_seconds": feed.last_update_age_seconds,
+            "age_seconds": feed.staleness_seconds,
+            "deviation": deviation,
+            "deviation_scope": "oracle price this feed composes",
+        }
+        if feed.provider is not None:
+            metrics["provider"] = feed.provider
+        if feed.history_readable is not None:
+            metrics["round_history_readable"] = feed.history_readable
+        if feed.staleness_unjudged:
+            metrics["staleness_judged"] = False
+            age = (
+                _duration(feed.last_update_age_seconds)
+                if feed.last_update_age_seconds is not None
+                else "an unknown time"
+            )
+            self._warn(
+                f"{feed.provider or 'Unknown-provider'} feed {feed.description or feed.address.lower()} "
+                f"has no published heartbeat; last update {age} ago; staleness not judged."
+            )
+        label = f"{feed.description or feed.address.lower()} ({feed.kind.replace('_', ' ')})"
+        return self._add_envelope_node(RiskNodeType.ORACLE, feed.address, label, metrics, observation)
 
     # Helpers
 
@@ -631,6 +932,16 @@ class _Builder:
             self.warnings.append(message)
 
 
+def _duration(seconds: Decimal) -> str:
+    """A feed age for a warning: minutes under 2 h, hours under 2 days, else days."""
+    value = float(seconds)
+    if value < 7200:
+        return f"{value / 60:.0f} min"
+    if value < 172800:
+        return f"{value / 3600:.1f} h"
+    return f"{value / 86400:.1f} days"
+
+
 def _reference_assets(context: GraphContext) -> tuple[AssetInfo, ...]:
     assets: list[AssetInfo] = []
     if context.market is not None:
@@ -680,6 +991,10 @@ def public_source(source: str) -> str:
         return source
     host = parts.netloc.rpartition("@")[2]
     return urlunsplit((parts.scheme, host, parts.path, "", ""))
+
+
+def _percent(share: Decimal) -> str:
+    return f"{(share * HUNDRED).quantize(Decimal('0.1')):f}%"
 
 
 def _pool_label(pool: PoolSnapshot) -> str:

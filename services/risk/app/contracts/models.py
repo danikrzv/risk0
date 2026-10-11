@@ -114,9 +114,12 @@ class ConfidenceLevel(StrEnum):
     UNAVAILABLE = "unavailable"
 
 
+# STRUCTURAL: the event cannot occur by construction (e.g. staleness of an
+# on-chain exchange-rate adapter, computed when read).
 class ProbabilityMethod(StrEnum):
     EMPIRICAL_ROLLING_WINDOW = "empirical_rolling_window"
     MODEL_ESTIMATED_PROTOCOL = "model_estimated_protocol"
+    STRUCTURAL = "structural"
     UNAVAILABLE = "unavailable"
 
 
@@ -291,6 +294,70 @@ class ExitEstimate(ContractModel):
     warnings: tuple[str, ...] = ()
 
 
+ProbabilityValue = Annotated[DecimalValue, Field(ge=0, le=1)]
+
+
+class CarryStatus(StrEnum):
+    KNOWN = "known"
+    UNKNOWN = "unknown"
+    NOT_APPLICABLE = "not_applicable"
+
+
+class Carry(ContractModel):
+    """The position's yield over the decision horizon: what exiting gives up.
+
+    Lenders: `forgone_yield = amount * apy * horizon_days / 365` in the position
+    numeraire (the vault's net APY for a vault, the market's supply APY for a
+    market). Exited capital is assumed to be held idle (no alternative yield).
+    `UNKNOWN`: the APY is unavailable, the forgone yield is counted as zero
+    (biasing toward EXIT) and confidence is lowered. `NOT_APPLICABLE`: borrower
+    carry (borrow cost versus collateral yield) is not modelled; zero is used.
+    """
+
+    status: CarryStatus
+    apy: DecimalValue | None
+    apy_source: str | None
+    horizon_days: int = Field(ge=1)
+    notes: tuple[str, ...] = ()
+
+
+class BreakEvenPoint(ContractModel):
+    """Where one scenario's 30-day probability flips the stay/exit comparison.
+
+    The cost of exiting is `exit_cost + forgone_yield` (the exit cost now plus
+    the yield given up over the horizon). `break_even_probability` is
+    `cost_of_exiting / impact` (the probability at which this scenario's
+    expected loss alone equals the cost of exiting) and
+    `decision_flip_probability` is `(cost_of_exiting - other_expected_loss) /
+    impact` (the same, holding the other scenarios at their central estimates),
+    both capped to [0, 1]. A value is null, with a reason, when an input is
+    unknown.
+    """
+
+    scenario_id: NonEmptyString
+    dependency: str | None
+    impact: DecimalValue
+    other_expected_loss: DecimalValue | None
+    break_even_probability: ProbabilityValue | None
+    decision_flip_probability: ProbabilityValue | None
+    current_probability: ProbabilityValue | None
+    current_probability_low: ProbabilityValue | None
+    current_probability_high: ProbabilityValue | None
+    reasons: tuple[str, ...] = ()
+
+
+class BreakEven(ContractModel):
+    probability_dependent: bool
+    dominant_scenario_id: str | None
+    exit_cost: DecimalValue | None
+    points: tuple[BreakEvenPoint, ...]
+    explanation: str
+    # The yield given up by exiting and `exit_cost + forgone_yield`, the cost
+    # the thresholds use; null in older responses or when the exit cost is unknown.
+    forgone_yield: DecimalValue | None = None
+    cost_of_exiting: DecimalValue | None = None
+
+
 class Recommendation(ContractModel):
     decision: RecommendationDecision
     expected_loss: DecimalValue
@@ -301,6 +368,14 @@ class Recommendation(ContractModel):
     dominant_dependency: str | None
     confidence: ConfidenceLevel
     explanation: str
+    break_even: BreakEven | None = None
+    # EXIT iff expected_loss > exit_cost + forgone_yield (absent hard triggers).
+    # `forgone_yield` is the yield given up over the horizon by exiting (zero
+    # when the APY is unknown or for a borrower; see `carry`), and
+    # `cost_of_exiting` is `exit_cost + forgone_yield`. Null in older responses.
+    forgone_yield: DecimalValue | None = None
+    cost_of_exiting: DecimalValue | None = None
+    carry: Carry | None = None
 
 
 class AnalysisRequest(ContractModel):
@@ -314,3 +389,100 @@ class AnalysisResponse(ContractModel):
     exit_estimate: ExitEstimate
     recommendation: Recommendation
     analyzed_at: datetime
+
+
+# Book view (`POST /v1/book`): several pockets, each a position with a weight.
+
+MAX_BOOK_POCKETS = 20
+WeightValue = Annotated[DecimalValue, Field(gt=0, le=1)]
+PocketId = Annotated[str, StringConstraints(min_length=1, max_length=64)]
+
+
+class BookPocketInput(ContractModel):
+    pocket_id: PocketId | None = None
+    position: PositionInput
+    scenarios: tuple[ScenarioSelection, ...] | None = Field(default=None, min_length=1)
+    weight: WeightValue
+
+
+class BookRequest(ContractModel):
+    pockets: tuple[BookPocketInput, ...] = Field(min_length=1, max_length=MAX_BOOK_POCKETS)
+    scenarios: tuple[ScenarioSelection, ...] | None = Field(default=None, min_length=1)
+    book_value: Annotated[DecimalValue, Field(gt=0)] | None = None
+    numeraire: NonEmptyString | None = None
+
+    @model_validator(mode="after")
+    def validate_book(self) -> "BookRequest":
+        if sum((pocket.weight for pocket in self.pockets), Decimal(0)) > 1:
+            raise ValueError("pocket weights must sum to at most 1")
+        if self.scenarios is None and any(pocket.scenarios is None for pocket in self.pockets):
+            raise ValueError("every pocket needs scenarios, its own or the book's")
+        if (self.book_value is None) != (self.numeraire is None):
+            raise ValueError("book_value and numeraire must be given together")
+        ids = [pocket.pocket_id for pocket in self.pockets if pocket.pocket_id is not None]
+        if len(ids) != len(set(ids)):
+            raise ValueError("pocket_id values must be unique")
+        return self
+
+
+class BookAmount(ContractModel):
+    """An amount in the pocket's numeraire and as fractions of the pocket and the book."""
+
+    amount: DecimalValue
+    fraction_of_pocket: DecimalValue | None
+    fraction_of_book: DecimalValue | None
+
+
+class BookPocketResult(ContractModel):
+    pocket_id: NonEmptyString
+    rank: int = Field(ge=1)
+    entity_id: NonEmptyString
+    mode: PositionMode
+    numeraire: NonEmptyString
+    weight: DecimalValue
+    decision: RecommendationDecision
+    confidence: ConfidenceLevel
+    dominant_dependency: str | None
+    triggers: tuple[str, ...]
+    pocket_value: DecimalValue | None
+    expected_loss: BookAmount | None
+    exit_cost: BookAmount | None
+    exit_advantage: BookAmount | None
+    break_even: BreakEven | None
+    unavailable_reasons: tuple[str, ...]
+    explanation: str
+    analyzed_at: datetime | None
+    # Yield given up over the horizon by exiting this pocket.
+    forgone_yield: BookAmount | None = None
+
+
+class BookTotal(ContractModel):
+    amount: DecimalValue | None
+    fraction_of_book: DecimalValue | None
+
+
+class BookTotals(ContractModel):
+    numeraire: str | None
+    expected_loss_staying: BookTotal
+    exit_cost_exit_pockets: BookTotal
+    expected_loss_stay_pockets: BookTotal
+    recommended_cost: BookTotal
+    net_benefit: BookTotal
+    allocated_weight: DecimalValue
+    stay_weight: DecimalValue
+    exit_weight: DecimalValue
+    unavailable_weight: DecimalValue
+    stay_count: int = Field(ge=0)
+    exit_count: int = Field(ge=0)
+    unavailable_count: int = Field(ge=0)
+    complete: bool
+    warnings: tuple[str, ...]
+    # Yield given up by exiting the EXIT pockets (part of `recommended_cost`).
+    forgone_yield_exit_pockets: BookTotal | None = None
+
+
+class BookResponse(ContractModel):
+    schema_version: Literal["1.0.0"] = "1.0.0"
+    pockets: tuple[BookPocketResult, ...]
+    totals: BookTotals
+    generated_at: datetime

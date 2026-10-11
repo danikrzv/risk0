@@ -1,0 +1,303 @@
+[
+ {
+  "id": "1599",
+  "name": "Aave V3",
+  "slug": "aave-v3",
+  "category": "Lending",
+  "tvl": 17419438726.298264,
+  "chainTvls": {
+   "Ethereum": 14588038836.044853,
+   "Ethereum-borrowed": 9683864275.47592,
+   "borrowed": 12024640315.080795,
+   "Base": 544512177.832903
+  },
+  "parentProtocol": "parent#aave",
+  "listedAt": 1648776877,
+  "chains": [
+   "Ethereum",
+   "Base",
+   "Arbitrum",
+   "Plasma",
+   "Monad",
+   "Avalanche",
+   "Binance",
+   "Polygon",
+   "X Layer",
+   "Mantle",
+   "xDai",
+   "Optimism",
+   "Linea",
+   "MegaETH",
+   "Sonic",
+   "Celo",
+   "Scroll",
+   "zkSync Era",
+   "Metis",
+   "Soneium",
+   "Fantom"
+  ],
+  "description": "sanitized fixture"
+ },
+ {
+  "id": "4025",
+  "name": "Morpho Blue",
+  "slug": "morpho-blue",
+  "category": "Lending",
+  "tvl": 11268588686.268003,
+  "chainTvls": {
+   "Ethereum": 5165760890.8268795,
+   "Ethereum-borrowed": 2605029925.226604,
+   "borrowed": 5741400006.302392,
+   "Base": 4447045521.199087
+  },
+  "parentProtocol": "parent#morpho",
+  "listedAt": 1705261273,
+  "previousNames": [
+   "Morpho V1"
+  ],
+  "chains": [
+   "Ethereum",
+   "Base",
+   "Robinhood Chain",
+   "Arc",
+   "Monad",
+   "Hyperliquid L1",
+   "Pharos",
+   "Morph",
+   "Tempo",
+   "Flare",
+   "World Chain",
+   "Arbitrum",
+   "Katana",
+   "Stable",
+   "Citrea",
+   "Optimism",
+   "Sei",
+   "Etherlink",
+   "Polygon",
+   "Plume Mainnet",
+   "Unichain",
+   "MegaETH",
+   "XDC",
+   "Celo",
+   "TAC",
+   "Klaytn",
+   "Abstract",
+   "Soneium",
+   "Lisk",
+   "Scroll",
+   "Hemi",
+   "Avalanche",
+   "Fraxtal",
+   "Sonic",
+   "RISE",
+   "Binance",
+   "0G",
+   "Ink",
+   "Corn",
+   "Botanix",
+   "Linea",
+   "Zircuit",
+   "Bitlayer",
+   "xDai",
+   "Mode"
+  ],
+  "description": "sanitized fixture"
+ },
+ {
+  "id": "8264",
+  "name": "Morpho Midnight",
+  "slug": "morpho-midnight",
+  "category": "Lending",
+  "tvl": 7292436.938698817,
+  "chainTvls": {
+   "Ethereum": 2214936.1038961452,
+   "Ethereum-borrowed": 1333617.8114333854,
+   "borrowed": 4592883.743237538,
+   "Base": 5077500.834802672
+  },
+  "parentProtocol": "parent#morpho",
+  "listedAt": 1784750092,
+  "chains": [
+   "Base",
+   "Ethereum"
+  ],
+  "description": "sanitized fixture"
+ },
+ {
+  "id": "114",
+  "name": "Compound V2",
+  "slug": "compound-v2",
+  "category": "Lending",
+  "tvl": 107014227.68652442,
+  "chainTvls": {
+   "Ethereum": 107014227.68652442,
+   "Ethereum-borrowed": 11927148.479040613,
+   "borrowed": 11927148.479040613
+  },
+  "parentProtocol": "parent#compound-finance",
+  "chains": [
+   "Ethereum"
+  ],
+  "description": "sanitized fixture"
+ },
+ {
+  "id": "2187",
+  "name": "Dolomite",
+  "slug": "dolomite",
+  "category": "Lending",
+  "tvl": 354659148.0538976,
+  "chainTvls": {
+   "Ethereum": 325764284.74712896,
+   "Ethereum-borrowed": 345877361.34526324,
+   "borrowed": 359323473.082692
+  },
+  "listedAt": 1666000576,
+  "chains": [
+   "Ethereum",
+   "Arbitrum",
+   "Berachain",
+   "Mantle",
+   "X Layer",
+   "Botanix",
+   "Polygon zkEVM"
+  ],
+  "description": "sanitized fixture"
+ },
+ {
+  "id": "212",
+  "name": "Venus Core Pool",
+  "slug": "venus-core-pool",
+  "category": "Lending",
+  "tvl": 1277975357.6155536,
+  "chainTvls": {
+   "Ethereum": 2512783.162555303,
+   "Ethereum-borrowed": 771190.7292920918,
+   "borrowed": 383613892.6763522,
+   "Base": 51486.81066939669
+  },
+  "parentProtocol": "parent#venus-finance",
+  "chains": [
+   "Binance",
+   "Ethereum",
+   "Arbitrum",
+   "zkSync Era",
+   "Base",
+   "Unichain",
+   "Optimism",
+   "Op_Bnb"
+  ],
+  "description": "sanitized fixture"
+ },
+ {
+  "id": "118",
+  "name": "Sky Lending",
+  "slug": "sky-lending",
+  "category": "CDP",
+  "tvl": 5967555816.70183,
+  "chainTvls": {
+   "Ethereum": 5967555816.70183
+  },
+  "parentProtocol": "parent#maker",
+  "previousNames": [
+   "MakerDAO"
+  ],
+  "chains": [
+   "Ethereum"
+  ],
+  "description": "sanitized fixture"
+ },
+ {
+  "id": "1183",
+  "name": "Euler V1",
+  "slug": "euler-v1",
+  "category": "Lending",
+  "tvl": 29813.890161657324,
+  "chainTvls": {
+   "Ethereum": 29813.890161657324,
+   "Ethereum-borrowed": 0,
+   "borrowed": 0
+  },
+  "parentProtocol": "parent#euler",
+  "listedAt": 1641231917,
+  "chains": [
+   "Ethereum"
+  ],
+  "description": "sanitized fixture"
+ },
+ {
+  "id": "2198",
+  "name": "Uniswap V3",
+  "slug": "uniswap-v3",
+  "category": "Dexs",
+  "tvl": 1628321755.121349,
+  "chainTvls": {
+   "Ethereum": 901927831.035457,
+   "Base": 316246016.9351108
+  },
+  "parentProtocol": "parent#uniswap",
+  "listedAt": 1666191475,
+  "chains": [
+   "Ethereum",
+   "Base",
+   "Arbitrum",
+   "Robinhood Chain",
+   "Binance",
+   "X Layer",
+   "Arc",
+   "Polygon",
+   "Optimism",
+   "Plasma",
+   "Unichain",
+   "Ink",
+   "Avalanche",
+   "xDai",
+   "Celo",
+   "Monad",
+   "RSK",
+   "World Chain",
+   "0G",
+   "Filecoin",
+   "Boba",
+   "Etherlink",
+   "zkSync Era",
+   "Mantle",
+   "Sei",
+   "XDC",
+   "Telos",
+   "BOB",
+   "Lens",
+   "Goat",
+   "Hemi",
+   "Redbelly",
+   "Linea",
+   "Scroll",
+   "Blast",
+   "Taiko",
+   "Sonic",
+   "Lisk",
+   "MegaETH",
+   "Manta",
+   "Tempo",
+   "LightLink",
+   "Nibiru",
+   "Saga"
+  ],
+  "description": "sanitized fixture"
+ },
+ {
+  "id": "494",
+  "name": "JustLend V1",
+  "slug": "justlend-v1",
+  "category": "Lending",
+  "tvl": 3787938151.3436956,
+  "chainTvls": {
+   "borrowed": 210341362.35500968
+  },
+  "parentProtocol": "parent#justlend",
+  "chains": [
+   "Tron"
+  ],
+  "description": "sanitized fixture"
+ }
+]

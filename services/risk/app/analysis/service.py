@@ -25,19 +25,44 @@ Critical sources (absent or expired -> UNAVAILABLE): the entity snapshot, vault
 allocations (vault entries), a live observation of every oracle in the graph
 (the entry's market oracle and each resolved allocated market's oracle: no
 provider, a provider error, or no observation all leave it missing), and the
-exit estimate. A quote older than 30 s or more than 20 blocks from the
+exit estimate. An oracle that is not a Morpho Chainlink oracle (V1/V2), or that
+reads a feed of unknown kind, has no observation and stays missing. An oracle
+whose third-party feed has no published or inferable heartbeat IS observed: the
+feed's age is reported, its staleness is not judged (no live staleness
+trigger), deviation is still judged, the graph carries a completeness warning
+per such feed, and the recommendation confidence is capped at LOW. A quote older than 30 s or more than 20 blocks from the
 snapshot is refreshed once; if it is still expired the exit estimate is expired.
 
 Probabilities (`HybridProbabilityProvider`):
 - stablecoin depeg and collateral shock: empirical rolling 30-day windows over
-  hourly Chainlink history (Task 7) for each shocked asset that has a feed:
-  USDC -> USDC/USD, WETH -> ETH/USD. Assets without a feed (EURCV has no EURCV/EUR
-  feed, wstETH's risk is its ETH ratio, WBTC has no BTC feed in the catalog) make
-  the estimate UNAVAILABLE; it is never approximated by an unrelated feed.
-- protocol impairment: model-estimated from protocol evidence (Task 8).
-- oracle failure and liquidity collapse: UNAVAILABLE. Hourly history cannot
-  resolve the 30-minute staleness threshold, and no comparison-market or pool
-  depth history is available. Live oracle breaches still act as hard triggers.
+  hourly Chainlink history (Task 7, read round by round) for each shocked asset
+  that has a feed: USDC -> USDC/USD, WETH -> ETH/USD, wstETH -> stETH/USD (the
+  wstETH/stETH exchange-rate caveat is in the explanation), WBTC -> WBTC/BTC x
+  BTC/USD. Assets without a feed (EURCV has no EURCV/EUR feed) make the estimate
+  UNAVAILABLE; it is never approximated by an unrelated feed. For stablecoin
+  depeg only, an asset without a feed falls back to its DeFiLlama market-price
+  history against its registry fiat peg (`app.history.market_price`: EURCV /
+  Chainlink EUR/USD, same event and estimator, confidence at most MEDIUM); if
+  that fails too, the estimate stays UNAVAILABLE.
+- protocol impairment: model-estimated from protocol evidence (Task 8) and the
+  empirical DeFiLlama base rate for large lending protocols
+  (`app.evidence.defillama`). With both, the higher estimate is used
+  (`combine_conservative`); with only the base rate (no DeFiScan or DeFiSafety
+  review of Morpho exists), it is used alone at LOW confidence.
+- oracle failure: empirical, from exact Chainlink round timestamps of every feed
+  the graph's decoded oracles read. A 30-day window is an event when a gap
+  between consecutive updates exceeds the feed's heartbeat + 30 minutes (the
+  live trigger's threshold); rolling windows over 365 days with a Wilson
+  interval. Feeds of one oracle are combined with `combine_conservative`, and
+  the highest oracle estimate is used. Feeds that compute their answer when
+  read (exchange-rate adapters, computed-on-read feeds, constant scalers)
+  cannot be stale and are excluded; an oracle that was not decoded makes it
+  UNAVAILABLE. A third-party feed with a heartbeat (published or inferred) and
+  readable round history gets the same empirical estimate; one without gets an
+  explained industry prior (the DeFiLlama rate of material oracle-related
+  exploits among large Lending/CDP protocol-years, LOW confidence).
+  Live oracle breaches still act as hard triggers.
+- liquidity collapse: UNAVAILABLE; no pool depth history is collected.
 
 Probabilities are estimated per selection, i.e. per (scenario id, severity), and
 each selection is propagated with its own estimate, so a scenario selected at
@@ -76,10 +101,13 @@ from app.analysis.recommendation import (
     CONFIDENCE_ORDER,
     LIVE_ORACLE_FAILURE,
     PROTOCOL_EMERGENCY,
+    CarryEstimate,
     LiveTrigger,
+    estimate_carry,
     make_recommendation,
 )
 from app.analysis.scenario_engine import ScenarioEngine
+from app.catalog.assets import AssetRegistry, default_asset_registry
 from app.contracts.models import (
     AnalysisRequest,
     AnalysisResponse,
@@ -93,16 +121,26 @@ from app.contracts.models import (
     ProbabilityMethod,
     RiskEdgeType,
     RiskGraph,
+    RiskNode,
     RiskNodeType,
     ScenarioId,
     ScenarioSelection,
 )
+from app.domain.bad_debt import BorrowerDistribution, build_distribution
 from app.domain.exit import NUMERAIRE_PLACES, ExitQuote, GasAssumptions, QuoteRequest
-from app.domain.graph import GraphConstructionError, GraphContext, OracleObservation, node_id
+from app.domain.graph import (
+    GraphConstructionError,
+    GraphContext,
+    OracleFeedObservation,
+    OracleObservation,
+    node_id,
+)
 from app.domain.position import PositionValidationError, ValidatedPosition, validate_position
+from app.domain.protocol import ProtocolTvlSnapshot
 from app.domain.scenario import (
     ORACLE_DEVIATION_THRESHOLD,
     ORACLE_STALE_THRESHOLD_SECONDS,
+    oracle_deviation_breaches,
     SCENARIO_DEFINITIONS,
     ScenarioSeverityError,
     validate_selection,
@@ -115,7 +153,11 @@ from app.domain.snapshots import (
     VaultSnapshot,
 )
 from app.evidence.models import CombinedEvidence
-from app.history.estimator import EmpiricalProbabilityEvidence, EventPredicate
+from app.history.estimator import (
+    INSUFFICIENT_HISTORY_REASON,
+    EmpiricalProbabilityEvidence,
+    EventPredicate,
+)
 from app.history.normalization import HOUR, Observation
 from app.infrastructure.freshness import DataConflict, DataQuality, Freshness
 
@@ -134,34 +176,81 @@ BORROWER_SALE_MARGIN = Decimal("0.01")
 USDC_ADDRESS = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
 WETH_ADDRESS = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
 ETH_SYMBOLS = frozenset({"weth", "eth"})
+# Asset -> catalog feeds (data/catalog/feeds.ethereum.json). EURCV is deliberately
+# absent (EUR/USD prices the euro, not EURCV). wstETH uses stETH/USD (the feed's
+# catalog note states the exchange-rate caveat); WBTC uses the composite
+# WBTC/USD = WBTC/BTC x BTC/USD, so both the wrapper peg and BTC itself count.
 DEFAULT_STABLECOIN_FEEDS: Mapping[str, tuple[str, ...]] = {"USDC": ("USDC/USD",)}
-DEFAULT_COLLATERAL_FEEDS: Mapping[str, tuple[str, ...]] = {"WETH": ("ETH/USD",)}
-# Asset -> Chainlink feed for live oracle health: the same mapping as price
-# history. EURCV is deliberately absent (EUR/USD prices the euro, not EURCV).
-DEFAULT_ORACLE_FEEDS: Mapping[str, str] = {"WETH": "ETH/USD", "ETH": "ETH/USD", "USDC": "USDC/USD"}
+DEFAULT_COLLATERAL_FEEDS: Mapping[str, tuple[str, ...]] = {
+    "WETH": ("ETH/USD",),
+    "wstETH": ("stETH/USD",),
+    "WBTC": ("WBTC/USD",),
+}
 # Heartbeats from Chainlink's Ethereum mainnet feed configuration
 # (data.chain.link): the longest interval between answers of a healthy feed.
+# This table overrides the heartbeat inferred from round history (the 99th
+# percentile of update gaps, `app.history.staleness`); on 2026-10-11 the
+# inference over 90 days returned the same value for every entry.
 ETH_USD_HEARTBEAT_SECONDS = 3600
 USDC_USD_HEARTBEAT_SECONDS = 86400
 EUR_USD_HEARTBEAT_SECONDS = 86400
+STETH_USD_HEARTBEAT_SECONDS = 3600
+BTC_USD_HEARTBEAT_SECONDS = 3600
+WBTC_BTC_HEARTBEAT_SECONDS = 86400
+BTC_ETH_HEARTBEAT_SECONDS = 86400
 CHAINLINK_HEARTBEATS: Mapping[str, int] = {
     "ETH/USD": ETH_USD_HEARTBEAT_SECONDS,
     "USDC/USD": USDC_USD_HEARTBEAT_SECONDS,
     "EUR/USD": EUR_USD_HEARTBEAT_SECONDS,
+    "stETH/USD": STETH_USD_HEARTBEAT_SECONDS,
+    "BTC/USD": BTC_USD_HEARTBEAT_SECONDS,
+    "WBTC/BTC": WBTC_BTC_HEARTBEAT_SECONDS,
+    "BTC/ETH": BTC_ETH_HEARTBEAT_SECONDS,
 }
-# Longer than every heartbeat plus the 30-minute staleness allowance.
-CHAINLINK_LOOKBACK = timedelta(hours=26)
+# Heartbeats for price history (forward-fill limits): a composite answer stands
+# until either component updates, so its heartbeat is the shortest component's.
+HISTORY_HEARTBEATS: Mapping[str, int] = {
+    **CHAINLINK_HEARTBEATS,
+    "WBTC/USD": min(WBTC_BTC_HEARTBEAT_SECONDS, BTC_USD_HEARTBEAT_SECONDS),
+}
+# Round history used to infer the heartbeat of a feed missing from the table.
+HEARTBEAT_INFERENCE_LOOKBACK = timedelta(days=90)
+HEARTBEAT_MEMO_TTL = timedelta(days=1)
+# An inferred heartbeat (no documented value) tolerates one missed cycle.
+INFERRED_HEARTBEAT_TOLERANCE_CYCLES = 2
+INFERRED_HEARTBEAT_SOURCE_PREFIX = "inferred"
+# Third-party feeds (`app.adapters.morpho_oracle`): a heartbeat from the
+# version-controlled registry of published policies, or none at all.
+PUBLISHED_HEARTBEAT_SOURCE_PREFIX = "published"
+UNKNOWN_HEARTBEAT_SOURCE = (
+    "unknown: no published heartbeat and no inferable round history; staleness not judged"
+)
+NEVER_STALE_SOURCES: Mapping[str, str] = {
+    "exchange_rate_adapter": "computed on read; cannot be stale",
+    "computed_on_read": "computed on read; cannot be stale",
+    "constant_scaler": "constant scaler (exact power of ten); no price risk, cannot be stale",
+}
+# A Morpho oracle's feeds are immutable: a decoded configuration is kept for the
+# process lifetime; an oracle that could not be decoded is retried after this.
+ORACLE_DECODE_RETRY = timedelta(minutes=10)
 # Chainlink reads are memoized this long, so one analysis (and concurrent ones)
 # reads each feed once; ages are still computed against the request time.
 CHAINLINK_MEMO_TTL = timedelta(seconds=60)
 # Spec § 9: risk evidence refreshes daily.
 DEFISCAN_TTL = timedelta(days=1)
 DEFISCAN_FAILURE_TTL = timedelta(minutes=5)
+PROTOCOL_TVL_UNAVAILABLE = (
+    "Morpho TVL concentration is unknown: DeFiLlama TVL data is unavailable."
+)
 
 SNAPSHOT_SOURCE = "Morpho entity snapshot"
 ORACLE_SOURCE = "live oracle"
 ALLOCATIONS_SOURCE = "Morpho vault allocations"
 EXIT_SOURCE = "exit estimate"
+BORROWER_POSITIONS_SOURCE = "Morpho borrower positions"
+# Lender bad-debt estimate: borrower positions are fetched for at most this many
+# collateral-shocked markets (most exposed first); the rest use the worst-case bound.
+MAX_BAD_DEBT_MARKETS = 12
 
 
 # Errors
@@ -255,8 +344,32 @@ class EmpiricalHistory(Protocol):
     ) -> EmpiricalProbabilityEvidence: ...
 
 
+class MarketPriceHistory(Protocol):
+    """`MarketPriceDepegHistory.estimate`: depeg evidence from market prices."""
+
+    def estimate(
+        self,
+        address: str,
+        symbol: str,
+        start: datetime,
+        end: datetime,
+        event: EventPredicate,
+        *,
+        now: datetime,
+    ) -> EmpiricalProbabilityEvidence: ...
+
+
 class ProtocolEvidenceSource(Protocol):
+    """Protocol evidence scores. A source may also offer an empirical base rate as
+    `impairment_base_rate(protocol, *, now) -> ProbabilityEstimate`."""
+
     def evidence(self, protocol: str, *, now: datetime) -> CombinedEvidence: ...
+
+
+class ProtocolTvlProvider(Protocol):
+    def protocol_tvl(
+        self, protocol: str, *, now: datetime
+    ) -> DataEnvelope[ProtocolTvlSnapshot] | None: ...
 
 
 class NoIncidents:
@@ -293,8 +406,12 @@ class AnalysisService:
         incidents: IncidentProvider | None = None,
         engine: ScenarioEngine | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        asset_registry: AssetRegistry | None = None,
+        protocol_tvl: ProtocolTvlProvider | None = None,
     ) -> None:
+        self._protocol_tvl = protocol_tvl
         self._catalog = catalog
+        self._asset_registry = asset_registry or default_asset_registry()
         self._morpho = morpho
         self._probabilities = probabilities
         self._quotes = quotes
@@ -337,6 +454,9 @@ class AnalysisService:
                 sources.append((label, Freshness(observation.freshness.value)))
 
         graph = self._graph(position, entry, snapshots, oracles, now)
+        borrowers: dict[str, BorrowerDistribution] = {}
+        if position.mode is PositionMode.LENDER:
+            borrowers = self._borrower_distributions(graph, request.scenarios, sources)
         conflicts: list[DataConflict] = []
         scenarios_out = []
         try:
@@ -353,7 +473,13 @@ class AnalysisService:
                     )
                 )
                 scenarios_out.extend(
-                    self._engine.run(position, graph, (selection,), {key: assessment.estimate})
+                    self._engine.run(
+                        position,
+                        graph,
+                        (selection,),
+                        {key: assessment.estimate},
+                        borrowers=borrowers,
+                    )
                 )
             scenarios = tuple(scenarios_out)
         except (ValueError, ScenarioSeverityError) as error:
@@ -371,8 +497,10 @@ class AnalysisService:
             scenarios,
             exit_estimate,
             quality,
-            live_triggers=self._live_triggers(oracles),
+            live_triggers=self._live_triggers(oracles, position.mode),
             numeraire=position.numeraire,
+            carry=_carry(position, snapshots),
+            confidence_caps=_unjudged_oracle_caps(oracles),
         )
         return AnalysisResponse(
             graph=graph,
@@ -512,6 +640,8 @@ class AnalysisService:
             allocations=snapshots.allocations,
             allocation_markets=snapshots.allocation_markets,
             oracles=oracles,
+            asset_registry=self._asset_registry,
+            protocol_tvl=self._protocol_tvl_envelope(now),
         )
         try:
             graph = build_risk_graph(position, context, clock=lambda: now)
@@ -520,7 +650,74 @@ class AnalysisService:
             raise AnalysisProviderError(
                 "Provider data for this entry is inconsistent; analysis is unavailable."
             ) from None
+        if self._protocol_tvl is not None and context.protocol_tvl is None:
+            graph = _with_warning(graph, PROTOCOL_TVL_UNAVAILABLE)
         return _mark_unresolved_markets(graph, snapshots.unresolved_markets)
+
+    def _borrower_distributions(
+        self,
+        graph: RiskGraph,
+        selections: Sequence[ScenarioSelection],
+        sources: list[tuple[str, Freshness]],
+    ) -> dict[str, BorrowerDistribution]:
+        """Borrower debt distributions of the markets a lender's collateral shock reaches.
+
+        Positions come from Morpho (`get_market_positions`, cached with the other
+        Morpho snapshots). A market that cannot be read, or beyond
+        `MAX_BAD_DEBT_MARKETS`, is left out and the engine prices it at the
+        worst-case bound. Raw positions never reach the response.
+        """
+        fetch = getattr(self._morpho, "get_market_positions", None)
+        if not callable(fetch):
+            return {}
+        try:
+            wanted = self._engine.collateral_markets(graph, selections)
+        except ValueError as error:
+            logger.warning("bad-debt market selection failed: %s", type(error).__name__)
+            return {}
+        lltvs: dict[str, Decimal] = {}
+        for node in graph.nodes:
+            market_id = node.metrics.get("market_id")
+            lltv = node.metrics.get("lltv")
+            if node.node_type is RiskNodeType.MARKET and isinstance(market_id, str):
+                if isinstance(lltv, Decimal) and lltv > ZERO:
+                    lltvs[market_id.lower()] = lltv
+        distributions: dict[str, BorrowerDistribution] = {}
+        for market_id in wanted[:MAX_BAD_DEBT_MARKETS]:
+            lltv = lltvs.get(market_id)
+            if lltv is None:
+                continue
+            try:
+                envelope = fetch(market_id)
+                positions = envelope.value
+                if positions.market_id.lower() != market_id:
+                    logger.warning("borrower positions do not match the requested market")
+                    continue
+            except Exception as error:  # provider boundary: never leak provider text
+                logger.info("borrower positions unavailable: %s", type(error).__name__)
+                continue
+            if envelope.freshness is FreshnessStatus.EXPIRED:
+                continue
+            sources.append(
+                (f"{BORROWER_POSITIONS_SOURCE} {market_id[:10]}", Freshness(envelope.freshness.value))
+            )
+            distributions[market_id] = build_distribution(
+                market_id,
+                ((item.borrow_assets, item.health_factor) for item in positions.positions),
+                lltv,
+                complete=positions.complete,
+            )
+        return distributions
+
+    def _protocol_tvl_envelope(self, now: datetime) -> DataEnvelope[ProtocolTvlSnapshot] | None:
+        """Morpho TVL for the protocol node; a provider gap is a completeness warning, never fatal."""
+        if self._protocol_tvl is None:
+            return None
+        try:
+            return self._protocol_tvl.protocol_tvl(MORPHO_PROTOCOL, now=now)
+        except Exception as error:  # provider boundary: never leak provider text
+            logger.warning("protocol tvl unavailable: %s", type(error).__name__)
+            return None
 
     def _assess(
         self,
@@ -703,7 +900,7 @@ class AnalysisService:
     # Live triggers
 
     def _live_triggers(
-        self, oracles: Mapping[str, DataEnvelope[OracleObservation]]
+        self, oracles: Mapping[str, DataEnvelope[OracleObservation]], mode: PositionMode
     ) -> tuple[LiveTrigger, ...]:
         triggers: list[LiveTrigger] = []
         for address in sorted(oracles):
@@ -715,9 +912,8 @@ class AnalysisService:
                 observation.age_seconds is not None
                 and observation.age_seconds >= ORACLE_STALE_THRESHOLD_SECONDS
             )
-            deviated = (
-                observation.deviation is not None
-                and abs(observation.deviation) >= ORACLE_DEVIATION_THRESHOLD
+            deviated = observation.deviation is not None and oracle_deviation_breaches(
+                observation.deviation, mode
             )
             if stale or deviated:
                 triggers.append(
@@ -757,9 +953,11 @@ class HybridProbabilityProvider:
         stablecoin_feeds: Mapping[str, tuple[str, ...]] = DEFAULT_STABLECOIN_FEEDS,
         collateral_feeds: Mapping[str, tuple[str, ...]] = DEFAULT_COLLATERAL_FEEDS,
         lookback: timedelta = HISTORY_LOOKBACK,
+        market_prices: MarketPriceHistory | None = None,
     ) -> None:
         self._history = history
         self._evidence = evidence
+        self._market_prices = market_prices
         self._stablecoin_feeds = {key.casefold(): value for key, value in stablecoin_feeds.items()}
         self._collateral_feeds = {key.casefold(): value for key, value in collateral_feeds.items()}
         self._lookback = lookback
@@ -784,17 +982,208 @@ class HybridProbabilityProvider:
                 selection, graph, now, self._collateral_feeds, lambda: PriceShockEvent(selection.severity)
             )
         if scenario is ScenarioId.ORACLE_FAILURE:
-            reason = (
-                "No historical oracle-failure probability: hourly Chainlink history cannot "
-                "resolve the 30-minute staleness threshold and no comparison-market history "
-                "is available. Live oracle breaches still act as hard triggers."
+            return self._oracle_failure(graph, now)
+        reason = (
+            "No historical exit-liquidity probability: Uniswap depth history is not "
+            "collected in the MVP."
+        )
+        return ProbabilityAssessment(unavailable_estimate(now, reason))
+
+    def _oracle_failure(self, graph: RiskGraph | None, now: datetime) -> ProbabilityAssessment:
+        """Oracle-failure probability over the graph's decoded oracles, per feed kind.
+
+        Per feed:
+        - Chainlink: the empirical staleness rate. The share of rolling 30-day
+          windows (365-day lookback; the inference window for an inferred
+          heartbeat) holding a gap between consecutive updates longer than
+          heartbeat + 1800 s, from exact round timestamps, with a Wilson interval.
+          Missing history makes the whole estimate UNAVAILABLE.
+        - Exchange-rate adapters, computed-on-read feeds and constant scalers:
+          excluded; they cannot be stale (structural zero when nothing else is read).
+        - Third-party feed with a heartbeat (published or inferred) and readable
+          round history: the same empirical staleness rate, read without
+          Chainlink phases.
+        - Third-party feed without both: an explained industry prior, the annual
+          rate of material oracle-related exploits among large Lending/CDP
+          protocol-years (`app.evidence.defillama.oracle_exploit_estimate`, LOW
+          confidence). It is not a feed-specific estimate.
+        Per oracle: its feed estimates via `combine_conservative` (the feeds are
+        different sources of one failure, so no data conflict is reported, but
+        confidence is lowered when they differ). Across oracles: the highest
+        estimate at the lowest confidence.
+        """
+        if graph is None:
+            return ProbabilityAssessment(unavailable_estimate(now, "No graph for oracle-failure."))
+        oracles = _graph_oracles(graph)
+        if not oracles:
+            return ProbabilityAssessment(
+                unavailable_estimate(now, "No oracle is in this position's graph.")
+            )
+        undecoded = [label for label, feeds in oracles.items() if feeds is None]
+        if undecoded:
+            return ProbabilityAssessment(
+                unavailable_estimate(
+                    now,
+                    "No oracle-failure probability: oracle "
+                    f"{', '.join(undecoded)} was not decoded into its price feeds.",
+                )
+            )
+        estimate_staleness = getattr(self._history, "estimate_staleness", None)
+        end = now.astimezone(UTC)
+        start = end - self._lookback
+        per_oracle: list[tuple[str, ProbabilityAssessment]] = []
+        adapter_only: list[str] = []
+        prior_feeds: list[str] = []
+        prior: ProbabilityEstimate | None = None
+        for label in sorted(oracles):
+            feeds = oracles[label] or ()
+            judged = [
+                feed
+                for feed in feeds
+                if feed.metrics.get("feed_kind") not in NEVER_STALE_SOURCES
+            ]
+            if not judged:
+                adapter_only.append(label)
+                continue
+            estimates: list[ProbabilityEstimate] = []
+            unprioritised: list[str] = []
+            for feed in judged:
+                name = _feed_name(feed)
+                third_party = feed.metrics.get("feed_kind") == "third_party"
+                heartbeat = feed.metrics.get("heartbeat_seconds")
+                readable = feed.metrics.get("round_history_readable") is True
+                if third_party and (not isinstance(heartbeat, Decimal) or not readable):
+                    unprioritised.append(
+                        f"{name} ({'no readable round history' if isinstance(heartbeat, Decimal) else 'no published or inferable heartbeat'})"
+                    )
+                    continue
+                if not callable(estimate_staleness):
+                    estimates.append(
+                        unavailable_estimate(now, "Feed round history is not configured.")
+                    )
+                    continue
+                estimate = self._staleness_estimate(
+                    estimate_staleness, feed, name, start, end, now, third_party=third_party
+                )
+                # Readable but too short a history (a new feed) falls back to the
+                # prior like a feed without history; an unreadable one still blocks.
+                if estimate.central is None and (
+                    third_party or INSUFFICIENT_HISTORY_REASON in estimate.explanation
+                ):
+                    unprioritised.append(f"{name} (round history insufficient: {estimate.explanation})")
+                    continue
+                estimates.append(estimate)
+            if unprioritised:
+                if prior is None:
+                    prior = self._oracle_prior(now)
+                prior_feeds.extend(unprioritised)
+                estimates.append(
+                    prior.model_copy(
+                        update={
+                            "explanation": (
+                                "Industry prior, not a feed-specific estimate, for feed(s) "
+                                f"without a usable history {'; '.join(unprioritised)} of oracle {label}: "
+                                f"{prior.explanation}"
+                            )
+                        }
+                    )
+                )
+            missing = [item for item in estimates if item.central is None]
+            if missing:
+                return ProbabilityAssessment(
+                    unavailable_estimate(
+                        now,
+                        f"Oracle-failure evidence for oracle {label} is unavailable or "
+                        "insufficient: " + "; ".join(item.explanation for item in missing),
+                    )
+                )
+            combined = combine_conservative(f"probability:oracle-failure:{label}", estimates)
+            per_oracle.append((label, ProbabilityAssessment(combined.estimate)))
+        if not per_oracle:
+            return ProbabilityAssessment(
+                structural_zero_estimate(
+                    now,
+                    "Oracle failure is measured as feed staleness, and every oracle "
+                    f"({', '.join(adapter_only)}) reads only feeds that compute their answer "
+                    "when read (exchange-rate adapters, computed-on-read feeds, constant "
+                    "scalers), which cannot be stale. A wrong but fresh answer is not part of "
+                    "this event.",
+                )
+            )
+        label, best = max(per_oracle, key=lambda item: item[1].estimate.central or ZERO)
+        lowest = min(
+            (item.estimate.confidence for _, item in per_oracle), key=CONFIDENCE_ORDER.index
+        )
+        notes = [
+            f"Oracle failure is measured as feed staleness (the live trigger's event), with an "
+            f"industry oracle-exploit prior for third-party feeds without a heartbeat and round "
+            f"history; the highest of {len(per_oracle)} oracle estimate(s) is used (oracle {label}).",
+        ]
+        if adapter_only:
+            notes.append(
+                f"Oracle(s) {', '.join(adapter_only)} read only feeds that compute their answer "
+                "when read, which cannot be stale."
+            )
+        notes.append("A wrong but fresh answer is not part of the staleness event.")
+        return ProbabilityAssessment(
+            best.estimate.model_copy(
+                update={
+                    "confidence": lowest,
+                    "explanation": f"{best.estimate.explanation} {' '.join(notes)}",
+                }
+            )
+        )
+
+    def _staleness_estimate(
+        self,
+        estimate_staleness,
+        feed: RiskNode,
+        name: str,
+        start: datetime,
+        end: datetime,
+        now: datetime,
+        *,
+        third_party: bool,
+    ) -> ProbabilityEstimate:
+        heartbeat = feed.metrics.get("heartbeat_seconds")
+        address = feed.metrics.get("address")
+        if not isinstance(heartbeat, Decimal) or not isinstance(address, str):
+            return unavailable_estimate(now, f"The heartbeat of {name} is unknown.")
+        source = feed.metrics.get("heartbeat_source")
+        inferred = isinstance(source, str) and source.startswith(INFERRED_HEARTBEAT_SOURCE_PREFIX)
+        # An inferred cadence only describes the period it was inferred from;
+        # judging older gaps against it would count a feed's earlier, slower
+        # cadence as failures.
+        feed_start = max(start, end - HEARTBEAT_INFERENCE_LOOKBACK) if inferred else start
+        if third_party:
+            evidence = estimate_staleness(
+                address, int(heartbeat), feed_start, end, now=now, label=name, require_phase=False
             )
         else:
-            reason = (
-                "No historical exit-liquidity probability: Uniswap depth history is not "
-                "collected in the MVP."
+            evidence = estimate_staleness(address, int(heartbeat), feed_start, end, now=now, label=name)
+        estimate = evidence.probability
+        if inferred and estimate.central is not None:
+            estimate = estimate.model_copy(
+                update={
+                    "confidence": min(
+                        estimate.confidence, ConfidenceLevel.LOW, key=CONFIDENCE_ORDER.index
+                    ),
+                    "explanation": (
+                        f"{estimate.explanation} Heartbeat {source}; staleness is "
+                        f"judged over the same {HEARTBEAT_INFERENCE_LOOKBACK.days} days."
+                    ),
+                }
             )
-        return ProbabilityAssessment(unavailable_estimate(now, reason))
+        return estimate
+
+    def _oracle_prior(self, now: datetime) -> ProbabilityEstimate:
+        prior = getattr(self._evidence, "oracle_exploit_base_rate", None)
+        if not callable(prior):
+            return unavailable_estimate(
+                now,
+                "No industry oracle-exploit prior is configured (DeFiLlama is not available).",
+            )
+        return prior(now=now)
 
     def _empirical(
         self,
@@ -814,23 +1203,38 @@ class HybridProbabilityProvider:
                     now, f"No asset affected by {scenario} is in this position's graph."
                 )
             )
+        end = now.astimezone(UTC)
+        start = end - self._lookback
         missing = [symbol for symbol in symbols if not feeds.get(symbol.casefold())]
+        fallback: dict[str, ProbabilityEstimate] = {}
         if missing:
-            return ProbabilityAssessment(
-                unavailable_estimate(
-                    now,
-                    f"No price-history feed for {', '.join(missing)}; the {scenario} probability "
-                    "is unavailable rather than approximated by an unrelated feed.",
-                )
+            reason = (
+                f"No price-history feed for {', '.join(missing)}; the {scenario} probability "
+                "is unavailable rather than approximated by an unrelated feed."
             )
-        if self._history is None:
+            if (
+                selection.scenario_id is not ScenarioId.STABLECOIN_DEPEG
+                or self._market_prices is None
+            ):
+                return ProbabilityAssessment(unavailable_estimate(now, reason))
+            for symbol in missing:
+                estimate = self._market_price_estimate(graph, symbol, start, end, event, now)
+                if estimate.central is None:
+                    return ProbabilityAssessment(
+                        unavailable_estimate(
+                            now, f"{reason} Market-price fallback: {estimate.explanation}"
+                        )
+                    )
+                fallback[symbol] = estimate
+        if self._history is None and len(fallback) < len(symbols):
             return ProbabilityAssessment(
                 unavailable_estimate(now, "Ethereum price history is not configured.")
             )
-        end = now.astimezone(UTC)
-        start = end - self._lookback
         per_asset: list[ProbabilityAssessment] = []
         for symbol in symbols:
+            if symbol in fallback:
+                per_asset.append(ProbabilityAssessment(fallback[symbol]))
+                continue
             estimates: list[ProbabilityEstimate] = []
             for feed in feeds[symbol.casefold()]:
                 predicate = event() if _is_factory(event) else event
@@ -857,6 +1261,30 @@ class HybridProbabilityProvider:
             tuple(conflict for item in per_asset for conflict in item.conflicts),
         )
 
+    def _market_price_estimate(
+        self,
+        graph: RiskGraph,
+        symbol: str,
+        start: datetime,
+        end: datetime,
+        event: EventPredicate | Callable[[], EventPredicate],
+        now: datetime,
+    ) -> ProbabilityEstimate:
+        addresses = {
+            node.metrics["address"]
+            for node in graph.nodes
+            if node.node_type is RiskNodeType.ASSET
+            and isinstance(node.metrics.get("address"), str)
+            and str(node.metrics.get("symbol") or node.label).casefold() == symbol.casefold()
+        }
+        if len(addresses) != 1:
+            return unavailable_estimate(now, f"{symbol} has no single token address in the graph.")
+        predicate = event() if _is_factory(event) else event
+        evidence = self._market_prices.estimate(  # type: ignore[union-attr]
+            addresses.pop(), symbol, start, end, predicate, now=now
+        )
+        return evidence.probability
+
     def _protocol(self, now: datetime) -> ProbabilityAssessment:
         if self._evidence is None:
             return ProbabilityAssessment(
@@ -865,9 +1293,51 @@ class HybridProbabilityProvider:
         from app.evidence.scoring import map_score_to_probability, score_evidence
 
         score = score_evidence(self._evidence.evidence(MORPHO_PROTOCOL, now=now))
+        scored = map_score_to_probability(score)
+        conflicts = tuple(score.quality.conflicts)
+        base_rate = getattr(self._evidence, "impairment_base_rate", None)
+        if base_rate is None:
+            return ProbabilityAssessment(scored, conflicts)
+        return combine_protocol_estimates(scored, base_rate(MORPHO_PROTOCOL, now=now), conflicts)
+
+
+def combine_protocol_estimates(
+    scored: ProbabilityEstimate,
+    base_rate: ProbabilityEstimate,
+    conflicts: tuple[DataConflict, ...] = (),
+) -> ProbabilityAssessment:
+    """Evidence-score estimate and empirical base rate for protocol impairment.
+
+    Both usable: the conservative merge of spec § 15. Only the base rate: it is
+    used alone at LOW confidence and the explanation says why the evidence score
+    is missing. Only the score: unchanged. Neither: UNAVAILABLE with both reasons.
+    """
+    if scored.central is not None and base_rate.central is not None:
+        merged = combine_conservative("probability:protocol-impairment", (scored, base_rate))
+        return ProbabilityAssessment(merged.estimate, (*conflicts, *merged.conflicts))
+    if base_rate.central is not None:
         return ProbabilityAssessment(
-            map_score_to_probability(score), tuple(score.quality.conflicts)
+            base_rate.model_copy(
+                update={
+                    "confidence": ConfidenceLevel.LOW,
+                    "explanation": (
+                        f"{base_rate.explanation} Used alone because protocol evidence "
+                        f"scores are unavailable: {scored.explanation}"
+                    ),
+                }
+            ),
+            conflicts,
         )
+    if scored.central is not None:
+        return ProbabilityAssessment(scored, conflicts)
+    return ProbabilityAssessment(
+        scored.model_copy(
+            update={
+                "explanation": f"{scored.explanation} Empirical base rate: {base_rate.explanation}"
+            }
+        ),
+        conflicts,
+    )
 
 
 def combine_conservative(
@@ -973,6 +1443,22 @@ class PriceShockEvent:
         return found
 
 
+def structural_zero_estimate(now: datetime, reason: str) -> ProbabilityEstimate:
+    """The event cannot occur by construction: probability 0, not an empirical rate."""
+    return ProbabilityEstimate(
+        method=ProbabilityMethod.STRUCTURAL,
+        low=ZERO,
+        central=ZERO,
+        high=ZERO,
+        confidence=ConfidenceLevel.MEDIUM,
+        horizon_days=30,
+        source="risk0:structural",
+        retrieved_at=now,
+        freshness=FreshnessStatus.FRESH,
+        explanation=reason,
+    )
+
+
 def unavailable_estimate(now: datetime, reason: str) -> ProbabilityEstimate:
     return ProbabilityEstimate(
         method=ProbabilityMethod.UNAVAILABLE,
@@ -989,6 +1475,28 @@ def unavailable_estimate(now: datetime, reason: str) -> ProbabilityEstimate:
 
 
 # Helpers
+
+
+def _unjudged_oracle_caps(
+    oracles: Mapping[str, DataEnvelope[OracleObservation]],
+) -> tuple[tuple[ConfidenceLevel, str], ...]:
+    """LOW confidence when any live oracle reads a third-party feed of unjudged staleness."""
+    names = [
+        feed.description or feed.address.lower()
+        for address in sorted(oracles)
+        for feed in oracles[address].value.unjudged_feeds
+    ]
+    if not names:
+        return ()
+    return (
+        (
+            ConfidenceLevel.LOW,
+            "Live oracle staleness is not judged for "
+            f"{', '.join(dict.fromkeys(names))} (third-party feed(s) with no published "
+            "heartbeat and no inferable round history; their age is reported), so "
+            "confidence is at most low.",
+        ),
+    )
 
 
 def _freshness_confidence(freshness: FreshnessStatus) -> ConfidenceLevel:
@@ -1043,6 +1551,45 @@ def _shocked_symbols(graph: RiskGraph, scenario: ScenarioId) -> tuple[str, ...]:
         if label.casefold() in wanted:
             symbols.setdefault(label.casefold(), label)
     return tuple(symbols[key] for key in sorted(symbols))
+
+
+def _with_warning(graph: RiskGraph, warning: str) -> RiskGraph:
+    if warning in graph.completeness_warnings:
+        return graph
+    return graph.model_copy(
+        update={"completeness_warnings": (*graph.completeness_warnings, warning)}
+    )
+
+
+def _feed_name(feed: RiskNode) -> str:
+    address = feed.metrics.get("address")
+    description = feed.metrics.get("description")
+    return f"{description} ({address})" if description else str(address)
+
+
+def _graph_oracles(graph: RiskGraph) -> dict[str, tuple[RiskNode, ...] | None]:
+    """Market oracles (address -> their feed nodes; None when not decoded)."""
+    nodes = {node.node_id: node for node in graph.nodes}
+    children: dict[str, list[RiskNode]] = {}
+    market_oracles: list[str] = []
+    for edge in graph.edges:
+        if edge.relationship is not RiskEdgeType.USES_ORACLE:
+            continue
+        source = nodes[edge.source]
+        target = nodes[edge.target]
+        if source.node_type is RiskNodeType.MARKET and target.node_type is RiskNodeType.ORACLE:
+            market_oracles.append(edge.target)
+        elif source.node_type is RiskNodeType.ORACLE and target.node_type is RiskNodeType.ORACLE:
+            children.setdefault(edge.source, []).append(target)
+    result: dict[str, tuple[RiskNode, ...] | None] = {}
+    for identifier in dict.fromkeys(market_oracles):
+        node = nodes[identifier]
+        address = node.metrics.get("address")
+        label = address if isinstance(address, str) else identifier
+        decoded = node.metrics.get("decomposed") is True
+        feeds = sorted(children.get(identifier, ()), key=lambda item: item.node_id)
+        result[label] = tuple(feeds) if decoded else None
+    return result
 
 
 def _mark_unresolved_markets(graph: RiskGraph, market_ids: Iterable[str]) -> RiskGraph:
@@ -1111,6 +1658,16 @@ def _borrower_request(
     )
 
 
+def _carry(position: ValidatedPosition, snapshots: _Snapshots) -> CarryEstimate:
+    """The yield exiting gives up: the vault's APY for a vault, the market's otherwise."""
+    snapshot = snapshots.primary.value
+    if isinstance(snapshot, VaultSnapshot):
+        apy, source = snapshot.apy, "Morpho vault APY (net of fees when reported)"
+    else:
+        apy, source = snapshot.supply_apy, "Morpho market supply APY (net when reported)"
+    return estimate_carry(position.mode, position.amount, apy, apy_source=source)
+
+
 def _unavailable_exit(now: datetime, reason: str) -> ExitEstimate:
     return ExitEstimate(
         withdrawable=False,
@@ -1154,23 +1711,21 @@ class EthereumGas:
 
 
 class ChainlinkLatest:
-    """Latest Chainlink answer per feed over a recent lookback, memoized briefly.
+    """Latest Chainlink answer per catalog feed from `latestRoundData()`, memoized briefly.
 
-    `EthereumClient.get_chainlink_observations` scans the lookback's logs, so the
-    latest observation is memoized for `ttl`; prices and oracle health share one
-    reader and read each feed once per analysis. An empty lookback returns None.
+    One `eth_call` per feed (per component for a composite feed), memoized for
+    `ttl`, so prices and oracle health read each feed once per analysis. A feed
+    with no round (a zero round id or update time) returns None.
     """
 
     def __init__(
         self,
         client,
         *,
-        lookback: timedelta = CHAINLINK_LOOKBACK,
         ttl: timedelta = CHAINLINK_MEMO_TTL,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
-        self._client = client
-        self._lookback = lookback
+        self.client = client
         self._ttl = ttl
         self.clock = clock
         self._memo: dict[str, tuple[datetime, Observation | None]] = {}
@@ -1182,8 +1737,7 @@ class ChainlinkLatest:
             cached = self._memo.get(feed)
             if cached is not None and now - cached[0] < self._ttl:
                 return cached[1]
-        observations = self._client.get_chainlink_observations(feed, now - self._lookback, now)
-        latest = observations[-1] if observations else None
+        latest = self.client.get_latest_observation(feed)
         with self._lock:
             self._memo[feed] = (now, latest)
         return latest
@@ -1206,22 +1760,43 @@ class ChainlinkPrices:
 
 
 class ChainlinkOracleHealth:
-    """`OracleHealthProvider` over the Chainlink feeds behind a Morpho market's assets.
+    """`OracleHealthProvider` that decodes a Morpho market's oracle into its feeds.
 
-    A market oracle is observed only when both its collateral and loan assets map
-    to a supported feed (`DEFAULT_ORACLE_FEEDS`, heartbeat in
-    `CHAINLINK_HEARTBEATS`); otherwise, or when a feed has no answer in the
-    lookback, it returns None and the oracle is missing critical data.
+    The oracle contract is decoded on-chain (`app.adapters.morpho_oracle`): its
+    BASE/QUOTE feeds, vaults and scale factor, then each feed's description,
+    decimals and kind. Each observation then costs one multicall: the oracle's
+    `price()`, every feed's `latestRoundData()` and the block timestamp.
 
-    - `age_seconds` is the staleness *beyond the feed's heartbeat*:
-      max(0, now - latest answer time - heartbeat), the largest over the
-      market's feeds. The engine's unchanged 1800 s threshold therefore fires
-      when a feed is older than its heartbeat plus 30 minutes (spec § 13
+    - `age_seconds` is the staleness *beyond the heartbeat*: max(0, now - feed
+      update time - heartbeat), the largest over the oracle's feeds whose
+      staleness is judged. The engine's unchanged 1800 s threshold therefore
+      fires when a feed is older than its heartbeat plus 30 minutes (spec § 13
       interpretation; see the module docstring).
-    - `deviation` is |feed price - reference| / reference, the largest over the
-      market's feeds, with the Morpho snapshot's `price_usd` of the asset as the
-      reference. Without any reference it is None and only staleness is
-      evaluated.
+    - Heartbeats. Chainlink feeds: `CHAINLINK_HEARTBEATS` for catalog feeds,
+      otherwise inferred from the feed's last 90 days of rounds (99th-percentile
+      update gap, `app.history.staleness`, one missed cycle tolerated).
+      Third-party feeds, in this order: (a) the published heartbeat in
+      `ThirdPartyFeedRegistry` (address and description must match), (b) the
+      same inference when `getRoundData` history is readable, (c) unknown.
+    - Feeds that compute their answer when read (exchange-rate adapters,
+      computed-on-read feeds, constant scalers) have zero staleness. Their
+      `updatedAt` must still be 0 or the read block's timestamp; otherwise the
+      feed no longer behaves as classified and the oracle is unobservable.
+    - A third-party feed with an unknown heartbeat is *observed*, not missing:
+      its age (`last_update_age_seconds`) and provider are reported, its
+      staleness is not judged (`staleness_seconds` None), so it never fires the
+      live staleness trigger: a guessed threshold could force a false EXIT on a
+      feed that updates monthly by design (an RWA NAV feed). When every feed of
+      the oracle is unjudged, `age_seconds` is None.
+    - `deviation` is |oracle price - reference| / reference, where the oracle
+      price is `price()` as collateral per loan token and the reference is the
+      Morpho snapshot's collateral USD price over its loan USD price. Without a
+      reference it is None and only staleness is evaluated. Deviation is judged
+      for every oracle, whatever its feeds.
+
+    Returns None (explicitly unknown, never healthy) when the oracle is not a
+    Morpho Chainlink oracle, reads a feed of unknown kind, a feed has no
+    answer, or a Chainlink feed's heartbeat is neither documented nor inferable.
     Provider errors propagate; the service records only their type.
     """
 
@@ -1229,55 +1804,212 @@ class ChainlinkOracleHealth:
         self,
         reader: ChainlinkLatest,
         *,
-        asset_feeds: Mapping[str, str] = DEFAULT_ORACLE_FEEDS,
+        oracles=None,
         heartbeats: Mapping[str, int] = CHAINLINK_HEARTBEATS,
+        inference_lookback: timedelta = HEARTBEAT_INFERENCE_LOOKBACK,
+        third_party=None,
     ) -> None:
+        from app.adapters.morpho_oracle import MorphoOracleReader, ThirdPartyFeedRegistry
+
         self.reader = reader
-        self._feeds = {key.casefold(): value for key, value in asset_feeds.items()}
+        self._client = reader.client
+        self._oracles = oracles or MorphoOracleReader(reader.client)
         self._heartbeats = dict(heartbeats)
+        self._lookback = inference_lookback
+        self._third_party = third_party if third_party is not None else ThirdPartyFeedRegistry.load()
+        self._decoded: dict[str, tuple[datetime | None, object | None]] = {}
+        self._inferred: dict[str, tuple[datetime, tuple[int, str] | None]] = {}
+        self._lock = threading.Lock()
 
     def observe(
         self, market: MarketSnapshot, *, now: datetime
     ) -> DataEnvelope[OracleObservation] | None:
-        pairs: list[tuple[AssetInfo, str]] = []
-        for asset in (market.collateral_asset, market.loan_asset):
-            feed = self._feeds.get(asset.symbol.casefold())
-            if feed is None or feed not in self._heartbeats:
+        from app.adapters.morpho_oracle import NEVER_STALE_KINDS, FeedKind
+
+        oracle = self._decode(market.oracle_address, now)
+        if oracle is None or not oracle.decodable:
+            return None
+        state = self._oracles.read_state(oracle)
+        feeds: list[OracleFeedObservation] = []
+        stalenesses: list[Decimal] = []
+        unjudged = 0
+        for feed, latest in zip(oracle.feeds, state.latest, strict=True):
+            if latest is None or feed.decimals is None:
                 return None
-            pairs.append((asset, feed))
-        ages: list[Decimal] = []
-        deviations: list[Decimal] = []
-        used: list[str] = []
-        for asset, feed in pairs:
-            if feed not in used:
-                used.append(feed)
-                latest = self.reader.latest(feed)
-                if latest is None:
+            answer = Decimal(latest.answer).scaleb(-feed.decimals)
+            common = {
+                "role": feed.role,
+                "address": feed.address,
+                "kind": feed.kind.value,
+                "description": feed.description,
+                "answer": answer,
+                "provider": feed.provider,
+            }
+            if feed.kind in NEVER_STALE_KINDS:
+                if feed.kind is not FeedKind.EXCHANGE_RATE_ADAPTER and not _computed_now(
+                    latest.updated_at, state.block_timestamp
+                ):
+                    logger.warning("a computed-on-read feed returned a stored update time")
                     return None
-                age = Decimal(max(0, int((now - latest.timestamp).total_seconds())))
-                ages.append(max(ZERO, age - Decimal(self._heartbeats[feed])))
+                if feed.kind is FeedKind.CONSTANT_SCALER and latest.answer != feed.constant_answer:
+                    logger.warning("a constant scaler feed changed its answer")
+                    return None
+                feeds.append(
+                    OracleFeedObservation(
+                        **common,
+                        heartbeat_source=NEVER_STALE_SOURCES[feed.kind.value],
+                        staleness_seconds=ZERO,
+                    )
+                )
+                stalenesses.append(ZERO)
+                continue
+            if latest.updated_at <= 0:
+                return None
+            age = Decimal(max(0, int(now.timestamp()) - latest.updated_at))
+            if feed.kind is FeedKind.THIRD_PARTY:
+                heartbeat = self._third_party_heartbeat(feed, now)
+                common["history_readable"] = feed.history_readable
+                if heartbeat is None:
+                    unjudged += 1
+                    feeds.append(
+                        OracleFeedObservation(
+                            **common,
+                            last_update_age_seconds=age,
+                            heartbeat_source=UNKNOWN_HEARTBEAT_SOURCE,
+                        )
+                    )
+                    continue
             else:
-                latest = self.reader.latest(feed)  # memoized
-                if latest is None:
+                heartbeat = self._heartbeat(feed.address, now)
+                if heartbeat is None:
                     return None
-            reference = asset.price_usd
-            if reference is not None and reference.is_finite() and reference > ZERO:
-                with localcontext() as context:
-                    context.prec = 60
-                    deviations.append(abs(latest.value - reference) / reference)
+            seconds, source = heartbeat
+            staleness = max(ZERO, age - Decimal(seconds))
+            stalenesses.append(staleness)
+            feeds.append(
+                OracleFeedObservation(
+                    **common,
+                    last_update_age_seconds=age,
+                    heartbeat_seconds=Decimal(seconds),
+                    heartbeat_source=source,
+                    staleness_seconds=staleness,
+                )
+            )
+        names = "+".join(feed.description or feed.address for feed in oracle.feeds) or "no feeds"
+        note = (
+            f"; staleness of {unjudged} third-party feed(s) with no published heartbeat is not judged"
+            if unjudged
+            else ""
+        )
         return DataEnvelope[OracleObservation](
             value=OracleObservation(
                 oracle_address=market.oracle_address,
-                age_seconds=max(ages),
-                deviation=max(deviations) if deviations else None,
+                age_seconds=max(stalenesses) if stalenesses else (None if unjudged else ZERO),
+                deviation=_oracle_deviation(state.price, market),
+                oracle_type=oracle.oracle_type,
+                feeds=tuple(feeds),
             ),
             source=(
-                f"chainlink:{'+'.join(used)} (age_seconds is staleness beyond the feed "
-                "heartbeat; deviation versus the Morpho price)"
+                f"chainlink:{oracle.oracle_type}({names}) (age_seconds is staleness beyond "
+                f"the feed heartbeat{note}; deviation of price() versus the Morpho price)"
             ),
             fetched_at=now,
             freshness=FreshnessStatus.FRESH,
         )
+
+    def _decode(self, address: str, now: datetime):
+        key = address.lower()
+        with self._lock:
+            cached = self._decoded.get(key)
+        if cached is not None and (cached[0] is None or now < cached[0]):
+            return cached[1]
+        oracle = self._oracles.decode(key)
+        expires = None if oracle is not None else now + ORACLE_DECODE_RETRY
+        with self._lock:
+            self._decoded[key] = (expires, oracle)
+        return oracle
+
+    def _third_party_heartbeat(self, feed, now: datetime) -> tuple[int, str] | None:
+        """Published heartbeat, else inferred from readable round history, else None."""
+        published = self._third_party.lookup(feed.address, feed.description)
+        if published is not None:
+            return (
+                published.heartbeat_seconds,
+                f"{PUBLISHED_HEARTBEAT_SOURCE_PREFIX} by {published.provider} "
+                f"({published.source_url})",
+            )
+        if not feed.history_readable:
+            return None
+        from app.adapters.ethereum import UnsupportedFeedError
+
+        try:
+            return self._infer(feed.address, now, require_phase=False)
+        except UnsupportedFeedError:
+            return None
+
+    def _heartbeat(self, address: str, now: datetime) -> tuple[int, str] | None:
+        feed_by_address = getattr(self._client, "feed_by_address", None)
+        definition = feed_by_address(address) if callable(feed_by_address) else None
+        if definition is not None and definition.feed_id in self._heartbeats:
+            return self._heartbeats[definition.feed_id], f"documented ({definition.feed_id})"
+        return self._infer(address, now)
+
+    def _infer(self, address: str, now: datetime, *, require_phase: bool = True) -> tuple[int, str] | None:
+        key = address.lower()
+        with self._lock:
+            cached = self._inferred.get(key)
+        if cached is not None and now - cached[0] < HEARTBEAT_MEMO_TTL:
+            return cached[1]
+        from app.history.staleness import HEARTBEAT_PERCENTILE, infer_heartbeat
+
+        if require_phase:
+            updates = self._client.get_feed_updates(address, now - self._lookback, now)
+        else:
+            updates = self._client.get_feed_updates(
+                address, now - self._lookback, now, require_phase=False
+            )
+        inferred = infer_heartbeat([item.timestamp for item in updates])
+        # An inferred cadence is not a contractual heartbeat: about 1% of gaps
+        # exceed the percentile by construction, so a feed counts as late only
+        # after one full missed cycle (live trigger and staleness history alike).
+        result = (
+            (
+                inferred * INFERRED_HEARTBEAT_TOLERANCE_CYCLES,
+                f"{INFERRED_HEARTBEAT_SOURCE_PREFIX} (p{HEARTBEAT_PERCENTILE} of {len(updates) - 1} "
+                f"update gaps over {self._lookback.days} days is {inferred} s; one missed cycle "
+                "is tolerated)",
+            )
+            if inferred is not None
+            else None
+        )
+        with self._lock:
+            self._inferred[key] = (now, result)
+        return result
+
+
+def _computed_now(updated_at: int, block_timestamp: int | None) -> bool:
+    """A computed-on-read feed reports no update time, or the read block's own time."""
+    return updated_at == 0 or (block_timestamp is not None and updated_at == block_timestamp)
+
+
+def _oracle_deviation(price: int | None, market: MarketSnapshot) -> Decimal | None:
+    """(price() as collateral per loan token - Morpho USD ratio) / Morpho USD ratio.
+
+    Signed: positive when the oracle values the collateral above the market
+    (`oracle_deviation_breaches` applies the threshold per position side).
+    """
+    collateral = market.collateral_asset.price_usd
+    loan = market.loan_asset.price_usd
+    if price is None or price <= 0 or collateral is None or loan is None:
+        return None
+    if not (collateral.is_finite() and loan.is_finite()) or collateral <= ZERO or loan <= ZERO:
+        return None
+    exponent = 36 + market.loan_asset.decimals - market.collateral_asset.decimals
+    with localcontext() as context:
+        context.prec = 60
+        oracle_price = Decimal(price).scaleb(-exponent)
+        reference = collateral / loan
+        return (oracle_price - reference) / reference
 
 
 class FileAndDefiScanEvidence:
@@ -1288,6 +2020,13 @@ class FileAndDefiScanEvidence:
     The bundle's own `retrieved_at` is kept, so scoring still sees its true age.
     An in-process cache is used because `EvidenceBundle` is a nested dataclass
     with no serializer for `SQLiteCache`.
+
+    With a `DefiLlamaClient`, it also offers `impairment_base_rate`: the empirical
+    annual rate of material exploits at large lending protocols
+    (`app.evidence.defillama`) as a 30-day probability, and
+    `oracle_exploit_base_rate`: the same rate restricted to oracle-related
+    exploits, the prior for third-party oracle feeds without measurable history. DeFiLlama data is cached
+    daily by the client; the computed estimate is memoized per data version.
     """
 
     def __init__(
@@ -1295,13 +2034,71 @@ class FileAndDefiScanEvidence:
         defisafety_path: Path,
         defiscan=None,
         *,
+        defillama=None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._path = defisafety_path
         self._defiscan = defiscan
+        self._defillama = defillama
         self._clock = clock
         self._reviews: dict[str, tuple[datetime, object]] = {}
+        self._base_rates: dict[tuple, ProbabilityEstimate] = {}
         self._lock = threading.Lock()
+
+    def impairment_base_rate(self, protocol: str, *, now: datetime) -> ProbabilityEstimate:
+        from app.evidence.defillama import base_rate_estimate
+
+        return self._defillama_rate(
+            ("impairment", protocol),
+            now,
+            lambda hacks, protocols: base_rate_estimate(protocol, hacks, protocols, now=now),
+            "DeFiLlama lists no lending protocol-years for the base rate.",
+        )
+
+    def oracle_exploit_base_rate(self, *, now: datetime) -> ProbabilityEstimate:
+        """The industry oracle-exploit prior (`app.evidence.defillama.oracle_exploit_estimate`)."""
+        from app.evidence.defillama import oracle_exploit_estimate
+
+        return self._defillama_rate(
+            ("oracle",),
+            now,
+            lambda hacks, protocols: oracle_exploit_estimate(hacks, protocols, now=now),
+            "DeFiLlama lists no lending protocol-years for the oracle-exploit prior.",
+        )
+
+    def _defillama_rate(self, kind: tuple, now: datetime, compute, empty: str) -> ProbabilityEstimate:
+        from app.evidence.defillama import observation_window
+
+        if self._defillama is None:
+            return unavailable_estimate(now, "No DeFiLlama source is configured.")
+        try:
+            hacks = self._defillama.hacks()
+            protocols = self._defillama.protocols()
+        except Exception as error:  # provider boundary: never leak provider text
+            logger.warning("defillama unavailable: %s", type(error).__name__)
+            return unavailable_estimate(
+                now, "The DeFiLlama exploit and protocol data could not be retrieved."
+            )
+        key = (
+            *kind,
+            observation_window(now),
+            hacks.fetched_at,
+            hacks.freshness,
+            protocols.fetched_at,
+            protocols.freshness,
+        )
+        with self._lock:
+            cached = self._base_rates.get(key)
+        if cached is not None:
+            return cached
+        estimate = compute(hacks, protocols) or unavailable_estimate(now, empty)
+        with self._lock:
+            # Keep only the current data version of each kind of rate.
+            self._base_rates = {
+                item: value for item, value in self._base_rates.items() if item[: len(kind)] != kind
+            }
+            self._base_rates[key] = estimate
+        return estimate
 
     def _review(self, protocol: str):
         """The cached review, a fresh one, or None after a (cached) failure."""
@@ -1342,3 +2139,28 @@ class FileAndDefiScanEvidence:
                     )
                 )
         return CombinedEvidence(protocol=protocol, bundles=tuple(bundles), evaluated_at=now)
+
+
+class DefiLlamaProtocolTvl:
+    """Protocol TVL and chain TVL share from DeFiLlama `/protocols` and `/v2/chains`."""
+
+    def __init__(self, client) -> None:
+        self._client = client
+
+    def protocol_tvl(
+        self, protocol: str, *, now: datetime
+    ) -> DataEnvelope[ProtocolTvlSnapshot] | None:
+        from app.evidence.defillama import protocol_tvl_snapshot
+
+        protocols = self._client.protocols()
+        chains = self._client.chains()
+        snapshot = protocol_tvl_snapshot(protocol, protocols.value, chains.value)
+        if snapshot is None:
+            return None
+        order = (FreshnessStatus.FRESH, FreshnessStatus.STALE_USABLE, FreshnessStatus.EXPIRED)
+        return DataEnvelope[ProtocolTvlSnapshot](
+            value=snapshot,
+            source=f"{protocols.source}; {chains.source}",
+            fetched_at=min(protocols.fetched_at, chains.fetched_at),
+            freshness=max((protocols.freshness, chains.freshness), key=order.index),
+        )

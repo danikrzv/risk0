@@ -1,23 +1,59 @@
 {
   "chain_id": 1,
+  "verification": "Every address is a Chainlink EACAggregatorProxy on Ethereum mainnet whose description() returned the listed description on 2026-10-11. Composite feeds have no address: their answer is the product of their components at every component update.",
   "feeds": [
     {
       "id": "ETH/USD",
       "address": "0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419",
+      "description": "ETH / USD",
       "deployment_block": 10606501,
       "source": "chainlink:ETH/USD"
     },
     {
       "id": "USDC/USD",
       "address": "0x8fFfFfd4AfB6115b954Bd326cbe7B4BA576818f6",
+      "description": "USDC / USD",
       "deployment_block": 12864088,
       "source": "chainlink:USDC/USD"
     },
     {
       "id": "EUR/USD",
       "address": "0xb49f677943BC038e9857d61E7d053CaA2C1734C1",
+      "description": "EUR / USD",
       "deployment_block": 10606501,
       "source": "chainlink:EUR/USD"
+    },
+    {
+      "id": "stETH/USD",
+      "address": "0xCfE54B5cD566aB89272946F602D76Ea879CAb4a8",
+      "description": "STETH / USD",
+      "source": "chainlink:stETH/USD",
+      "note": "wstETH is priced by stETH/USD: wstETH = stETH x the wstETH/stETH exchange rate (stEthPerToken), which only accrues staking rewards (about 3% a year) and is not modelled, so a 24-hour wstETH fall is taken to equal the stETH/USD fall."
+    },
+    {
+      "id": "BTC/USD",
+      "address": "0xF4030086522a5bEEa4988F8cA5B36dbC97BeE88c",
+      "description": "BTC / USD",
+      "source": "chainlink:BTC/USD"
+    },
+    {
+      "id": "WBTC/BTC",
+      "address": "0xfdFD9C85aD200c506Cf9e21F1FD8dd01932FBB23",
+      "description": "WBTC / BTC",
+      "source": "chainlink:WBTC/BTC"
+    },
+    {
+      "id": "BTC/ETH",
+      "address": "0xdeb288F737066589598e9214E782fa5A8eD689e8",
+      "description": "BTC / ETH",
+      "source": "chainlink:BTC/ETH"
+    },
+    {
+      "id": "WBTC/USD",
+      "components": ["WBTC/BTC", "BTC/USD"],
+      "description": "WBTC / BTC x BTC / USD",
+      "source": "chainlink:WBTC/BTC*BTC/USD",
+      "note": "WBTC/USD is the product of Chainlink WBTC/BTC (the custodial wrapper's peg) and BTC/USD, recomputed at every update of either feed."
     }
   ]
 }

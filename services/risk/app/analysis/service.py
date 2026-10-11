@@ -153,7 +153,11 @@ from app.domain.snapshots import (
     VaultSnapshot,
 )
 from app.evidence.models import CombinedEvidence
-from app.history.estimator import EmpiricalProbabilityEvidence, EventPredicate
+from app.history.estimator import (
+    INSUFFICIENT_HISTORY_REASON,
+    EmpiricalProbabilityEvidence,
+    EventPredicate,
+)
 from app.history.normalization import HOUR, Observation
 from app.infrastructure.freshness import DataConflict, DataQuality, Freshness
 
@@ -1061,7 +1065,11 @@ class HybridProbabilityProvider:
                 estimate = self._staleness_estimate(
                     estimate_staleness, feed, name, start, end, now, third_party=third_party
                 )
-                if third_party and estimate.central is None:
+                # Readable but too short a history (a new feed) falls back to the
+                # prior like a feed without history; an unreadable one still blocks.
+                if estimate.central is None and (
+                    third_party or INSUFFICIENT_HISTORY_REASON in estimate.explanation
+                ):
                     unprioritised.append(f"{name} (round history insufficient: {estimate.explanation})")
                     continue
                 estimates.append(estimate)
@@ -1073,8 +1081,8 @@ class HybridProbabilityProvider:
                     prior.model_copy(
                         update={
                             "explanation": (
-                                "Industry prior, not a feed-specific estimate, for third-party "
-                                f"feed(s) {'; '.join(unprioritised)} of oracle {label}: "
+                                "Industry prior, not a feed-specific estimate, for feed(s) "
+                                f"without a usable history {'; '.join(unprioritised)} of oracle {label}: "
                                 f"{prior.explanation}"
                             )
                         }

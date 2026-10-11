@@ -9,8 +9,10 @@ from decimal import Decimal
 import pytest
 
 from app.adapters.morpho_oracle import PublishedHeartbeat, ThirdPartyFeedRegistry
+from app.history.estimator import INSUFFICIENT_HISTORY_REASON
 from app.analysis.service import (
     ChainlinkLatest,
+    unavailable_estimate,
     ChainlinkOracleHealth,
     ChainlinkPrices,
     HybridProbabilityProvider,
@@ -24,10 +26,12 @@ from app.contracts.models import (
 )
 from tests.api.test_analysis import FakeHistory, FakeProbabilities, analyze, borrower_request, build_service
 from tests.api.test_chainlink_oracles import (
+    ETH_USD,
     USDC_USD,
     ago,
     client_for,
     feed_nodes,
+    healthy_chain,
     oracle_price,
     weth_usdc_market,
 )
@@ -407,3 +411,45 @@ def test_computed_and_constant_feeds_are_a_structural_zero(morpho_client, clock)
     assert probability.method is ProbabilityMethod.STRUCTURAL
     assert probability.central == 0
     assert "computed-on-read feeds, constant scalers" in probability.explanation
+
+
+class ShortHistory:
+    """ETH/USD staleness history is unusable (with `reason`); USDC/USD is fine."""
+
+    def __init__(self, reason):
+        self.reason = reason
+
+    def estimate_staleness(self, address, heartbeat, start, end, *, now, label=None, require_phase=True):
+        if address == ETH_USD:
+            class Evidence:
+                probability = unavailable_estimate(now, self.reason)
+
+            return Evidence()
+        return FakeHistory({"x": "0.001"}).estimate("x", start, end, lambda w: False, now=now)
+
+
+def test_chainlink_feed_with_too_short_a_history_uses_the_industry_prior(morpho_client, clock):
+    market = weth_usdc_market(morpho_client)
+    chain = healthy_chain(market, clock)
+    hybrid = HybridProbabilityProvider(ShortHistory(INSUFFICIENT_HISTORY_REASON), PriorEvidence("0.004"))
+
+    response, probability = oracle_failure(morpho_client, clock, chain, hybrid)
+
+    # A feed launched under 30 days ago has no window yet: the explained prior
+    # stands in, as for a third-party feed without history.
+    assert probability.central == Decimal("0.004")
+    assert probability.confidence is ConfidenceLevel.LOW
+    assert "without a usable history" in probability.explanation
+    assert response.recommendation.decision is not RecommendationDecision.UNAVAILABLE
+
+
+def test_unreadable_chainlink_history_still_blocks_rather_than_using_the_prior(morpho_client, clock):
+    market = weth_usdc_market(morpho_client)
+    chain = healthy_chain(market, clock)
+    hybrid = HybridProbabilityProvider(
+        ShortHistory("Ethereum provider history is unavailable"), PriorEvidence("0.004")
+    )
+
+    _, probability = oracle_failure(morpho_client, clock, chain, hybrid)
+
+    assert probability.central is None

@@ -29,6 +29,8 @@ from app.infrastructure.freshness import Freshness
 
 
 EventPredicate = Callable[[Sequence[Observation]], bool]
+# The history is readable but too short (e.g. a feed launched under 30 days ago).
+INSUFFICIENT_HISTORY_REASON = "insufficient complete history for one 30-day window"
 MISSING_CONFIDENCE_THRESHOLD = Decimal("0.05")
 # Hourly normalization forward-fills a Chainlink answer across a gap up to this
 # long by default. A feed's answer stands until its next round, and the feed
@@ -347,7 +349,7 @@ class RollingWindowEstimator:
                 expected_count,
                 missing_ratio,
                 threshold,
-                "insufficient complete history for one 30-day window",
+                INSUFFICIENT_HISTORY_REASON,
             )
 
         event_count = len(event_dates)

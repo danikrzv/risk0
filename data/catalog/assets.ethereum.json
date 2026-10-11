@@ -1,0 +1,257 @@
+{
+  "schema_version": 1,
+  "chain_id": 1,
+  "reviewed_at": "2026-10-11",
+  "description": "Issuer and underlying look-through for assets that appear in Risk0's Ethereum catalog entries and the Morpho markets they allocate to. Every claim cites the issuer's official documentation or the token contract. Assets that are not listed here are reported as having an unmodelled issuer; they are never treated as safe.",
+  "issuers": [
+    {
+      "issuer_id": "lido",
+      "name": "Lido",
+      "issuer_type": "protocol",
+      "redemption": "stETH is redeemed for ETH through the Lido WithdrawalQueueERC721: a request is finalized by the Accounting Oracle and can then be claimed; finalization below 1:1 is possible after large validator losses.",
+      "defiscan_slug": "lido",
+      "source_urls": [
+        "https://docs.lido.fi/contracts/lido",
+        "https://docs.lido.fi/contracts/withdrawal-queue-erc721",
+        "https://www.defiscan.info/data/index.json"
+      ]
+    },
+    {
+      "issuer_id": "ether-fi",
+      "name": "ether.fi",
+      "issuer_type": "protocol",
+      "redemption": "eETH redemption is requested through ether.fi; completion depends on protocol liquidity and Ethereum validator withdrawals.",
+      "defiscan_slug": "EtherFi-Stake",
+      "source_urls": [
+        "https://etherfi.gitbook.io/etherfi/products/staking/eeth.md",
+        "https://www.defiscan.info/data/index.json"
+      ]
+    },
+    {
+      "issuer_id": "weth9",
+      "name": "WETH9 contract",
+      "issuer_type": "wrapper",
+      "redemption": "Any holder calls withdraw(wad) on the WETH9 contract to receive the same amount of ETH; the contract has no owner or admin functions.",
+      "defiscan_slug": null,
+      "source_urls": ["https://etherscan.io/address/0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2#code"]
+    },
+    {
+      "issuer_id": "circle",
+      "name": "Circle",
+      "issuer_type": "custodial",
+      "redemption": "Institutions with a Circle Mint account redeem USDC 1:1 for USD directly with Circle; other holders go through exchanges or Circle Alliance on/off-ramp providers.",
+      "defiscan_slug": null,
+      "source_urls": ["https://www.circle.com/usdc"]
+    },
+    {
+      "issuer_id": "sg-forge",
+      "name": "Societe Generale-FORGE",
+      "issuer_type": "custodial",
+      "redemption": "EUR CoinVertible is redeemable 1:1 for EUR through Societe Generale-FORGE or its Preferred Partners; subscription is open to onboarded institutional investors.",
+      "defiscan_slug": null,
+      "source_urls": ["https://www.sgforge.com/product/coinvertible/"]
+    },
+    {
+      "issuer_id": "schuman-financial",
+      "name": "Schuman Financial (Salvus SAS)",
+      "issuer_type": "custodial",
+      "redemption": "EURØP is redeemable 1:1 for EUR through Schuman Financial (europ.schuman.io), an ACPR-licensed electronic money institution; eligibility terms are not stated on the product page.",
+      "defiscan_slug": null,
+      "source_urls": ["https://www.schuman.io/europ", "https://www.schuman.io/smart-contracts"]
+    },
+    {
+      "issuer_id": "wbtc-custodians",
+      "name": "WBTC custodians (BitGo / BiT Global)",
+      "issuer_type": "custodial",
+      "redemption": "Only identity-verified merchants approved through WBTC DAO governance can burn WBTC to receive BTC from the custodians; other holders exit through those merchants or secondary markets.",
+      "defiscan_slug": null,
+      "source_urls": [
+        "https://wbtc.network/",
+        "https://bitgo.com/resources/blog/bitgo-to-move-wbtc-to-multi-jurisdictional-custody-to-accelerate-global/"
+      ]
+    },
+    {
+      "issuer_id": "coinbase",
+      "name": "Coinbase",
+      "issuer_type": "custodial",
+      "redemption": "Coinbase customers unwrap cbBTC into the underlying BTC by depositing it into their Coinbase account.",
+      "defiscan_slug": null,
+      "source_urls": ["https://coinbase.bynder.com/m/1303c2f4d78fc966/original/cbBTC-White-Paper.pdf"]
+    },
+    {
+      "issuer_id": "steakhouse-financial",
+      "name": "Steakhouse Financial (Morpho Vault V2 curator)",
+      "issuer_type": "wrapper",
+      "redemption": "Shares are redeemed for the vault asset through the ERC-4626 withdraw/redeem functions, limited by the vault's immediately available liquidity.",
+      "defiscan_slug": null,
+      "source_urls": [
+        "https://app.morpho.org/ethereum/vault/0xbeef0C075Da5D01112AE5cF34d257074fB5DDB2f",
+        "https://eips.ethereum.org/EIPS/eip-4626"
+      ]
+    }
+  ],
+  "references": [
+    {
+      "reference_id": "eth",
+      "symbol": "ETH",
+      "kind": "native",
+      "description": "Native ether of Ethereum mainnet.",
+      "source_urls": ["https://ethereum.org/en/eth/"]
+    },
+    {
+      "reference_id": "btc",
+      "symbol": "BTC",
+      "kind": "offchain",
+      "description": "Bitcoin held on the Bitcoin network by the issuer's custodian.",
+      "source_urls": ["https://wbtc.network/", "https://coinbase.bynder.com/m/1303c2f4d78fc966/original/cbBTC-White-Paper.pdf"]
+    },
+    {
+      "reference_id": "usd-reserves",
+      "symbol": "USD",
+      "kind": "offchain",
+      "description": "US dollar cash and cash-equivalent reserves held off-chain by the issuer.",
+      "source_urls": ["https://www.circle.com/usdc"]
+    },
+    {
+      "reference_id": "eur-reserves",
+      "symbol": "EUR",
+      "kind": "offchain",
+      "description": "Euro cash reserves held off-chain by the issuer.",
+      "source_urls": ["https://www.sgforge.com/product/coinvertible/", "https://www.schuman.io/europ"]
+    }
+  ],
+  "assets": [
+    {
+      "address": "0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0",
+      "symbol": "wstETH",
+      "underlying": {"asset": "0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84"},
+      "issuer_id": "lido",
+      "redemption": "unwrap(amount) on the wstETH contract burns wstETH and returns the stETH it represents; no allowlist is described.",
+      "sources": {
+        "underlying": ["https://docs.lido.fi/contracts/wsteth", "eth_call stETH() on 0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0 returns 0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84"],
+        "issuer": ["https://docs.lido.fi/contracts/wsteth"],
+        "redemption": ["https://docs.lido.fi/contracts/wsteth"]
+      }
+    },
+    {
+      "address": "0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84",
+      "symbol": "stETH",
+      "underlying": {"reference": "eth"},
+      "issuer_id": "lido",
+      "redemption": "Withdrawal request to the Lido WithdrawalQueueERC721, claimable for ETH once finalized; the payout is capped at the stETH locked in the request.",
+      "sources": {
+        "underlying": ["https://docs.lido.fi/contracts/lido"],
+        "issuer": ["https://docs.lido.fi/contracts/lido"],
+        "redemption": ["https://docs.lido.fi/contracts/withdrawal-queue-erc721"]
+      }
+    },
+    {
+      "address": "0xCd5fE23C85820F7B72D0926FC9b05b43E359b7ee",
+      "symbol": "weETH",
+      "underlying": {"asset": "0x35fA164735182de50811E8e2E824cFb9B6118ac2"},
+      "issuer_id": "ether-fi",
+      "redemption": "Converts to eETH at the contract rate getEETHByWeETH(); eETH is then redeemed through ether.fi.",
+      "sources": {
+        "underlying": ["https://etherfi.gitbook.io/etherfi/products/staking/eeth.md", "eth_call eETH() on 0xCd5fE23C85820F7B72D0926FC9b05b43E359b7ee returns 0x35fA164735182de50811E8e2E824cFb9B6118ac2"],
+        "issuer": ["https://etherfi.gitbook.io/etherfi/products/staking/eeth.md"],
+        "redemption": ["https://etherfi.gitbook.io/etherfi/products/staking/eeth.md", "https://etherscan.io/address/0xCd5fE23C85820F7B72D0926FC9b05b43E359b7ee#code"]
+      }
+    },
+    {
+      "address": "0x35fA164735182de50811E8e2E824cFb9B6118ac2",
+      "symbol": "eETH",
+      "underlying": {"reference": "eth"},
+      "issuer_id": "ether-fi",
+      "redemption": "Redemption is requested through ether.fi; completion depends on protocol liquidity and validator withdrawals.",
+      "sources": {
+        "underlying": ["https://etherfi.gitbook.io/etherfi/products/staking/eeth.md"],
+        "issuer": ["https://etherfi.gitbook.io/etherfi/products/staking/eeth.md"],
+        "redemption": ["https://etherfi.gitbook.io/etherfi/products/staking/eeth.md"]
+      }
+    },
+    {
+      "address": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+      "symbol": "WETH",
+      "underlying": {"reference": "eth"},
+      "issuer_id": "weth9",
+      "redemption": "withdraw(wad) returns the same amount of ETH to any holder.",
+      "sources": {
+        "underlying": ["https://etherscan.io/address/0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2#code"],
+        "issuer": ["https://etherscan.io/address/0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2#code"],
+        "redemption": ["https://etherscan.io/address/0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2#code"]
+      }
+    },
+    {
+      "address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+      "symbol": "USDC",
+      "underlying": {"reference": "usd-reserves"},
+      "issuer_id": "circle",
+      "redemption": "1:1 for USD through Circle Mint (institutions) or Circle Alliance on/off-ramps.",
+      "sources": {
+        "underlying": ["https://www.circle.com/usdc"],
+        "issuer": ["https://www.circle.com/usdc"],
+        "redemption": ["https://www.circle.com/usdc"]
+      }
+    },
+    {
+      "address": "0x5F7827FDeb7c20b443265Fc2F40845B715385Ff2",
+      "symbol": "EURCV",
+      "underlying": {"reference": "eur-reserves"},
+      "issuer_id": "sg-forge",
+      "redemption": "1:1 for EUR through Societe Generale-FORGE or Preferred Partners.",
+      "sources": {
+        "underlying": ["https://www.sgforge.com/product/coinvertible/"],
+        "issuer": ["https://www.sgforge.com/product/coinvertible/"],
+        "redemption": ["https://www.sgforge.com/product/coinvertible/"]
+      }
+    },
+    {
+      "address": "0x888883b5F5D21fb10Dfeb70e8f9722B9FB0E5E51",
+      "symbol": "EUROP",
+      "underlying": {"reference": "eur-reserves"},
+      "issuer_id": "schuman-financial",
+      "redemption": "1:1 for EUR through Schuman Financial.",
+      "sources": {
+        "underlying": ["https://www.schuman.io/europ"],
+        "issuer": ["https://www.schuman.io/europ", "https://www.schuman.io/smart-contracts"],
+        "redemption": ["https://www.schuman.io/europ"]
+      }
+    },
+    {
+      "address": "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599",
+      "symbol": "WBTC",
+      "underlying": {"reference": "btc"},
+      "issuer_id": "wbtc-custodians",
+      "redemption": "Burned by DAO-approved, identity-verified merchants in exchange for BTC from the custodians.",
+      "sources": {
+        "underlying": ["https://wbtc.network/"],
+        "issuer": ["https://bitgo.com/resources/blog/bitgo-to-move-wbtc-to-multi-jurisdictional-custody-to-accelerate-global/"],
+        "redemption": ["https://wbtc.network/"]
+      }
+    },
+    {
+      "address": "0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf",
+      "symbol": "cbBTC",
+      "underlying": {"reference": "btc"},
+      "issuer_id": "coinbase",
+      "redemption": "Deposited into a Coinbase account and unwrapped into BTC.",
+      "sources": {
+        "underlying": ["https://coinbase.bynder.com/m/1303c2f4d78fc966/original/cbBTC-White-Paper.pdf"],
+        "issuer": ["https://coinbase.bynder.com/m/1303c2f4d78fc966/original/cbBTC-White-Paper.pdf"],
+        "redemption": ["https://coinbase.bynder.com/m/1303c2f4d78fc966/original/cbBTC-White-Paper.pdf"]
+      }
+    },
+    {
+      "address": "0xbeef0C075Da5D01112AE5cF34d257074fB5DDB2f",
+      "symbol": "steakEURCV",
+      "underlying": {"asset": "0x5F7827FDeb7c20b443265Fc2F40845B715385Ff2"},
+      "issuer_id": "steakhouse-financial",
+      "redemption": "ERC-4626 withdraw/redeem from the Steakhouse Prime EURCV Morpho Vault V2, limited by its liquid assets.",
+      "sources": {
+        "underlying": ["eth_call asset() on 0xbeef0C075Da5D01112AE5cF34d257074fB5DDB2f returns 0x5F7827FDeb7c20b443265Fc2F40845B715385Ff2"],
+        "issuer": ["https://app.morpho.org/ethereum/vault/0xbeef0C075Da5D01112AE5cF34d257074fB5DDB2f"],
+        "redemption": ["https://eips.ethereum.org/EIPS/eip-4626"]
+      }
+    }
+  ]
+}

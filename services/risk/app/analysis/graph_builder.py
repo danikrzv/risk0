@@ -10,6 +10,14 @@ Graph shape, matching the scenario engine's traversal rules:
 - vault:          --lends--> vault asset, --deployed_on--> Morpho
 - Morpho --deployed_on--> Ethereum
 - position --exits_through--> pool --exits_through--> pool tokens already in the graph
+- issuer and underlying look-through (when the context carries an asset registry):
+  asset --backed_by--> underlying asset (recursive, cycle-safe, at most
+  `MAX_UNDERLYING_DEPTH` token hops), asset --backed_by--> issuer protocol node
+  `protocol:1:issuer-<id>` (metrics `issuer_type`, `redemption`, `source_url`,
+  `defiscan_slug`), on-chain issuers (protocol, wrapper) --deployed_on--> Ethereum,
+  and non-token underlyings as asset nodes `asset:1:underlying-<id>` (native ETH
+  --deployed_on--> Ethereum). An asset without a registry entry gets no new nodes
+  and a completeness warning that its issuer is unmodelled.
 - vault --allocated_to(weight)--> protocol "Unmodelled allocation" for every
   allocation row that is not a Morpho market (for example a V2 adapter), so an
   unknown share of the vault is visible with `exposure_unknown=True` instead of
@@ -44,6 +52,13 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from urllib.parse import urlsplit, urlunsplit
 
+from app.catalog.assets import (
+    MAX_UNDERLYING_DEPTH,
+    AssetRegistry,
+    Issuer,
+    IssuerType,
+    RegisteredAsset,
+)
 from app.contracts.models import (
     CatalogEntityType,
     FreshnessStatus,
@@ -88,6 +103,10 @@ HUNDRED = Decimal(100)
 PERCENT_QUANTUM = Decimal("0.01")
 UNMODELLED_ALLOCATION_LABEL = "Unmodelled allocation"
 UNMODELLED_ALLOCATION_PREFIX = "unmodelled-allocation-"
+REGISTRY_PROVENANCE = "risk0 asset registry"
+ISSUER_KEY_PREFIX = "issuer-"
+UNDERLYING_KEY_PREFIX = "underlying-"
+ONCHAIN_ISSUER_TYPES = frozenset({IssuerType.PROTOCOL, IssuerType.WRAPPER})
 
 
 @dataclass
@@ -215,6 +234,7 @@ class _Builder:
             self._add_edge(position_id, vault_id, RiskEdgeType.LENDS)
             self._add_allocations(vault_id)
         self._add_pools(position_id)
+        self._add_look_through()
         warnings = tuple(dict.fromkeys([*self.position.warnings, *self.warnings]))
         return RiskGraph(
             nodes=tuple(self.nodes.values()),
@@ -559,6 +579,159 @@ class _Builder:
             {"address": key, "age_seconds": None, "deviation": None},
             market_envelope,
         )
+
+    # Issuer and underlying look-through
+
+    def _add_look_through(self) -> None:
+        registry = self.context.asset_registry
+        if registry is None:
+            return
+        assets = sorted(
+            identifier
+            for identifier, node in self.nodes.items()
+            if node.node_type is RiskNodeType.ASSET
+        )
+        expanded: set[str] = set()
+        for asset_id in assets:
+            self._look_through(registry, asset_id, (asset_id,), expanded)
+
+    def _look_through(
+        self,
+        registry: AssetRegistry,
+        asset_id: str,
+        chain: tuple[str, ...],
+        expanded: set[str],
+    ) -> None:
+        if asset_id in expanded:
+            return
+        expanded.add(asset_id)
+        node = self.nodes[asset_id]
+        address = node.metrics.get("address")
+        entry = registry.asset(address) if isinstance(address, str) else None
+        if entry is None:
+            self._warn(
+                f"{node.label} ({address}) is not in the asset registry; its issuer and "
+                "underlying are unmodelled, not assumed safe."
+            )
+            return
+        issuer = registry.issuer(entry.issuer_id)
+        if issuer is None:
+            self._warn(f"Issuer {entry.issuer_id!r} of {entry.symbol} is not in the asset registry.")
+        else:
+            issuer_id = self._add_node(
+                RiskNodeType.PROTOCOL,
+                f"{ISSUER_KEY_PREFIX}{issuer.issuer_id}",
+                issuer.name,
+                {
+                    "name": issuer.name,
+                    "issuer_type": issuer.issuer_type.value,
+                    "redemption": issuer.redemption,
+                    "source_url": issuer.source_urls[0],
+                    "defiscan_slug": issuer.defiscan_slug,
+                },
+                provenance=REGISTRY_PROVENANCE,
+                freshness=FreshnessStatus.FRESH,
+                observed_at=self.generated_at,
+            )
+            self._add_edge(asset_id, issuer_id, RiskEdgeType.BACKED_BY)
+            if issuer.issuer_type in ONCHAIN_ISSUER_TYPES:
+                self._add_edge(
+                    issuer_id, node_id(RiskNodeType.CHAIN, ETHEREUM_KEY), RiskEdgeType.DEPLOYED_ON
+                )
+        self._annotate_asset(asset_id, entry, issuer)
+        underlying = entry.underlying
+        if underlying.reference is not None:
+            self._add_reference_underlying(registry, asset_id, entry, underlying.reference)
+            return
+        assert underlying.asset is not None
+        target = node_id(RiskNodeType.ASSET, underlying.asset)
+        if target in chain or self._reaches(target, asset_id):
+            self._warn(
+                f"Underlying of {entry.symbol} would form a cycle through {target}; "
+                "that backed_by edge was not added."
+            )
+            return
+        if len(chain) > MAX_UNDERLYING_DEPTH:
+            self._warn(
+                f"Underlying chain of {entry.symbol} exceeds {MAX_UNDERLYING_DEPTH} levels; "
+                "deeper layers are unmodelled."
+            )
+            return
+        if target not in self.nodes:
+            registered = registry.asset(underlying.asset)
+            self._add_node(
+                RiskNodeType.ASSET,
+                underlying.asset,
+                registered.symbol if registered else underlying.asset.lower(),
+                {
+                    "symbol": registered.symbol if registered else None,
+                    "address": underlying.asset.lower(),
+                    "decimals": None,
+                    "price_usd": None,
+                },
+                provenance=REGISTRY_PROVENANCE,
+                freshness=FreshnessStatus.FRESH,
+                observed_at=self.generated_at,
+            )
+        self._add_edge(asset_id, target, RiskEdgeType.BACKED_BY)
+        self._look_through(registry, target, (*chain, target), expanded)
+
+    def _add_reference_underlying(
+        self, registry: AssetRegistry, asset_id: str, entry: RegisteredAsset, reference_id: str
+    ) -> None:
+        reference = registry.reference(reference_id)
+        if reference is None:
+            self._warn(f"Underlying {reference_id!r} of {entry.symbol} is not in the asset registry.")
+            return
+        target = self._add_node(
+            RiskNodeType.ASSET,
+            f"{UNDERLYING_KEY_PREFIX}{reference.reference_id}",
+            f"{reference.symbol} ({'native' if reference.kind == 'native' else 'off-chain'})",
+            {
+                "symbol": reference.symbol,
+                "description": reference.description,
+                "underlying_kind": reference.kind,
+                "onchain": reference.kind == "native",
+                "source_url": reference.source_urls[0],
+            },
+            provenance=REGISTRY_PROVENANCE,
+            freshness=FreshnessStatus.FRESH,
+            observed_at=self.generated_at,
+        )
+        self._add_edge(asset_id, target, RiskEdgeType.BACKED_BY)
+        if reference.kind == "native":
+            self._add_edge(target, node_id(RiskNodeType.CHAIN, ETHEREUM_KEY), RiskEdgeType.DEPLOYED_ON)
+
+    def _annotate_asset(
+        self, asset_id: str, entry: RegisteredAsset, issuer: Issuer | None
+    ) -> None:
+        node = self.nodes[asset_id]
+        metrics: dict[str, MetricValue] = {
+            **node.metrics,
+            "issuer": issuer.name if issuer else None,
+            "issuer_type": issuer.issuer_type.value if issuer else None,
+            "redemption": entry.redemption,
+            "redemption_source_url": entry.sources.redemption[0],
+            "underlying_source_url": entry.sources.underlying[0],
+        }
+        self.nodes[asset_id] = node.model_copy(update={"metrics": metrics})
+
+    def _reaches(self, source: str, target: str) -> bool:
+        """True when `target` is reachable from `source` over the edges built so far."""
+        outgoing: dict[str, list[str]] = {}
+        for edge in self.edges.values():
+            outgoing.setdefault(edge.source, []).append(edge.target)
+        seen = {source}
+        stack = [source]
+        while stack:
+            current = stack.pop()
+            if current == target:
+                return True
+            for child in outgoing.get(current, ()):
+                if child not in seen:
+                    seen.add(child)
+                    stack.append(child)
+        return False
 
     # Helpers
 

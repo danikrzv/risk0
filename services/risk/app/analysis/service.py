@@ -80,6 +80,7 @@ from app.analysis.recommendation import (
     make_recommendation,
 )
 from app.analysis.scenario_engine import ScenarioEngine
+from app.catalog.assets import AssetRegistry, default_asset_registry
 from app.contracts.models import (
     AnalysisRequest,
     AnalysisResponse,
@@ -293,8 +294,10 @@ class AnalysisService:
         incidents: IncidentProvider | None = None,
         engine: ScenarioEngine | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        asset_registry: AssetRegistry | None = None,
     ) -> None:
         self._catalog = catalog
+        self._asset_registry = asset_registry or default_asset_registry()
         self._morpho = morpho
         self._probabilities = probabilities
         self._quotes = quotes
@@ -512,6 +515,7 @@ class AnalysisService:
             allocations=snapshots.allocations,
             allocation_markets=snapshots.allocation_markets,
             oracles=oracles,
+            asset_registry=self._asset_registry,
         )
         try:
             graph = build_risk_graph(position, context, clock=lambda: now)

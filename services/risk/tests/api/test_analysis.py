@@ -744,7 +744,9 @@ def test_empirical_provider_uses_the_feed_for_the_shocked_collateral(morpho_clie
 
 def test_empirical_provider_without_a_feed_is_explicitly_unavailable(morpho_client, clock):
     history = FakeHistory({})
-    provider = HybridProbabilityProvider(history, evidence=None)
+    provider = HybridProbabilityProvider(
+        history, evidence=None, collateral_feeds={"WETH": ("ETH/USD",)}
+    )
     payload = borrower_request("0.05")
     payload["position"].update(
         entity_id="wbtc-usdc-860", collateral_amount="1", debt_amount="60000", amount="60000", ltv="0.73"
@@ -758,6 +760,21 @@ def test_empirical_provider_without_a_feed_is_explicitly_unavailable(morpho_clie
     assert result.probability.central is None
     assert "WBTC" in result.probability.explanation
     assert response.recommendation.decision is RecommendationDecision.UNAVAILABLE
+
+
+def test_wbtc_collateral_uses_the_composite_wbtc_usd_feed_by_default(morpho_client, clock):
+    history = FakeHistory({"WBTC/USD": "0.004"})
+    provider = HybridProbabilityProvider(history, evidence=None)
+    payload = borrower_request("0.15")
+    payload["position"].update(
+        entity_id="wbtc-usdc-860", collateral_amount="1", debt_amount="60000", amount="60000", ltv="0.73"
+    )
+
+    response = analyze(build_service(morpho_client, clock, probabilities=provider), payload)
+
+    (result,) = response.scenario_results
+    assert history.calls == ["WBTC/USD"]
+    assert result.probability.central == Decimal("0.004")
 
 
 def test_protocol_probability_is_model_estimated_and_labelled(morpho_client, clock):
@@ -914,179 +931,7 @@ def test_missing_live_oracle_data_is_unavailable(api, morpho_client, clock, capl
         assert leaked not in service_logs(caplog)
 
 
-class FakeChainlink:
-    """`EthereumClient.get_chainlink_observations` over configured feed histories."""
-
-    def __init__(self, histories=None, *, fail=False):
-        self.histories = histories or {}
-        self.fail = fail
-        self.calls: list[str] = []
-
-    def get_chainlink_observations(self, feed, start, end):
-        self.calls.append(feed)
-        if self.fail:
-            from app.adapters.ethereum import EthereumProviderError
-
-            raise EthereumProviderError("request to https://rpc.example.invalid/v2/fake-rpc-credential failed")
-        if feed not in self.histories:
-            from app.adapters.ethereum import UnsupportedFeedError
-
-            raise UnsupportedFeedError(f"unsupported Chainlink feed: {feed}")
-        return tuple(item for item in self.histories[feed] if start <= item.timestamp <= end)
-
-
-def weth_usdc_market(morpho_client):
-    entry = next(
-        item for item in CatalogRepository(CATALOG_PATH).list_entries() if item.entity_id == "weth-usdc-860"
-    )
-    return morpho_client.get_market(entry.address_or_market_id).value
-
-
-def feed_point(clock, value, *, age_seconds):
-    return Observation(
-        timestamp=clock() - timedelta(seconds=age_seconds),
-        value=Decimal(value),
-        block_number=SNAPSHOT_BLOCK,
-        log_index=0,
-        source="chainlink:fixture",
-    )
-
-
-def chainlink_service(morpho, clock, client, **kwargs):
-    from app.analysis.service import ChainlinkLatest, ChainlinkOracleHealth, ChainlinkPrices
-
-    reader = ChainlinkLatest(client, clock=clock)
-    return build_service(
-        morpho,
-        clock,
-        oracles=ChainlinkOracleHealth(reader),
-        prices=ChainlinkPrices(reader),
-        **kwargs,
-    )
-
-
-def healthy_histories(market, clock, *, eth_age=600, eth_value=None):
-    return {
-        "ETH/USD": (
-            feed_point(clock, eth_value or market.collateral_asset.price_usd, age_seconds=eth_age),
-        ),
-        "USDC/USD": (feed_point(clock, market.loan_asset.price_usd, age_seconds=3 * 3600),),
-    }
-
-
-def test_chainlink_oracle_health_with_healthy_feeds_does_not_trigger(morpho_client, clock):
-    market = weth_usdc_market(morpho_client)
-    client = FakeChainlink(healthy_histories(market, clock))
-
-    response = analyze(chainlink_service(morpho_client, clock, client), borrower_request("0.05"))
-
-    assert response.recommendation.decision is RecommendationDecision.STAY
-    assert response.recommendation.triggers == ()
-    oracle = next(node for node in response.graph.nodes if node.node_type.value == "oracle")
-    assert oracle.metrics["age_seconds"] == Decimal(0)  # within the heartbeat
-    assert oracle.metrics["deviation"] == Decimal(0)
-
-
-def test_chainlink_oracle_health_reports_staleness_beyond_the_heartbeat(morpho_client, clock):
-    from app.analysis.service import ChainlinkLatest, ChainlinkOracleHealth
-
-    market = weth_usdc_market(morpho_client)
-    client = FakeChainlink(healthy_histories(market, clock, eth_age=3600 + 1799))
-
-    envelope = ChainlinkOracleHealth(ChainlinkLatest(client, clock=clock)).observe(market, now=clock())
-
-    assert envelope is not None
-    # ETH/USD heartbeat is 3600 s: 1799 s beyond it; USDC/USD is inside its 86400 s heartbeat.
-    assert envelope.value.age_seconds == Decimal(1799)
-    assert envelope.value.oracle_address == market.oracle_address
-    assert "beyond" in envelope.source
-
-
-@pytest.mark.parametrize(
-    ("eth_age", "decision"),
-    [(3600 + 1799, RecommendationDecision.STAY), (3600 + 1800, RecommendationDecision.EXIT)],
-    ids=["heartbeat+29m59s", "heartbeat+30m"],
-)
-def test_chainlink_feed_stale_for_thirty_minutes_beyond_its_heartbeat_exits(
-    morpho_client, clock, eth_age, decision
-):
-    market = weth_usdc_market(morpho_client)
-    client = FakeChainlink(healthy_histories(market, clock, eth_age=eth_age))
-
-    response = analyze(chainlink_service(morpho_client, clock, client), borrower_request("0.05"))
-
-    assert response.recommendation.decision is decision
-    if decision is RecommendationDecision.EXIT:
-        oracle = node_of(response.graph, "oracle")
-        assert response.recommendation.triggers == (f"live:oracle_failure:{oracle}",)
-        assert response.recommendation.dominant_dependency == oracle
-
-
-@pytest.mark.parametrize(
-    ("factor", "decision"),
-    [("1.049", RecommendationDecision.STAY), ("1.05", RecommendationDecision.EXIT)],
-    ids=["4.9%", "5%"],
-)
-def test_chainlink_feed_deviating_five_percent_from_the_reference_exits(
-    morpho_client, clock, factor, decision
-):
-    market = weth_usdc_market(morpho_client)
-    eth_value = market.collateral_asset.price_usd * Decimal(factor)
-    client = FakeChainlink(healthy_histories(market, clock, eth_value=eth_value))
-
-    response = analyze(chainlink_service(morpho_client, clock, client), borrower_request("0.05"))
-
-    assert response.recommendation.decision is decision
-
-
-def test_chainlink_provider_error_is_unavailable_and_sanitized(morpho_client, clock, caplog):
-    client = FakeChainlink(fail=True)
-
-    with caplog.at_level(logging.DEBUG):
-        response = analyze(chainlink_service(morpho_client, clock, client), borrower_request("0.05"))
-
-    assert response.recommendation.decision is RecommendationDecision.UNAVAILABLE
-    assert "live oracle" in response.recommendation.explanation
-    assert "rpc.example.invalid" not in service_logs(caplog)
-    assert "fake-rpc-credential" not in response.model_dump_json()
-
-
-def test_chainlink_feed_without_updates_in_the_lookback_is_unavailable(morpho_client, clock):
-    market = weth_usdc_market(morpho_client)
-    histories = healthy_histories(market, clock)
-    histories["ETH/USD"] = ()
-
-    response = analyze(
-        chainlink_service(morpho_client, clock, FakeChainlink(histories)), borrower_request("0.05")
-    )
-
-    assert response.recommendation.decision is RecommendationDecision.UNAVAILABLE
-
-
-def test_oracle_without_a_supported_chainlink_feed_is_unavailable(morpho_client, clock):
-    # The recorded MEV vault allocation is the wstETH/WETH market: wstETH has no feed.
-    market = weth_usdc_market(morpho_client)
-    client = FakeChainlink(healthy_histories(market, clock))
-
-    response = analyze(
-        chainlink_service(RecordedAllocationsOnly(morpho_client), clock, client),
-        lender_vault_request(),
-    )
-
-    assert response.recommendation.decision is RecommendationDecision.UNAVAILABLE
-    assert "live oracle" in response.recommendation.explanation
-    assert "wstETH" not in client.calls
-
-
-def test_chainlink_lookups_are_memoized_across_prices_and_oracle_health(morpho_client, clock):
-    market = weth_usdc_market(morpho_client)
-    client = FakeChainlink(healthy_histories(market, clock))
-    service = chainlink_service(morpho_client, clock, client)
-
-    analyze(service, borrower_request("0.05"))
-    analyze(service, borrower_request("0.05"))
-
-    assert sorted(client.calls) == ["ETH/USD", "USDC/USD"]
+# Live Chainlink oracle health and prices: tests/api/test_chainlink_oracles.py.
 
 
 def node_of(graph, node_type):

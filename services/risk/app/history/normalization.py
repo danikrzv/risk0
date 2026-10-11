@@ -11,7 +11,8 @@ from app.infrastructure.freshness import Freshness
 
 HOUR = timedelta(hours=1)
 HISTORY_POLICY = CachePolicy(ttl=timedelta(days=1), retention=timedelta(days=365))
-HISTORY_NAMESPACE = "normalized_history"
+# v2: round-based observations (exact timestamps, round ids) and heartbeat forward-fill.
+HISTORY_NAMESPACE = "normalized_history:v2"
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,6 +24,10 @@ class Observation:
     transaction_hash: str = ""
     is_forward_filled: bool = False
     source: str = ""
+    # Chainlink proxy round id ((phaseId << 64) | aggregator round) for answers
+    # read with getRoundData; None for log-derived observations. Part of the
+    # identity, because round reads carry no block, transaction or log index.
+    round_id: int | None = None
 
     def __post_init__(self) -> None:
         _require_aware(self.timestamp, "observation timestamp")
@@ -76,12 +81,13 @@ def normalize_hourly(
     if (start is None) != (end is None):
         raise ValueError("start and end must be provided together")
 
-    by_identity: dict[tuple[int, str, int], Observation] = {}
+    by_identity: dict[tuple[int, str, int, int | None], Observation] = {}
     for observation in observations:
         identity = (
             observation.block_number,
             observation.transaction_hash,
             observation.log_index,
+            observation.round_id,
         )
         existing = by_identity.get(identity)
         if existing is None or _order(observation) > _order(existing):
@@ -195,6 +201,7 @@ def _serialize_series(series: NormalizedSeries) -> bytes:
                 "transaction_hash": item.transaction_hash,
                 "is_forward_filled": item.is_forward_filled,
                 "source": item.source,
+                "round_id": item.round_id,
             }
             for item in series.observations
         ],
@@ -227,6 +234,7 @@ def _deserialize_series(payload: bytes) -> NormalizedSeries:
                 transaction_hash=item["transaction_hash"],
                 is_forward_filled=item["is_forward_filled"],
                 source=item.get("source", value["source"]),
+                round_id=item.get("round_id"),
             )
             for item in value["observations"]
         ),
@@ -246,10 +254,11 @@ def _deserialize_series(payload: bytes) -> NormalizedSeries:
     )
 
 
-def _order(observation: Observation) -> tuple[datetime, int, int, str, Decimal]:
+def _order(observation: Observation) -> tuple[datetime, int, int, int, str, Decimal]:
     return (
         observation.timestamp.astimezone(UTC),
         observation.block_number,
+        observation.round_id or 0,
         observation.log_index,
         observation.transaction_hash,
         observation.value,

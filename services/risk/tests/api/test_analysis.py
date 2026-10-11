@@ -336,6 +336,78 @@ def test_lender_vault_analysis_stays_and_matches_the_contract(api, morpho_client
     assert {"position", "vault", "market", "asset", "oracle", "protocol"} <= node_types
 
 
+def test_lender_vault_forgone_yield_uses_the_vault_net_apy(api, morpho_client, morpho_api, clock):
+    morpho_api.vault_graphql("v1", "0x9a8bC3B04b7f3D87cfC09ba407dCED575f2d61D8")["state"].update(
+        {"apy": 0.05, "netApy": 0.0365}
+    )
+    client = api(build_service(RecordedAllocationsOnly(morpho_client), clock))
+
+    body = post(client, lender_vault_request()).json()
+
+    assert_contract(body)
+    recommendation = body["recommendation"]
+    # 10 WETH * 0.0365 * 30 / 365 = 0.03 WETH
+    assert Decimal(recommendation["forgone_yield"]) == Decimal("0.03")
+    assert Decimal(recommendation["cost_of_exiting"]) == Decimal("0.033")
+    assert recommendation["carry"]["status"] == "known"
+    assert Decimal(recommendation["carry"]["apy"]) == Decimal("0.0365")
+    assert recommendation["carry"]["apy_source"] == "Morpho vault APY (net of fees when reported)"
+    assert Decimal(recommendation["break_even"]["cost_of_exiting"]) == Decimal("0.033")
+    assert recommendation["decision"] == STAY
+    assert "APY 3.65%" in recommendation["explanation"]
+
+
+def test_lender_with_an_unknown_apy_warns_and_lowers_confidence(
+    api, morpho_client, morpho_api, clock
+):
+    # The recorded vault snapshot carries no APY.
+    client = api(build_service(RecordedAllocationsOnly(morpho_client), clock))
+    unknown = post(client, lender_vault_request()).json()["recommendation"]
+    morpho_api.vault_graphql("v1", "0x9a8bC3B04b7f3D87cfC09ba407dCED575f2d61D8")["state"].update(
+        {"netApy": 0.0365}
+    )
+    clock.advance(timedelta(minutes=5))  # past the snapshot cache TTL
+    known = post(client, lender_vault_request()).json()["recommendation"]
+
+    assert unknown["carry"]["status"] == "unknown"
+    assert unknown["carry"]["apy"] is None
+    assert Decimal(unknown["forgone_yield"]) == 0
+    assert "APY is unknown" in unknown["explanation"]
+    assert known["carry"]["status"] == "known"
+    levels = ["unavailable", "low", "medium", "high"]
+    assert levels.index(unknown["confidence"]) == levels.index(known["confidence"]) - 1
+
+
+def test_market_lender_forgone_yield_uses_the_market_supply_apy(morpho_client, morpho_api, clock):
+    market_id = "0x94b823e6bd8ea533b4e33fbc307faea0b307301bc48763acc4d4aa4def7636cd"
+    morpho_api.market_graphql(market_id)["state"].update({"netSupplyApy": 0.073})
+    payload = {
+        "position": {
+            "mode": "lender",
+            "entity_id": "weth-usdc-860",
+            "amount": "100000",
+            "numeraire": "USDC",
+        },
+        "scenarios": [{"scenario_id": "protocol-impairment", "severity": "0.30"}],
+    }
+
+    recommendation = analyze(build_service(morpho_client, clock), payload).recommendation
+
+    # 100000 * 0.073 * 30 / 365 = 600 USDC
+    assert recommendation.forgone_yield == Decimal(600)
+    assert recommendation.carry.apy_source == "Morpho market supply APY (net when reported)"
+    assert recommendation.cost_of_exiting == recommendation.exit_cost + Decimal(600)
+
+
+def test_borrower_carry_is_not_modelled(api, morpho_client, clock):
+    body = post(api(build_service(morpho_client, clock)), borrower_request("0.05")).json()
+
+    recommendation = body["recommendation"]
+    assert recommendation["carry"]["status"] == "not_applicable"
+    assert Decimal(recommendation["forgone_yield"]) == 0
+    assert "Borrower carry" in recommendation["explanation"]
+
+
 def test_borrower_fifteen_percent_shock_exits_on_liquidation(api, morpho_client, clock):
     client = api(build_service(morpho_client, clock))
 

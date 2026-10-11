@@ -98,6 +98,62 @@ def test_vault_v2_snapshot_reports_liquidity_and_idle_assets(morpho_client):
     assert envelope.block_number == INDEXED_BLOCK
 
 
+def test_recorded_snapshots_without_an_apy_report_it_as_unknown(morpho_client):
+    assert morpho_client.get_market(WETH_USDC).value.supply_apy is None
+    assert morpho_client.get_vault(MEV_CAPITAL_WETH, "v1").value.apy is None
+    assert morpho_client.get_vault(BELEM_RWA_EURCV, "v2").value.apy is None
+
+
+def test_apy_fields_are_requested_from_graphql(morpho_client, morpho_api):
+    morpho_client.get_market(WETH_USDC)
+    morpho_client.get_vault(MEV_CAPITAL_WETH, "v1")
+    morpho_client.get_vault(BELEM_RWA_EURCV, "v2")
+
+    market, vault_v1, vault_v2 = (
+        request["query"] for request in morpho_api.graphql_requests()
+    )
+    assert "supplyApy netSupplyApy" in market
+    assert "state { totalAssetsUsd apy netApy }" in vault_v1
+    assert "apy netApy" in vault_v2
+
+
+@pytest.mark.parametrize(
+    ("state", "expected"),
+    [
+        ({"supplyApy": 0.05, "netSupplyApy": 0.045}, Decimal("0.045")),
+        ({"supplyApy": 0.05, "netSupplyApy": None}, Decimal("0.05")),
+        ({"supplyApy": 0.05}, Decimal("0.05")),
+        ({"supplyApy": None, "netSupplyApy": None}, None),
+        ({"supplyApy": -0.01, "netSupplyApy": "not-a-number"}, None),
+        ({"netSupplyApy": True}, None),
+    ],
+)
+def test_market_supply_apy_prefers_net_and_never_fails_the_snapshot(
+    morpho_client, morpho_api, state, expected
+):
+    morpho_api.market_graphql(WETH_USDC)["state"].update(state)
+
+    market = morpho_client.get_market(WETH_USDC).value
+
+    assert market.supply_apy == expected
+    assert market.supply_apy is None or isinstance(market.supply_apy, Decimal)
+    assert market.total_supply_assets == Decimal("9408096.071094")
+
+
+def test_vault_v1_apy_reads_the_net_apy_from_the_vault_state(morpho_client, morpho_api):
+    morpho_api.vault_graphql("v1", MEV_CAPITAL_WETH)["state"].update(
+        {"apy": 0.0157, "netApy": 0.0141}
+    )
+
+    assert morpho_client.get_vault(MEV_CAPITAL_WETH, "v1").value.apy == Decimal("0.0141")
+
+
+def test_vault_v2_apy_reads_the_top_level_net_apy(morpho_client, morpho_api):
+    morpho_api.vault_graphql("v2", BELEM_RWA_EURCV).update({"apy": 0.0285, "netApy": None})
+
+    assert morpho_client.get_vault(BELEM_RWA_EURCV, "v2").value.apy == Decimal("0.0285")
+
+
 @pytest.mark.parametrize(
     ("address", "version", "expected_markets"),
     [

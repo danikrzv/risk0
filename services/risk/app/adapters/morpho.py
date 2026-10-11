@@ -45,17 +45,18 @@ MARKET_QUERY = (
     "marketById(marketId: $marketId, chainId: $chainId) { "
     f"marketId listed lltv loanAsset {{ {_ASSET_FIELDS} }} "
     f"collateralAsset {{ {_ASSET_FIELDS} }} "
-    "state { supplyAssetsUsd borrowAssetsUsd liquidityAssetsUsd utilization } } }"
+    "state { supplyAssetsUsd borrowAssetsUsd liquidityAssetsUsd utilization "
+    "supplyApy netSupplyApy } } }"
 )
 VAULT_V1_QUERY = (
     "query VaultV1Metadata($address: String!, $chainId: Int!) { "
     "vaultByAddress(address: $address, chainId: $chainId) { "
-    f"address listed asset {{ {_ASSET_FIELDS} }} state {{ totalAssetsUsd }} }} }}"
+    f"address listed asset {{ {_ASSET_FIELDS} }} state {{ totalAssetsUsd apy netApy }} }} }}"
 )
 VAULT_V2_QUERY = (
     "query VaultV2Metadata($address: String!, $chainId: Int!) { "
     "vaultV2ByAddress(address: $address, chainId: $chainId) { "
-    f"address listed asset {{ {_ASSET_FIELDS} }} totalAssetsUsd liquidityUsd }} }}"
+    f"address listed asset {{ {_ASSET_FIELDS} }} totalAssetsUsd liquidityUsd apy netApy }} }}"
 )
 
 _DISCOVERY_ASSET_FIELDS = "address symbol decimals price { usd }"
@@ -441,6 +442,7 @@ class MorphoClient:
                     self._url(state_path),
                     self._url("/graphql"),
                 ),
+                supply_apy=_apy(usd.get("netSupplyApy"), usd.get("supplyApy")),
             ),
             source=self._url(state_path),
             fetched_at=fetched_at,
@@ -468,14 +470,17 @@ class MorphoClient:
             )
             total_assets_usd = metadata.get("totalAssetsUsd")
             liquidity_usd = metadata.get("liquidityUsd")
+            apy = _apy(metadata.get("netApy"), metadata.get("apy"))
         else:
             metadata = self._graphql(
                 VAULT_V1_QUERY,
                 {"address": address, "chainId": chain_id},
                 "vaultByAddress",
             )
-            total_assets_usd = (metadata.get("state") or {}).get("totalAssetsUsd")
+            vault_state = metadata.get("state") or {}
+            total_assets_usd = vault_state.get("totalAssetsUsd")
             liquidity_usd = None
+            apy = _apy(vault_state.get("netApy"), vault_state.get("apy"))
 
         for payload in (config, state):
             _require_identity(payload, "address", address, chain_id)
@@ -513,6 +518,7 @@ class MorphoClient:
                     self._url(state_path),
                     self._url("/graphql"),
                 ),
+                apy=apy,
             ),
             source=self._url(state_path),
             fetched_at=fetched_at,
@@ -1174,6 +1180,26 @@ def _units(raw: object, decimals: int) -> Decimal:
 
 def _optional_units(raw: object | None, decimals: int) -> Decimal | None:
     return None if raw is None else _units(raw, decimals)
+
+
+def _apy(*candidates: object | None) -> Decimal | None:
+    """The first usable APY (a fraction), or None: a bad APY never fails a snapshot.
+
+    Morpho reports APYs as JSON numbers (0.045 = 4.5%). A non-numeric,
+    non-finite, or negative value is unknown, not zero.
+    """
+    for value in candidates:
+        if value is None or isinstance(value, bool):
+            continue
+        if not isinstance(value, (Decimal, int, str)):
+            continue
+        try:
+            parsed = value if isinstance(value, Decimal) else Decimal(value)
+        except DecimalException:
+            continue
+        if parsed.is_finite() and parsed >= 0:
+            return parsed
+    return None
 
 
 def _optional_decimal(value: object | None) -> Decimal | None:

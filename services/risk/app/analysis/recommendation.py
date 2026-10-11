@@ -1,12 +1,32 @@
 """Hybrid STAY / EXIT / UNAVAILABLE recommendation (spec § 13).
 
     expected_staying_loss_30d = sum(event_probability_30d * event_impact)
+    forgone_yield_30d         = amount * apy * 30 / 365        (lenders)
+    cost_of_exiting           = exit_cost_now + forgone_yield_30d
 
-    if critical_data_missing:              UNAVAILABLE
-    elif any_hard_safety_trigger:          EXIT
-    elif expected_loss_incomplete:         UNAVAILABLE
-    elif expected_loss > exit_cost_now:    EXIT
-    else:                                  STAY       (equal values stay)
+    if critical_data_missing:                  UNAVAILABLE
+    elif any_hard_safety_trigger:              EXIT
+    elif expected_loss_incomplete:             UNAVAILABLE
+    elif expected_loss > cost_of_exiting:      EXIT
+    else:                                      STAY   (equal values stay)
+
+Carry: staying earns the position's yield and exiting to cash gives it up, so
+the fair comparison for a yield manager is the expected loss against the exit
+cost plus the yield forgone over the same 30-day horizon. Without it, a lender
+whose exit costs only gas would be told to EXIT at any non-zero risk.
+- Lender: `forgone_yield = amount * apy * horizon_days / 365` in the position
+  numeraire, with the vault's net APY for a vault position and the market's
+  supply APY for a market position (net of fees when Morpho reports it).
+  Exited capital is assumed to be held idle (no alternative yield); crediting a
+  redeployment yield is future work.
+- Unknown APY: the forgone yield is counted as zero (which biases toward EXIT,
+  the conservative side), a warning is added, and the confidence of a decision
+  made by the comparison is lowered one level.
+- Borrower: carry (borrow cost versus collateral yield) is out of scope; the
+  forgone yield is zero and the explanation says so.
+- Hard triggers and UNAVAILABLE rules do not depend on carry.
+- Without a carry estimate (older callers) the forgone yield is zero and the
+  carry fields of the recommendation are null.
 
 Critical data is missing when `data_quality.critical_missing` is non-empty, when
 the exit estimate is EXPIRED (an expired quote cannot support a decision), when
@@ -38,9 +58,11 @@ probability is never applied to a severe impact.
 
 Break-even (`Recommendation.break_even`): for every deduplicated scenario with a
 non-zero impact, the 30-day probability at which staying and exiting cost the
-same. `break_even_probability = exit_cost / impact` is that scenario on its own;
-`decision_flip_probability = (exit_cost - other_expected_loss) / impact` holds
-the other scenarios at their central estimates, so it is where this rule flips.
+same, with `cost_of_exiting = exit_cost + forgone_yield` as the cost of exiting.
+`break_even_probability = cost_of_exiting / impact` is that scenario on its own;
+`decision_flip_probability = (cost_of_exiting - other_expected_loss) / impact`
+holds the other scenarios at their central estimates, so it is where this rule
+flips.
 Both are capped to [0, 1]: 1 means no probability makes EXIT cheaper, 0 means
 EXIT is already cheaper at zero probability. A value is null, with a reason,
 when the impact is incomplete or negative, the exit cost is unknown (expired or
@@ -56,14 +78,18 @@ from decimal import Decimal
 from app.contracts.models import (
     BreakEven,
     BreakEvenPoint,
+    Carry,
+    CarryStatus,
     ConfidenceLevel,
     ExitEstimate,
     FreshnessStatus,
+    PositionMode,
     Recommendation,
     RecommendationDecision,
     ScenarioResult,
 )
 from app.domain.exit import NUMERAIRE_PLACES
+from app.evidence.scoring import DAYS_PER_YEAR, SUPPORTED_HORIZON_DAYS
 from app.infrastructure.freshness import DataQuality
 
 
@@ -78,6 +104,76 @@ CONFIDENCE_ORDER = (
 )
 LIVE_ORACLE_FAILURE = "live:oracle_failure"
 PROTOCOL_EMERGENCY = "live:protocol_emergency"
+HORIZON_DAYS = SUPPORTED_HORIZON_DAYS
+IDLE_CAPITAL_NOTE = (
+    "Assumes exited capital is held idle (no alternative yield), so exiting gives up "
+    "the whole position yield over the horizon."
+)
+UNKNOWN_APY_NOTE = (
+    "The position APY is unknown: the forgone yield is counted as zero, which biases "
+    "toward EXIT, and the confidence of the comparison was lowered."
+)
+BORROWER_CARRY_NOTE = (
+    "Borrower carry (borrow cost versus collateral yield) is not modelled: the "
+    "forgone yield is zero."
+)
+
+
+@dataclass(frozen=True, slots=True)
+class CarryEstimate:
+    """The position yield over the horizon (`carry`) and what exiting gives up."""
+
+    carry: Carry
+    forgone_yield: Decimal
+
+
+def estimate_carry(
+    mode: PositionMode,
+    amount: Decimal,
+    apy: Decimal | None,
+    *,
+    apy_source: str | None = None,
+    horizon_days: int = HORIZON_DAYS,
+) -> CarryEstimate:
+    """Forgone yield of exiting: `amount * apy * horizon_days / 365` for a lender.
+
+    `amount` is in the position numeraire, so the result is too. An unknown APY
+    gives zero with an UNKNOWN status (never a guessed yield); a borrower gives
+    zero with a NOT_APPLICABLE status.
+    """
+    if mode is PositionMode.BORROWER:
+        return CarryEstimate(
+            carry=Carry(
+                status=CarryStatus.NOT_APPLICABLE,
+                apy=None,
+                apy_source=None,
+                horizon_days=horizon_days,
+                notes=(BORROWER_CARRY_NOTE,),
+            ),
+            forgone_yield=_quantize(ZERO),
+        )
+    if apy is None or not apy.is_finite() or apy < ZERO:
+        return CarryEstimate(
+            carry=Carry(
+                status=CarryStatus.UNKNOWN,
+                apy=None,
+                apy_source=apy_source,
+                horizon_days=horizon_days,
+                notes=(UNKNOWN_APY_NOTE, IDLE_CAPITAL_NOTE),
+            ),
+            forgone_yield=_quantize(ZERO),
+        )
+    forgone = amount * apy * Decimal(horizon_days) / Decimal(DAYS_PER_YEAR)
+    return CarryEstimate(
+        carry=Carry(
+            status=CarryStatus.KNOWN,
+            apy=apy,
+            apy_source=apy_source,
+            horizon_days=horizon_days,
+            notes=(IDLE_CAPITAL_NOTE,),
+        ),
+        forgone_yield=_quantize(max(ZERO, forgone)),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,14 +204,28 @@ def make_recommendation(
     *,
     live_triggers: Iterable[str | LiveTrigger] = (),
     numeraire: str = "",
+    carry: CarryEstimate | None = None,
 ) -> Recommendation:
+    """`carry` is the position yield; without it the forgone yield is zero (older callers)."""
     unit = f" {numeraire}" if numeraire else ""
     live = tuple(
         item if isinstance(item, LiveTrigger) else LiveTrigger(item) for item in live_triggers
     )
     exit_cost = exit_estimate.total_cost
+    forgone = carry.forgone_yield if carry is not None else ZERO
+    cost_of_exiting = exit_cost + forgone
+    carry_fields = {
+        "forgone_yield": None if carry is None else forgone,
+        "cost_of_exiting": None if carry is None else cost_of_exiting,
+        "carry": None if carry is None else carry.carry,
+    }
     contributions = _deduplicated(scenarios)
-    break_even = _break_even(contributions, exit_estimate, triggered=bool(_triggers(scenarios, live)))
+    break_even = _break_even(
+        contributions,
+        exit_estimate,
+        triggered=bool(_triggers(scenarios, live)),
+        forgone_yield=None if carry is None else forgone,
+    )
     known =[item for item in contributions if item.central is not None]
     expected_loss = _quantize(sum((item.central for item in known if item.central is not None), ZERO))
 
@@ -145,6 +255,7 @@ def make_recommendation(
                 "treated as zero risk, so no STAY or EXIT is given."
             ),
             break_even=break_even,
+            **carry_fields,
         )
 
     triggers = _triggers(scenarios, live)
@@ -163,7 +274,9 @@ def make_recommendation(
         f"expected 30-day staying loss {expected_loss}{unit}"
         + (f" (range {loss_low} to {loss_high}{unit})" if loss_low is not None else "")
         + f" versus exit cost now {exit_cost}{unit}"
+        + _carry_comparison(carry, cost_of_exiting, unit)
     )
+    cost_label = "exit cost" if carry is None else "cost of exiting"
 
     if triggers:
         decision = RecommendationDecision.EXIT
@@ -196,6 +309,7 @@ def make_recommendation(
                 "probability is never treated as zero."
             ),
             break_even=break_even,
+            **carry_fields,
         )
     else:
         relevant = [
@@ -204,12 +318,18 @@ def make_recommendation(
             if item.scenario.impact != ZERO
         ]
         confidence = _lowest([*relevant, _exit_confidence(exit_estimate)])
-        if expected_loss > exit_cost:
+        if carry is not None and carry.carry.status is CarryStatus.UNKNOWN:
+            confidence = _lower(confidence)
+        if expected_loss > cost_of_exiting:
             decision = RecommendationDecision.EXIT
             parts = [f"EXIT: the {comparison}; the expected loss is higher."]
         else:
             decision = RecommendationDecision.STAY
-            parts = [f"STAY: the {comparison}; the expected loss does not exceed the exit cost."]
+            parts = [
+                f"STAY: the {comparison}; the expected loss does not exceed the {cost_label}."
+            ]
+        if carry is not None:
+            parts.extend(carry.carry.notes)
 
     if dominant is not None:
         parts.append(f"Dominant dependency: {dominant}.")
@@ -237,6 +357,23 @@ def make_recommendation(
         confidence=confidence,
         explanation=" ".join(parts),
         break_even=break_even,
+        **carry_fields,
+    )
+
+
+def _carry_comparison(carry: CarryEstimate | None, cost_of_exiting: Decimal, unit: str) -> str:
+    if carry is None:
+        return ""
+    status = carry.carry.status
+    if status is CarryStatus.KNOWN and carry.carry.apy is not None:
+        basis = f"APY {_percent(carry.carry.apy)}"
+    elif status is CarryStatus.UNKNOWN:
+        basis = "APY unknown, counted as zero"
+    else:
+        basis = "borrower carry not modelled"
+    return (
+        f" plus forgone {carry.carry.horizon_days}-day yield {carry.forgone_yield}{unit} "
+        f"({basis}), a cost of exiting of {cost_of_exiting}{unit}"
     )
 
 
@@ -342,14 +479,20 @@ def _quantize(value: Decimal) -> Decimal:
 
 
 def _break_even(
-    contributions: list[_Contribution], exit_estimate: ExitEstimate, *, triggered: bool
+    contributions: list[_Contribution],
+    exit_estimate: ExitEstimate,
+    *,
+    triggered: bool,
+    forgone_yield: Decimal | None = None,
 ) -> BreakEven:
     # The unavailable exit estimate is EXPIRED with a zero total: unknown, not free.
     exit_cost = (
         None if exit_estimate.freshness is FreshnessStatus.EXPIRED else exit_estimate.total_cost
     )
+    # The cost of exiting: the exit cost now plus the yield exiting gives up.
+    cost = None if exit_cost is None else exit_cost + (forgone_yield or ZERO)
     candidates = [item for item in contributions if item.scenario.impact != ZERO]
-    points = [_break_even_point(item, contributions, exit_cost) for item in candidates]
+    points = [_break_even_point(item, contributions, cost) for item in candidates]
     dominant = max(
         range(len(candidates)),
         key=lambda index: (
@@ -375,11 +518,13 @@ def _break_even(
         exit_cost=exit_cost,
         points=tuple(points),
         explanation=explanation,
+        forgone_yield=forgone_yield,
+        cost_of_exiting=None if forgone_yield is None else cost,
     )
 
 
 def _break_even_point(
-    item: _Contribution, contributions: list[_Contribution], exit_cost: Decimal | None
+    item: _Contribution, contributions: list[_Contribution], cost: Decimal | None
 ) -> BreakEvenPoint:
     scenario = item.scenario
     impact = scenario.impact
@@ -401,13 +546,13 @@ def _break_even_point(
         reasons.append("the scenario impact is incomplete, so no break-even is computed")
     elif impact < ZERO:
         reasons.append("the scenario impact is negative, so it has no break-even probability")
-    elif exit_cost is None:
+    elif cost is None:
         reasons.append("the exit cost is unknown (no current exit estimate)")
     else:
-        break_even = _probability(exit_cost / impact)
-        if exit_cost >= impact:
+        break_even = _probability(cost / impact)
+        if cost >= impact:
             reasons.append(
-                "the exit cost is at least the full impact: no probability of this scenario "
+                "the cost of exiting is at least the full impact: no probability of this scenario "
                 "alone makes EXIT cheaper"
             )
         if other_loss is None:
@@ -416,9 +561,9 @@ def _break_even_point(
                 f"{', '.join(other_unknown)} is unknown"
             )
         else:
-            flip = _probability((exit_cost - other_loss) / impact)
-            if exit_cost < other_loss:
-                reasons.append("the other scenarios' expected loss already exceeds the exit cost")
+            flip = _probability((cost - other_loss) / impact)
+            if cost < other_loss:
+                reasons.append("the other scenarios' expected loss already exceeds the cost of exiting")
     if probability.central is None:
         reasons.append("no current 30-day probability estimate is available")
     return BreakEvenPoint(
@@ -453,7 +598,7 @@ def _point_sentence(point: BreakEvenPoint) -> str:
         )
     if threshold <= ZERO and point.decision_flip_probability is not None:
         return (
-            "The other scenarios' expected loss alone reaches the exit cost, so EXIT is "
+            "The other scenarios' expected loss alone reaches the cost of exiting, so EXIT is "
             f"optimal at any non-zero probability of {point.scenario_id} ({estimate})."
         )
     return (

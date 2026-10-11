@@ -115,7 +115,14 @@
         "pocket_value": { "$ref": "#/$defs/NullableDecimalString" },
         "expected_loss": { "$ref": "#/$defs/NullableBookAmount" },
         "exit_cost": { "$ref": "#/$defs/NullableBookAmount" },
-        "exit_advantage": { "$ref": "#/$defs/NullableBookAmount" },
+        "exit_advantage": {
+          "description": "expected_loss - (exit_cost + forgone_yield).",
+          "$ref": "#/$defs/NullableBookAmount"
+        },
+        "forgone_yield": {
+          "description": "Yield given up over the 30-day horizon by exiting this pocket.",
+          "$ref": "#/$defs/NullableBookAmount"
+        },
         "break_even": {
           "oneOf": [
             { "$ref": "analysis-response.schema.json#/$defs/BreakEven" },
@@ -168,6 +175,13 @@
         "expected_loss_stay_pockets": { "$ref": "#/$defs/BookTotal" },
         "recommended_cost": { "$ref": "#/$defs/BookTotal" },
         "net_benefit": { "$ref": "#/$defs/BookTotal" },
+        "forgone_yield_exit_pockets": {
+          "description": "Yield given up by exiting the EXIT pockets; part of recommended_cost.",
+          "oneOf": [
+            { "$ref": "#/$defs/BookTotal" },
+            { "type": "null" }
+          ]
+        },
         "allocated_weight": { "$ref": "#/$defs/DecimalString" },
         "stay_weight": { "$ref": "#/$defs/DecimalString" },
         "exit_weight": { "$ref": "#/$defs/DecimalString" },

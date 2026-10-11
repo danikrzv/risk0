@@ -7,8 +7,8 @@ the unchanged `AnalysisService.analyze`, with bounded concurrency, and keeps its
 own STAY / EXIT / UNAVAILABLE recommendation.
 
 Units
-- Per-pocket amounts (expected loss, exit cost, their difference) are in the
-  pocket's own numeraire, exactly as the analysis reports them.
+- Per-pocket amounts (expected loss, exit cost, forgone yield, exit advantage)
+  are in the pocket's own numeraire, exactly as the analysis reports them.
 - `pocket_value` is what the pocket is worth in its numeraire: a lender's
   deposit `amount` (the lender numeraire is the deposited asset, so the amount
   is the value), or a borrower's equity `collateral_value - debt_value` from
@@ -25,15 +25,23 @@ warning (an unknown value is never treated as zero). Total amounts are
 given; otherwise the sum of the pocket amounts when every counted pocket shares
 one numeraire; otherwise null.
 
+The comparison is the per-position rule's: exiting a pocket costs its exit cost
+plus the yield it gives up over the 30-day horizon (`forgone_yield`, zero for a
+borrower or an unknown APY; exited capital is assumed idle), and staying
+everywhere is the baseline that keeps every yield.
+
 - expected_loss_staying: expected 30-day loss if every pocket stays.
-- exit_cost_exit_pockets: cost of exiting the pockets whose decision is EXIT.
+- exit_cost_exit_pockets: exit cost of the pockets whose decision is EXIT.
+- forgone_yield_exit_pockets: yield those EXIT pockets give up.
 - expected_loss_stay_pockets: expected loss of the pockets that stay.
-- recommended_cost: exit_cost_exit_pockets + expected_loss_stay_pockets.
+- recommended_cost: exit_cost_exit_pockets + forgone_yield_exit_pockets +
+  expected_loss_stay_pockets.
 - net_benefit: expected_loss_staying - recommended_cost (what following the
   recommendations saves, in expectation, against staying everywhere).
 
-Pockets are ranked by `exit_advantage = expected_loss - exit_cost` as a
-fraction of the book (largest first: the pocket where exiting saves most), then
+Pockets are ranked by `exit_advantage = expected_loss - (exit_cost +
+forgone_yield)` as a fraction of the book (largest first: the pocket where
+exiting saves most), then
 decided pockets without a book fraction, then UNAVAILABLE pockets. A pocket
 whose analysis raises becomes UNAVAILABLE with a sanitized reason; the book
 itself never fails because of one pocket.
@@ -148,6 +156,7 @@ def _pocket_result(index: int, pocket: BookPocketInput, outcome: _Outcome) -> Bo
             expected_loss=None,
             exit_cost=None,
             exit_advantage=None,
+            forgone_yield=None,
             break_even=None,
             unavailable_reasons=(reason,),
             explanation=f"UNAVAILABLE: {reason}",
@@ -180,9 +189,13 @@ def _pocket_result(index: int, pocket: BookPocketInput, outcome: _Outcome) -> Bo
             "the expected loss is incomplete: no 30-day probability for "
             f"{', '.join(unknown)}"
         )
+    # The yield exiting gives up; an older analysis without carry reports none (zero).
+    forgone_yield = amount(
+        recommendation.forgone_yield if recommendation.forgone_yield is not None else ZERO
+    )
     advantage = None
     if expected_loss is not None and exit_cost is not None:
-        advantage = amount(expected_loss.amount - exit_cost.amount)
+        advantage = amount(expected_loss.amount - exit_cost.amount - forgone_yield.amount)
 
     return BookPocketResult(
         **common,
@@ -194,6 +207,7 @@ def _pocket_result(index: int, pocket: BookPocketInput, outcome: _Outcome) -> Bo
         expected_loss=expected_loss,
         exit_cost=exit_cost,
         exit_advantage=advantage,
+        forgone_yield=forgone_yield,
         break_even=recommendation.break_even,
         unavailable_reasons=tuple(dict.fromkeys(reasons)),
         explanation=recommendation.explanation,
@@ -314,10 +328,14 @@ def _totals(pockets: Sequence[BookPocketResult], request: BookRequest) -> BookTo
 
     staying = total([p.expected_loss for p in decided], "expected loss if staying in every pocket")
     exit_cost = total([p.exit_cost for p in exits], "exit cost of the EXIT pockets")
+    forgone = total([p.forgone_yield for p in exits], "forgone yield of the EXIT pockets")
     stay_loss = total([p.expected_loss for p in stays], "expected loss of the STAY pockets")
     recommended = BookTotal(
-        amount=_add(exit_cost.amount, stay_loss.amount),
-        fraction_of_book=_add(exit_cost.fraction_of_book, stay_loss.fraction_of_book),
+        amount=_add(_add(exit_cost.amount, forgone.amount), stay_loss.amount),
+        fraction_of_book=_add(
+            _add(exit_cost.fraction_of_book, forgone.fraction_of_book),
+            stay_loss.fraction_of_book,
+        ),
     )
     net = BookTotal(
         amount=_subtract(staying.amount, recommended.amount),
@@ -334,6 +352,7 @@ def _totals(pockets: Sequence[BookPocketResult], request: BookRequest) -> BookTo
         numeraire=numeraire,
         expected_loss_staying=staying,
         exit_cost_exit_pockets=exit_cost,
+        forgone_yield_exit_pockets=forgone,
         expected_loss_stay_pockets=stay_loss,
         recommended_cost=recommended,
         net_benefit=net,
@@ -346,7 +365,7 @@ def _totals(pockets: Sequence[BookPocketResult], request: BookRequest) -> BookTo
         unavailable_count=len(unavailable),
         complete=not unavailable and all(
             item.fraction_of_book is not None
-            for item in (staying, exit_cost, stay_loss, recommended, net)
+            for item in (staying, exit_cost, forgone, stay_loss, recommended, net)
         ),
         warnings=tuple(dict.fromkeys(warnings)),
     )

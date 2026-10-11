@@ -58,6 +58,8 @@ def response(
     collateral_value=None,
     debt_value=None,
     exit_freshness=FreshnessStatus.FRESH,
+    forgone_yield: str | None = None,
+    recommendation: Recommendation | None = None,
 ) -> AnalysisResponse:
     position = RiskNode(
         node_id="position:1:p",
@@ -97,7 +99,8 @@ def response(
             retrieved_at=NOW,
             freshness=exit_freshness,
         ),
-        recommendation=Recommendation(
+        recommendation=recommendation
+        or Recommendation(
             decision=decision,
             expected_loss=Decimal(expected_loss),
             exit_cost=Decimal(exit_cost),
@@ -105,6 +108,7 @@ def response(
             dominant_dependency="asset:1:weth",
             confidence=ConfidenceLevel.UNAVAILABLE if decision is UNAVAILABLE else ConfidenceLevel.HIGH,
             explanation=f"{decision.value}: fixture",
+            forgone_yield=None if forgone_yield is None else Decimal(forgone_yield),
         ),
         analyzed_at=NOW,
     )
@@ -184,6 +188,76 @@ def test_brief_book_of_ten_pockets_reports_fractions_of_pocket_and_book():
     assert totals.complete is True
     assert totals.warnings == ()
     assert result.generated_at == NOW
+
+
+def test_forgone_yield_counts_in_the_exit_advantage_ranking_and_totals():
+    request = book(
+        [
+            {"pocket_id": "carry", "position": lender("carry"), "weight": "0.5"},
+            {"pocket_id": "cheap", "position": lender("cheap"), "weight": "0.5"},
+        ]
+    )
+    service = FakeService(
+        {
+            # 200 - (110 + 50) = 40: still EXIT, but exiting saves less.
+            "carry": response(
+                decision=EXIT, expected_loss="200", exit_cost="110", forgone_yield="50"
+            ),
+            # 150 - (10 + 0) = 140
+            "cheap": response(decision=EXIT, expected_loss="150", exit_cost="10", forgone_yield="0"),
+        }
+    )
+
+    result = run_book(request, service)
+
+    first, second = result.pockets
+    assert (first.pocket_id, second.pocket_id) == ("cheap", "carry")
+    assert second.forgone_yield.amount == Decimal(50)
+    assert second.forgone_yield.fraction_of_pocket == Decimal("0.05")
+    assert second.forgone_yield.fraction_of_book == Decimal("0.025")
+    assert second.exit_advantage.amount == Decimal(40)
+    totals = result.totals
+    assert totals.exit_cost_exit_pockets.amount == Decimal(120)
+    assert totals.forgone_yield_exit_pockets.amount == Decimal(50)
+    assert totals.forgone_yield_exit_pockets.fraction_of_book == Decimal("0.025")
+    assert totals.recommended_cost.amount == Decimal(170)  # 120 + 50 + 0
+    assert totals.net_benefit.amount == Decimal(180)  # 350 - 170
+    assert totals.net_benefit.amount == first.exit_advantage.amount + second.exit_advantage.amount
+    assert totals.complete is True
+
+
+def test_book_exit_advantage_agrees_with_the_per_position_rule():
+    from app.analysis.recommendation import estimate_carry, make_recommendation
+    from app.contracts.models import PositionMode
+    from app.infrastructure.freshness import DataQuality, Freshness
+
+    def analysed(apy: str) -> AnalysisResponse:
+        base = response(central="0.0022", exit_cost="0.02")
+        carry = estimate_carry(PositionMode.LENDER, Decimal(1000), Decimal(apy))
+        quality = DataQuality(freshness=(Freshness.FRESH,), conflicts=(), critical_missing=())
+        recommendation = make_recommendation(
+            base.scenario_results, base.exit_estimate, quality, carry=carry
+        )
+        return response(central="0.0022", exit_cost="0.02", recommendation=recommendation)
+
+    # Expected loss 0.22; exit cost 0.02; forgone yield 1000 * apy * 30 / 365.
+    service = FakeService({"yielding": analysed("0.0365"), "idle": analysed("0")})
+    request = book(
+        [
+            {"position": lender("yielding"), "weight": "0.5"},
+            {"position": lender("idle"), "weight": "0.5"},
+        ]
+    )
+
+    pockets = {pocket.entity_id: pocket for pocket in run_book(request, service).pockets}
+
+    assert pockets["yielding"].decision is STAY
+    assert pockets["yielding"].forgone_yield.amount == Decimal(3)
+    assert pockets["yielding"].exit_advantage.amount == Decimal("-2.8")
+    assert pockets["idle"].decision is EXIT
+    assert pockets["idle"].exit_advantage.amount == Decimal("0.2")
+    for pocket in pockets.values():
+        assert (pocket.decision is EXIT) == (pocket.exit_advantage.amount > 0)
 
 
 def test_book_value_turns_book_fractions_into_book_amounts_across_numeraires():

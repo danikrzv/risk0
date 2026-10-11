@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from app.adapters.morpho import DEFAULT_BASE_URL, MorphoClient
 from app.adapters.rpc_registry import RpcRegistry
 from app.api.analysis import router as analysis_router
+from app.api.book import router as book_router
 from app.api.catalog import router as catalog_router
 from app.api.events import get_event_broker, router as events_router
 from app.api.fixtures import router as fixtures_router
@@ -128,6 +129,7 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(title="Risk0 Risk Service", version="0.1.0", lifespan=lifespan)
 app.include_router(catalog_router)
 app.include_router(analysis_router)
+app.include_router(book_router)
 app.include_router(radar_router)
 app.include_router(events_router)
 app.include_router(fixtures_router)
